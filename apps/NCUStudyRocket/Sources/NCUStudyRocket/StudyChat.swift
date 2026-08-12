@@ -85,6 +85,7 @@ final class CodexAppServerClient: NSObject {
                 "sandbox": "read-only",
                 "approvalPolicy": "never",
                 "runtimeWorkspaceRoots": [root.path],
+                "threadSource": "studyrocket",
                 "developerInstructions": Self.developerInstructions,
                 "dynamicTools": [Self.proposalTool]
             ])
