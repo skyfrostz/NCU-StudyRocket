@@ -14,14 +14,16 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             List(AppSection.allCases, selection: Binding(get: { selection }, set: { requestSection($0) })) { section in
-                Label(section.title, systemImage: section.icon).tag(section)
+                Label(section.title, systemImage: section.icon)
+                    .frame(minHeight: 28)
+                    .tag(section)
             }
             .navigationTitle("StudyRocket")
             .safeAreaInset(edge: .bottom) {
                 VStack(alignment: .leading, spacing: 8) {
                     Divider()
                     Label(workspace.gitStatus, systemImage: workspace.gitStatus == "已同步" ? "checkmark.seal" : "circle.dotted")
-                        .font(.caption).foregroundStyle(workspace.gitStatus == "已同步" ? .green : .orange)
+                        .font(.caption).foregroundStyle(workspace.gitStatus == "已同步" ? .teal : .orange)
                     Button("重新绑定仓库", systemImage: "folder") { showBinder = true }
                         .font(.caption)
                 }.padding(12)
@@ -64,44 +66,91 @@ struct ContentView: View {
     }
 }
 
-struct PageHeader: View {
-    let title: String; let subtitle: String
-    var body: some View { VStack(alignment: .leading, spacing: 4) { Text(title).font(.system(size: 28, weight: .semibold, design: .rounded)); Text(subtitle).font(.subheadline).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 8) }
-}
-
-struct Panel<Content: View>: View {
-    @ViewBuilder let content: Content
-    var body: some View { content.padding(16).background(.background, in: RoundedRectangle(cornerRadius: 8)).overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary)) }
-}
-
 struct DashboardView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var chat: StudyChatStore
     @State private var firstTask = "打开周计划，确认今天的第一项交付物"
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                PageHeader(title: "今天，先交付一件事", subtitle: Date.now.formatted(date: .complete, time: .omitted) + " · 你的学习工作台")
-                HStack(alignment: .top, spacing: 16) {
-                    Panel { VStack(alignment: .leading, spacing: 12) { Label("今日第一任务", systemImage: "flag.fill").foregroundStyle(.blue); Text(firstTask).font(.title3.weight(.medium)); Button("打开学业对话", systemImage: "bubble.left.and.bubble.right") { chat.prepare(prompt: ReminderRoute.daily.prompt); NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) }.buttonStyle(.borderedProminent) } }.frame(maxWidth: .infinity, alignment: .leading)
-                    Panel { VStack(alignment: .leading, spacing: 10) { Label("本周状态", systemImage: "chart.bar.fill").foregroundStyle(.teal); Text("交付物完成度").font(.caption).foregroundStyle(.secondary); ProgressView(value: 0.25); Text("1 / 4 项 · 先保持可证据") .font(.headline); Text("周计划由 Markdown 直接驱动").font(.caption).foregroundStyle(.secondary) } }.frame(width: 260)
+        PageScaffold {
+            VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
+                PageTitleBar(title: "今天，先交付一件事", subtitle: Date.now.formatted(date: .complete, time: .omitted) + " · 学习工作台") { EmptyView() }
+                ResponsiveColumns {
+                    StudySurface {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Label("今日第一任务", systemImage: "flag.fill").font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
+                            Text(firstTask).font(.system(size: 17, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                            Button("打开学业对话", systemImage: "bubble.left.and.bubble.right") { chat.prepare(prompt: ReminderRoute.daily.prompt); NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) }.buttonStyle(.borderedProminent)
+                        }
+                    }
+                } second: {
+                    StudySurface {
+                        VStack(alignment: .leading, spacing: 9) {
+                            Label("本周状态", systemImage: "chart.bar.fill").font(.subheadline.weight(.semibold)).foregroundStyle(.teal)
+                            Text("交付物完成度").font(.caption).foregroundStyle(.secondary)
+                            ProgressView(value: 0.25).tint(.teal)
+                            Text("1 / 4 项 · 先保持可证据").font(.system(size: 15, weight: .semibold))
+                            Text("周计划由 Markdown 直接驱动").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                 }
-                Text("本周航线").font(.headline)
+                Text("本周航线").font(.system(size: 15, weight: .semibold))
                 WeekRail()
-                HStack(alignment: .top, spacing: 16) {
-                    Panel { VStack(alignment: .leading, spacing: 10) { Label("最近节点", systemImage: "calendar.badge.clock").foregroundStyle(.blue); Text("校历与重要日期").font(.headline); Text("日期与推免规则仍以仓库官方文件为准").font(.caption).foregroundStyle(.secondary); Button("查看资料库", systemImage: "books.vertical") {}.buttonStyle(.link) } }.frame(maxWidth: .infinity, alignment: .leading)
-                    Panel { VStack(alignment: .leading, spacing: 10) { Label("待核实", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange); Text("推免资格、名额、排名口径").font(.headline); Text("拿到学院正式文件后再更新结论").font(.caption).foregroundStyle(.secondary) } }.frame(maxWidth: .infinity, alignment: .leading)
+                ResponsiveColumns {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("最近节点", systemImage: "calendar.badge.clock").font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
+                        Text("校历与重要日期").font(.system(size: 15, weight: .medium))
+                        Text("日期与推免规则仍以仓库官方文件为准").font(.caption).foregroundStyle(.secondary)
+                        Button("查看资料库", systemImage: "books.vertical") {}.buttonStyle(.link)
+                    }
+                } second: {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("待核实", systemImage: "exclamationmark.triangle.fill").font(.subheadline.weight(.semibold)).foregroundStyle(.orange)
+                        Text("推免资格、名额、排名口径").font(.system(size: 15, weight: .medium))
+                        Text("拿到学院正式文件后再更新结论").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
-                Text("快速开始").font(.headline)
-                HStack(spacing: 10) { ChatQuickAction(title: "今天复盘", icon: "checkmark.circle", prompt: ReminderRoute.daily.prompt); ChatQuickAction(title: "排下周", icon: "calendar.badge.plus", prompt: ReminderRoute.weekly.prompt); ChatQuickAction(title: "问学业问题", icon: "questionmark.bubble", prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") }
-            }.padding(24)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("快速开始").font(.system(size: 15, weight: .semibold))
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) { ChatQuickAction(title: "今天复盘", icon: "checkmark.circle", prompt: ReminderRoute.daily.prompt); ChatQuickAction(title: "排下周", icon: "calendar.badge.plus", prompt: ReminderRoute.weekly.prompt); ChatQuickAction(title: "问学业问题", icon: "questionmark.bubble", prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") }
+                        VStack(spacing: 8) { ChatQuickAction(title: "今天复盘", icon: "checkmark.circle", prompt: ReminderRoute.daily.prompt); ChatQuickAction(title: "排下周", icon: "calendar.badge.plus", prompt: ReminderRoute.weekly.prompt); ChatQuickAction(title: "问学业问题", icon: "questionmark.bubble", prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") }
+                    }
+                }
+            }
         }
     }
 }
 
 struct WeekRail: View {
     let days = ["一", "二", "三", "四", "五", "六", "日"]
-    var body: some View { HStack(spacing: 0) { ForEach(Array(days.enumerated()), id: \.offset) { index, day in VStack(spacing: 8) { Circle().fill(index == 0 ? Color.teal : Color.blue.opacity(index < 3 ? 0.65 : 0.16)).frame(width: 18, height: 18).overlay { if index == 0 { Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.white) } }; Text("周\(day)").font(.caption.weight(index == 0 ? .bold : .regular)); Text(index == 0 ? "已完成" : index == 6 ? "复盘" : "待安排").font(.caption2).foregroundStyle(.secondary) }.frame(maxWidth: .infinity); if index < 6 { Rectangle().fill(.quaternary).frame(height: 1).padding(.horizontal, 4) } } }.padding(18).background(.background, in: RoundedRectangle(cornerRadius: 8)).overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary)) }
+    var body: some View {
+        StudySurface {
+            HStack(spacing: 0) {
+                ForEach(Array(days.enumerated()), id: \.offset) { index, day in
+                    VStack(spacing: 6) {
+                        Circle()
+                            .fill(index == 0 ? Color.teal : Color.accentColor.opacity(index < 3 ? 0.65 : 0.16))
+                            .frame(width: 15, height: 15)
+                            .overlay {
+                                if index == 0 {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 8, weight: .bold))
+                                        .foregroundStyle(.white)
+                                }
+                            }
+                        Text("周\(day)").font(.caption.weight(index == 0 ? .bold : .regular))
+                        Text(index == 0 ? "已完成" : index == 6 ? "复盘" : "待安排")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    if index < 6 {
+                        Rectangle().fill(.quaternary).frame(height: 1).padding(.horizontal, 4)
+                    }
+                }
+            }
+        }
+    }
 }
 
 struct ChatQuickAction: View {
@@ -115,7 +164,20 @@ struct WeeklyPlanView: View {
     @EnvironmentObject private var chat: StudyChatStore
     @State private var plan = WeeklyPlan(); @State private var original = ""; @State private var loadedHash = ""; @State private var notice: String?
     private let file = "工作台/下周计划.md"
-    var body: some View { VStack(alignment: .leading, spacing: 14) { HStack { PageHeader(title: "周计划", subtitle: "用时间块保护课程主线，也给临时任务留出缓冲"); Spacer(); Button("保存", systemImage: "square.and.arrow.down") { save() }.buttonStyle(.borderedProminent); Button("学业对话", systemImage: "bubble.left.and.bubble.right") { chat.prepare(prompt: ReminderRoute.weekly.prompt); NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) } }.padding(.horizontal, 24).padding(.top, 20); Panel { Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) { GridRow { Text("时段").font(.caption.bold()); ForEach(WeeklyPlan.days, id: \.self) { Text($0).font(.caption.bold()).frame(maxWidth: .infinity) } }; ForEach(0..<3, id: \.self) { row in GridRow { Text(WeeklyPlan.periods[row]).font(.caption).foregroundStyle(.secondary); ForEach(0..<7, id: \.self) { col in TextField("", text: Binding(get: { plan.cells[row][col] }, set: { plan.cells[row][col] = $0 })).textFieldStyle(.roundedBorder).frame(minWidth: 85) } } } } }.padding(.horizontal, 24); HStack(alignment: .top, spacing: 16) { Panel { VStack(alignment: .leading) { Text("交付物清单").font(.headline); ForEach(plan.deliveries.indices, id: \.self) { index in HStack { Image(systemName: "square").foregroundStyle(.secondary); TextField("交付物", text: Binding(get: { plan.deliveries[index] }, set: { plan.deliveries[index] = $0 })) } }; Button("添加交付物", systemImage: "plus") { plan.deliveries.append("") }.buttonStyle(.link) } }.frame(maxWidth: .infinity, alignment: .leading); Panel { VStack(alignment: .leading) { Text("缓冲与降级").font(.headline); TextEditor(text: $plan.buffer).frame(height: 90); Text("保持至少一天弹性，撞车时先保课程与唯一关键交付物。").font(.caption).foregroundStyle(.secondary) } }.frame(maxWidth: .infinity, alignment: .leading) }.padding(.horizontal, 24); Spacer() }.onAppear(perform: load).alert("保存结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? "") } }
+    var body: some View { PageScaffold { VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
+        PageTitleBar(title: "周计划", subtitle: "用时间块保护课程主线，也给临时任务留出缓冲") {
+            HStack(spacing: 8) {
+                Button("保存", systemImage: "square.and.arrow.down") { save() }.buttonStyle(.borderedProminent)
+                StudyIconButton(systemImage: "bubble.left.and.bubble.right", label: "在学业对话中排下周") { chat.prepare(prompt: ReminderRoute.weekly.prompt); NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) }
+            }
+        }
+        StudySurface { ScrollView(.horizontal, showsIndicators: true) { Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) { GridRow { Text("时段").font(.caption.bold()).frame(width: 48, alignment: .leading); ForEach(WeeklyPlan.days, id: \.self) { Text($0).font(.caption.bold()).frame(width: 104) } }; ForEach(0..<3, id: \.self) { row in GridRow { Text(WeeklyPlan.periods[row]).font(.caption).foregroundStyle(.secondary).frame(width: 48, alignment: .leading); ForEach(0..<7, id: \.self) { col in TextField("", text: Binding(get: { plan.cells[row][col] }, set: { plan.cells[row][col] = $0 })).textFieldStyle(.roundedBorder).frame(width: 104) } } } } .padding(.bottom, 4) } }
+        ResponsiveColumns {
+            StudySurface { VStack(alignment: .leading, spacing: 10) { Text("交付物清单").font(.system(size: 15, weight: .semibold)); ForEach(plan.deliveries.indices, id: \.self) { index in HStack(spacing: 8) { Image(systemName: "square").foregroundStyle(.secondary); TextField("交付物", text: Binding(get: { plan.deliveries[index] }, set: { plan.deliveries[index] = $0 })) } }; Button("添加交付物", systemImage: "plus") { plan.deliveries.append("") }.buttonStyle(.link) } }
+        } second: {
+            StudySurface { VStack(alignment: .leading, spacing: 10) { Text("缓冲与降级").font(.system(size: 15, weight: .semibold)); TextEditor(text: $plan.buffer).font(.system(size: 14)).frame(minHeight: 110); Text("保持至少一天弹性，撞车时先保课程与唯一关键交付物。").font(.caption).foregroundStyle(.secondary) } }
+        }
+    } }.onAppear(perform: load).alert("保存结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? "") } }
     private func load() { let repo = MarkdownRepository(root: workspace.rootURL); original = (try? repo.read(file)) ?? ""; loadedHash = repo.hash(original); plan = MarkdownParser.weekly(original) }
     private func save() { let repo = MarkdownRepository(root: workspace.rootURL); do { try repo.save(MarkdownParser.replaceWeekly(original, with: plan), relative: file, loadedHash: loadedHash); notice = "已保存到工作台/下周计划.md"; load(); workspace.refreshGitStatus() } catch { notice = error.localizedDescription } }
 }
@@ -125,7 +187,11 @@ struct DailyCheckinView: View {
     @EnvironmentObject private var chat: StudyChatStore
     @State private var entry = DailyEntry(id: "", date: "", deliverables: "", studyTime: "", sleep: "", exercise: "", firstTask: ""); @State private var original = ""; @State private var hash = ""; @State private var notice: String?
     private let formatter = DateFormatter(); private var monthFile: String { "工作台/每日记录/" + String(entry.date.prefix(7)) + ".md" }
-    var body: some View { ScrollView { VStack(alignment: .leading, spacing: 16) { PageHeader(title: "每日复盘", subtitle: "三分钟行为账：只记录已经发生的事实"); Panel { Form { DatePicker("日期", selection: Binding(get: { dateValue }, set: { entry.date = $0.formatted(.iso8601.year().month().day()) }), displayedComponents: .date); TextField("今日完成的具体交付物", text: $entry.deliverables); TextField("净学习时长", text: $entry.studyTime); TextField("入睡/起床", text: $entry.sleep); TextField("运动", text: $entry.exercise); TextField("明日第一任务", text: $entry.firstTask) }.formStyle(.grouped) }; HStack { Button("保存行为账", systemImage: "checkmark.circle") { save() }.buttonStyle(.borderedProminent); Button("学业对话", systemImage: "bubble.left.and.bubble.right") { chat.prepare(prompt: ReminderRoute.daily.prompt); NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) } }; Spacer() }.padding(24) }.onAppear { entry.date = Date.now.formatted(.iso8601.year().month().day()); load() }.alert("保存结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? "") } }
+    var body: some View { PageScaffold { VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
+        PageTitleBar(title: "每日复盘", subtitle: "三分钟行为账：只记录已经发生的事实") { StudyIconButton(systemImage: "bubble.left.and.bubble.right", label: "在学业对话中复盘") { chat.prepare(prompt: ReminderRoute.daily.prompt); NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) } }
+        StudySurface { Form { DatePicker("日期", selection: Binding(get: { dateValue }, set: { entry.date = $0.formatted(.iso8601.year().month().day()) }), displayedComponents: .date); TextField("今日完成的具体交付物", text: $entry.deliverables); TextField("净学习时长", text: $entry.studyTime); TextField("入睡/起床", text: $entry.sleep); TextField("运动", text: $entry.exercise); TextField("明日第一任务", text: $entry.firstTask) }.formStyle(.grouped) }
+        Button("保存行为账", systemImage: "checkmark.circle") { save() }.buttonStyle(.borderedProminent)
+    } }.onAppear { entry.date = Date.now.formatted(.iso8601.year().month().day()); load() }.alert("保存结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? "") } }
     private var dateValue: Date { ISO8601DateFormatter().date(from: entry.date) ?? .now }
     private func load() { let repo = MarkdownRepository(root: workspace.rootURL); original = (try? repo.read(monthFile)) ?? ""; hash = repo.hash(original); entry = MarkdownParser.daily(original, date: entry.date) }
     private func save() { let repo = MarkdownRepository(root: workspace.rootURL); do { try repo.save(MarkdownParser.replaceDaily(original, entry: entry), relative: monthFile, loadedHash: hash); notice = "已保存今天的行为账"; load(); workspace.refreshGitStatus() } catch { notice = error.localizedDescription } }
@@ -192,11 +258,11 @@ struct MarkdownDocumentView: View {
                 Spacer()
                 Picker("显示模式", selection: $document.mode) { ForEach(MarkdownMode.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented).frame(width: 132)
                 Button("保存", systemImage: "square.and.arrow.down") { save() }.keyboardShortcut("s", modifiers: .command).disabled(!document.isDirty).buttonStyle(.borderedProminent)
-            }.padding(.horizontal, 20).padding(.vertical, 14).background(.bar)
+            }.padding(.horizontal, 20).padding(.vertical, 10).background(.bar)
             Divider()
             Group {
                 if document.mode == .preview { MarkdownPreview(text: document.text, baseURL: workspace.rootURL) }
-                else { TextEditor(text: $document.text).font(.system(.body, design: .monospaced)).padding(16).overlay(alignment: .bottomLeading) { Text("Markdown 源码 · 预览会显示当前草稿").font(.caption).foregroundStyle(.secondary).padding(20) } }
+                else { TextEditor(text: $document.text).font(.system(size: 14, design: .monospaced)).padding(16).overlay(alignment: .bottomLeading) { Text("Markdown 源码 · 预览会显示当前草稿").font(.caption2).foregroundStyle(.tertiary).padding(20) } }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .alert("Markdown", isPresented: Binding(get: { notice != nil || document.errorMessage != nil }, set: { if !$0 { notice = nil; document.errorMessage = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? document.errorMessage ?? "") }
@@ -210,11 +276,11 @@ struct MarkdownPreview: View {
         ScrollView {
             Markdown(text, baseURL: baseURL)
                 .markdownTheme(.gitHub)
-                .markdownTextStyle { FontSize(16); ForegroundColor(.primary) }
+                .markdownTextStyle { FontSize(15); ForegroundColor(.primary) }
                 .markdownBlockStyle(\.blockquote) { configuration in configuration.label.padding(.leading, 14).padding(.vertical, 4).overlay(alignment: .leading) { Rectangle().fill(Color.teal).frame(width: 3) } }
                 .textSelection(.enabled)
-                .frame(maxWidth: 900, alignment: .leading)
-                .padding(28)
+                .frame(maxWidth: StudyRocketTheme.readingMaxWidth, alignment: .leading)
+                .padding(24)
         }.background(Color(nsColor: .windowBackgroundColor))
     }
 }
@@ -223,7 +289,7 @@ struct MarkdownPreview: View {
 struct SettingsView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var reminders: ReminderScheduler
-    var body: some View { Form { Section("当前仓库") { Text(workspace.rootURL.path).textSelection(.enabled); Text("需要迁移仓库时，请使用侧边栏底部的“重新绑定仓库”。").font(.caption).foregroundStyle(.secondary) }; Section("学业对话") { LabeledContent("Codex 连接", value: "复用本机登录，不保存令牌"); Text("应用会单独续接 StudyRocket 学业助理任务，开发任务不会被读取。").font(.caption).foregroundStyle(.secondary) }; Section("原生提醒") { LabeledContent("权限", value: reminders.authorization); ForEach(ReminderRoute.allCases) { route in Toggle(route.title, isOn: Binding(get: { reminders.enabled[route] ?? true }, set: { reminders.toggle(route, isOn: $0) })); HStack { Text("下一次").font(.caption).foregroundStyle(.secondary); Spacer(); Text(nextDateText(for: route)).font(.caption).foregroundStyle(.secondary); Button("测试") { reminders.sendTest(route) }.buttonStyle(.link) } }; Button("请求通知权限并登记") { reminders.requestPermissionAndSchedule() }.buttonStyle(.borderedProminent) }.onAppear { reminders.requestPermissionAndSchedule() }; Section("运行方式") { LabeledContent("后台服务", value: "无"); LabeledContent("数据存储", value: "Markdown 文件"); LabeledContent("旧自动任务", value: "验收前保留") }; Section("隐私") { Text("应用不保存模型凭证，不创建网络监听端口；PDF 继续使用私有云盘单独备份。学业对话继承当前 Codex 端点配置。").font(.callout).foregroundStyle(.secondary) } }.formStyle(.grouped).padding(24) }
+    var body: some View { ScrollView { Form { Section("当前仓库") { Text(workspace.rootURL.path).textSelection(.enabled); Text("需要迁移仓库时，请使用侧边栏底部的“重新绑定仓库”。").font(.caption).foregroundStyle(.secondary) }; Section("学业对话") { LabeledContent("Codex 连接", value: "复用本机登录，不保存令牌"); Text("应用会单独续接 StudyRocket 学业助理任务，开发任务不会被读取。").font(.caption).foregroundStyle(.secondary) }; Section("原生提醒") { LabeledContent("权限", value: reminders.authorization); ForEach(ReminderRoute.allCases) { route in Toggle(route.title, isOn: Binding(get: { reminders.enabled[route] ?? true }, set: { reminders.toggle(route, isOn: $0) })); HStack { Text("下一次").font(.caption).foregroundStyle(.secondary); Spacer(); Text(nextDateText(for: route)).font(.caption.monospacedDigit()).foregroundStyle(.secondary); Button("测试") { reminders.sendTest(route) }.buttonStyle(.link) } }; Button("请求通知权限并登记") { reminders.requestPermissionAndSchedule() }.buttonStyle(.borderedProminent) }.onAppear { reminders.requestPermissionAndSchedule() }; Section("运行方式") { LabeledContent("后台服务", value: "无"); LabeledContent("数据存储", value: "Markdown 文件"); LabeledContent("旧自动任务", value: "验收前保留") }; Section("隐私") { Text("应用不保存模型凭证，不创建网络监听端口；PDF 继续使用私有云盘单独备份。学业对话继承当前 Codex 端点配置。").font(.callout).foregroundStyle(.secondary) } }.formStyle(.grouped).frame(maxWidth: 760).frame(maxWidth: .infinity).padding(24) } }
     private func nextDateText(for route: ReminderRoute) -> String { guard let date = reminders.nextDates[route] ?? nil else { return "待登记" }; return date.formatted(date: .abbreviated, time: .shortened) }
 }
 
@@ -235,30 +301,36 @@ struct StudyChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                StudyRocketAvatar(size: 30)
+                StudyRocketAvatar(size: 28)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("StudyRocket 学业助理").font(.headline)
                     HStack(spacing: 5) { Circle().fill(statusColor).frame(width: 7, height: 7); Text(chat.status).font(.caption).foregroundStyle(.secondary) }
                 }
                 Spacer()
-                Button { chat.openInCodex() } label: { Image(systemName: "arrow.up.right.square") }
-                    .help("在 Codex 中打开").accessibilityLabel("在 Codex 中打开").disabled(chat.threadID == nil)
-                Button { showHelp = true } label: { Image(systemName: "questionmark.circle") }
-                    .help("帮助").accessibilityLabel("帮助")
-            }.padding(.horizontal, 20).padding(.vertical, 12).background(.bar)
+                StudyIconButton(systemImage: "arrow.up.right.square", label: "在 Codex 中打开", action: chat.openInCodex, disabled: chat.threadID == nil)
+                StudyIconButton(systemImage: "questionmark.circle", label: "帮助") { showHelp = true }
+            }.padding(.horizontal, 20).padding(.vertical, 10).background(.bar)
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 24) {
-                        if chat.turns.isEmpty { ContentUnavailableView("开始你的学业对话", systemImage: "bubble.left.and.bubble.right", description: Text("可以问课程、保研、科研，也可以让助理生成计划修改草案。")) }
-                        ForEach(Array(chat.turns.enumerated()), id: \.element.id) { index, turn in
-                            if shouldShowDate(for: index) { ChatDateDivider(date: turn.date) }
-                            ChatTurnView(turn: turn).id(turn.id)
+                GeometryReader { geometry in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 20) {
+                            if chat.turns.isEmpty { ContentUnavailableView("开始你的学业对话", systemImage: "bubble.left.and.bubble.right", description: Text("可以问课程、保研、科研，也可以让助理生成计划修改草案。")) }
+                            ForEach(Array(chat.turns.enumerated()), id: \.element.id) { index, turn in
+                                if shouldShowDate(for: index) { ChatDateDivider(date: turn.date) }
+                                ChatTurnView(turn: turn)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .id(turn.id)
+                            }
                         }
-                    }.frame(maxWidth: 900, alignment: .leading).padding(.horizontal, 28).padding(.vertical, 24).frame(maxWidth: .infinity)
-                }.onChange(of: chat.scrollTargetID) { _, next in
-                    guard let next else { return }
-                    if reduceMotion { proxy.scrollTo(next, anchor: .bottom) }
-                    else { withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo(next, anchor: .bottom) } }
+                        .frame(width: min(StudyRocketTheme.chatMaxWidth, max(0, geometry.size.width - 48)), alignment: .leading)
+                        .padding(.vertical, 20)
+                        .frame(maxWidth: .infinity)
+                    }
+                    .onChange(of: chat.scrollTargetID) { _, next in
+                        guard let next else { return }
+                        if reduceMotion { proxy.scrollTo(next, anchor: .bottom) }
+                        else { withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo(next, anchor: .bottom) } }
+                    }
                 }
             }
             if let error = chat.errorMessage {
@@ -269,7 +341,7 @@ struct StudyChatView: View {
                     if chat.lastSubmitted != nil { Button("重试本条") { chat.retryLast() }.buttonStyle(.bordered) }
                     Button("重新连接") { Task { await chat.reconnect() } }.buttonStyle(.bordered)
                     if chat.canCreateNewTask { Button("创建新学业任务") { Task { await chat.createNewTask() } }.buttonStyle(.bordered) }
-                }.padding(.horizontal, 20).padding(.vertical, 10).background(Color.orange.opacity(0.10))
+                }.frame(maxWidth: StudyRocketTheme.chatMaxWidth).frame(maxWidth: .infinity).padding(.horizontal, StudyRocketTheme.pageInset).padding(.vertical, 9).background(Color.orange.opacity(0.10))
             }
             ChatComposer()
         }.task { await chat.connect(to: workspace.rootURL) }.onChange(of: workspace.rootURL) { _, root in Task { await chat.connect(to: root) } }.onDisappear { chat.disconnect() }.sheet(isPresented: $showHelp) { ChatHelpView() }
@@ -307,7 +379,7 @@ struct ChatTurnView: View {
             let turnProposals = chat.proposals.filter { $0.turnID == turn.id }
             if !turnProposals.isEmpty { InlineProposalPanel(turnID: turn.id, proposals: turnProposals) }
             if let error = turn.errorMessage { Label(error, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange).padding(.leading, 42) }
-        }.id(turn.id)
+        }.frame(maxWidth: .infinity, alignment: .leading).id(turn.id)
     }
 }
 
@@ -315,19 +387,20 @@ struct UserMessageView: View {
     let message: ChatMessage
     @Binding var showTime: Bool
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            Spacer(minLength: 120)
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(message.text).textSelection(.enabled).padding(.horizontal, 14).padding(.vertical, 11)
-                    .background(Color.blue, in: RoundedRectangle(cornerRadius: 16, style: .continuous)).foregroundStyle(.white)
-                    .frame(maxWidth: 600, alignment: .leading)
-                    .contextMenu { Button("复制", systemImage: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.text, forType: .string) } }
-                HStack(spacing: 5) {
-                    if let state = message.turnState, state != .completed { Text(state == .interrupted ? "已中断" : state == .failed ? "未完成" : "进行中") }
-                    if showTime { Text(message.date.formatted(date: .omitted, time: .shortened)) }
-                }.font(.caption2).foregroundStyle(.secondary)
-            }.onHover { showTime = $0 }
+        VStack(alignment: .trailing, spacing: 4) {
+            Text(message.text).textSelection(.enabled).padding(.horizontal, 14).padding(.vertical, 11)
+                .font(.system(size: StudyRocketTheme.bodySize))
+                .multilineTextAlignment(.leading)
+                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous)).foregroundStyle(.white)
+                .frame(maxWidth: 600, alignment: .leading)
+                .contextMenu { Button("复制", systemImage: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.text, forType: .string) } }
+            HStack(spacing: 5) {
+                if let state = message.turnState, state != .completed { Text(state == .interrupted ? "已中断" : state == .failed ? "未完成" : "进行中") }
+                if showTime { Text(message.date.formatted(date: .omitted, time: .shortened)) }
+            }.font(.caption2).foregroundStyle(.secondary)
         }
+        .onHover { showTime = $0 }
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 }
 
@@ -336,9 +409,9 @@ struct AssistantMessageView: View {
     @State private var hovering = false
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            StudyRocketAvatar(size: 28)
+            StudyRocketAvatar(size: 26)
             VStack(alignment: .leading, spacing: 6) {
-                Markdown(message.text).markdownTheme(.gitHub).markdownTextStyle { FontSize(16); ForegroundColor(.primary) }.textSelection(.enabled).frame(maxWidth: 820, alignment: .leading)
+                Markdown(message.text).markdownTheme(.gitHub).markdownTextStyle { FontSize(15); ForegroundColor(.primary) }.textSelection(.enabled).frame(maxWidth: StudyRocketTheme.readingMaxWidth, alignment: .leading)
                 if hovering { HStack(spacing: 8) { Text(message.date.formatted(date: .omitted, time: .shortened)); Button("复制", systemImage: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.text, forType: .string) }.labelStyle(.iconOnly).buttonStyle(.plain).help("复制回答") }.font(.caption2).foregroundStyle(.secondary) }
             }.onHover { hovering = $0 }
             Spacer(minLength: 0)
@@ -373,7 +446,7 @@ struct ProcessDisclosureView: View {
                     .contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel(expanded ? "收起过程，\(messages.count) 条" : "查看过程，\(messages.count) 条").accessibilityHint("双击展开或收起该回合的过程消息")
             if expanded { VStack(alignment: .leading, spacing: 8) { ForEach(messages) { Text($0.text).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).padding(.leading, 14) } }.padding(.bottom, 4) }
-        }.padding(.leading, 38)
+        }.padding(.leading, 36).frame(maxWidth: StudyRocketTheme.readingMaxWidth + 36, alignment: .leading)
     }
 }
 
@@ -416,7 +489,7 @@ struct InlineProposalPanel: View {
             }
             HStack { Spacer(); Button("应用已选修改") { chat.applySelectedChanges(workspace: workspace, for: turnID) }.buttonStyle(.borderedProminent) }
             }
-        }.padding(.leading, 38)
+        }.padding(.leading, 36).frame(maxWidth: StudyRocketTheme.readingMaxWidth + 36, alignment: .leading)
     }
 }
 
@@ -424,20 +497,26 @@ struct ChatComposer: View {
     @EnvironmentObject private var chat: StudyChatStore
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                ForEach(ReminderRoute.allCases) { route in Button(route.title) { chat.prepare(prompt: route.prompt) }.buttonStyle(.borderless).font(.caption) }
-                Button("学业答疑") { chat.prepare(prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") }.buttonStyle(.borderless).font(.caption)
-                Spacer()
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(ReminderRoute.allCases) { route in Button(route.title) { chat.prepare(prompt: route.prompt) }.buttonStyle(.borderless).font(.caption) }
+                    Button("学业答疑") { chat.prepare(prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") }.buttonStyle(.borderless).font(.caption)
+                    Spacer()
+                }
+                Menu("快捷报告") {
+                    ForEach(ReminderRoute.allCases) { route in Button(route.title) { chat.prepare(prompt: route.prompt) } }
+                    Button("学业答疑") { chat.prepare(prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") }
+                }.font(.caption)
             }.foregroundStyle(.secondary)
             HStack(alignment: .bottom, spacing: 10) {
                 TextField("输入问题或今天完成的事实…", text: $chat.draft, axis: .vertical).lineLimit(2...8).font(.body).textFieldStyle(.plain).padding(11)
                     .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.quaternary))
                     .onSubmit { chat.send() }
-                if chat.isBusy { Button { chat.stop() } label: { Image(systemName: "stop.fill") }.help("停止生成").buttonStyle(.bordered).controlSize(.large) }
-                else { Button { chat.send() } label: { Image(systemName: "arrow.up") }.help("发送（Return）").buttonStyle(.borderedProminent).controlSize(.large).disabled(chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+                if chat.isBusy { StudyIconButton(systemImage: "stop.fill", label: "停止生成", action: chat.stop) }
+                else { StudyIconButton(systemImage: "arrow.up", label: "发送（Return）", action: chat.send, disabled: chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
             }
             Text("使用当前 Codex 登录和只读学业任务；修改会先生成草案。Shift+Return 换行。") .font(.caption2).foregroundStyle(.secondary)
-        }.padding(.horizontal, 20).padding(.vertical, 12).background(.bar)
+        }.frame(maxWidth: StudyRocketTheme.chatMaxWidth).frame(maxWidth: .infinity).padding(.horizontal, StudyRocketTheme.pageInset).padding(.vertical, 10).background(.bar)
     }
 }
 
