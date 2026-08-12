@@ -1,5 +1,6 @@
 import SwiftUI
 import MarkdownUI
+import AppKit
 
 struct ContentView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
@@ -229,96 +230,170 @@ struct SettingsView: View {
 struct StudyChatView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var chat: StudyChatStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showHelp = false
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) { Text("StudyRocket 学业助理").font(.headline); Text(chat.status).font(.caption).foregroundStyle(chat.status == "已连接" ? .green : .secondary) }
+            HStack(spacing: 10) {
+                StudyRocketAvatar(size: 30)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("StudyRocket 学业助理").font(.headline)
+                    HStack(spacing: 5) { Circle().fill(statusColor).frame(width: 7, height: 7); Text(chat.status).font(.caption).foregroundStyle(.secondary) }
+                }
                 Spacer()
-                Button("在 Codex 中打开", systemImage: "arrow.up.right.square") { chat.openInCodex() }.disabled(chat.threadID == nil)
-                Button("帮助", systemImage: "questionmark.circle") { showHelp = true }
-            }.padding(16).background(.bar)
-            Divider()
+                Button { chat.openInCodex() } label: { Image(systemName: "arrow.up.right.square") }
+                    .help("在 Codex 中打开").accessibilityLabel("在 Codex 中打开").disabled(chat.threadID == nil)
+                Button { showHelp = true } label: { Image(systemName: "questionmark.circle") }
+                    .help("帮助").accessibilityLabel("帮助")
+            }.padding(.horizontal, 20).padding(.vertical, 12).background(.bar)
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
-                        if chat.messages.isEmpty { ContentUnavailableView("开始你的学业对话", systemImage: "bubble.left.and.bubble.right", description: Text("可以问课程、保研、科研，也可以让助理生成计划修改草案。")) }
-                        ForEach(chat.messages) { message in ChatBubble(message: message).id(message.id) }
-                        if !chat.processMessages.isEmpty {
-                            DisclosureGroup("查看过程（\(chat.processMessages.count)）") {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    ForEach(chat.processMessages) { message in ChatBubble(message: message).id(message.id) }
-                                }.padding(.top, 4)
-                            }.font(.caption).foregroundStyle(.secondary).id("process")
+                    LazyVStack(alignment: .leading, spacing: 24) {
+                        if chat.turns.isEmpty { ContentUnavailableView("开始你的学业对话", systemImage: "bubble.left.and.bubble.right", description: Text("可以问课程、保研、科研，也可以让助理生成计划修改草案。")) }
+                        ForEach(Array(chat.turns.enumerated()), id: \.element.id) { index, turn in
+                            if shouldShowDate(for: index) { ChatDateDivider(date: turn.date) }
+                            ChatTurnView(turn: turn).id(turn.id)
                         }
-                        if !chat.streamingReply.isEmpty { ChatBubble(message: ChatMessage(id: "streaming", role: .assistant, text: chat.streamingReply, date: .now)).id("streaming") }
-                    }.padding(20)
-                }.onChange(of: chat.messages.count) { _, _ in if let last = chat.messages.last { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last.id, anchor: .bottom) } } }
-                 .onChange(of: chat.streamingReply) { _, _ in proxy.scrollTo("streaming", anchor: .bottom) }
+                    }.frame(maxWidth: 900, alignment: .leading).padding(.horizontal, 28).padding(.vertical, 24).frame(maxWidth: .infinity)
+                }.onChange(of: chat.scrollTargetID) { _, next in
+                    guard let next else { return }
+                    if reduceMotion { proxy.scrollTo(next, anchor: .bottom) }
+                    else { withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo(next, anchor: .bottom) } }
+                }
             }
-            if !chat.proposals.isEmpty { ProposalPanel() }
-            Divider()
             if let error = chat.errorMessage {
-                HStack(alignment: .top, spacing: 8) {
+                HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                     Text(error).font(.caption).foregroundStyle(.primary).textSelection(.enabled)
                     Spacer(minLength: 8)
                     if chat.lastSubmitted != nil { Button("重试本条") { chat.retryLast() }.buttonStyle(.bordered) }
                     Button("重新连接") { Task { await chat.reconnect() } }.buttonStyle(.bordered)
                     if chat.canCreateNewTask { Button("创建新学业任务") { Task { await chat.createNewTask() } }.buttonStyle(.bordered) }
-                }.padding(.horizontal, 14).padding(.vertical, 8).background(Color.orange.opacity(0.10))
+                }.padding(.horizontal, 20).padding(.vertical, 10).background(Color.orange.opacity(0.10))
             }
-            HStack(spacing: 8) {
-                Menu("快捷报告", systemImage: "wand.and.stars") { ForEach(ReminderRoute.allCases) { route in Button(route.title) { chat.prepare(prompt: route.prompt) } }; Button("学业答疑") { chat.prepare(prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") } }
-                TextField("输入问题或今天完成的事实…", text: $chat.draft, axis: .vertical).textFieldStyle(.roundedBorder).lineLimit(1...5).onSubmit { chat.send() }
-                if chat.isBusy { Button("停止", systemImage: "stop.circle") { chat.stop() }.buttonStyle(.bordered) } else { Button("发送", systemImage: "paperplane.fill") { chat.send() }.buttonStyle(.borderedProminent).disabled(chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
-            }.padding(14)
+            ChatComposer()
         }.task { await chat.connect(to: workspace.rootURL) }.onChange(of: workspace.rootURL) { _, root in Task { await chat.connect(to: root) } }.onDisappear { chat.disconnect() }.sheet(isPresented: $showHelp) { ChatHelpView() }
     }
+    private var statusColor: Color { switch chat.connectionState { case .connected: .green; case .thinking, .reconnecting, .connecting: .orange; case .failed: .red; default: .secondary } }
+    private func shouldShowDate(for index: Int) -> Bool { index == 0 || !Calendar.current.isDate(chat.turns[index - 1].date, inSameDayAs: chat.turns[index].date) }
 }
 
-struct ChatBubble: View {
-    let message: ChatMessage
+struct StudyRocketAvatar: View {
+    let size: CGFloat
     var body: some View {
-        let isUser = message.role == .user
-        return HStack(alignment: .top, spacing: 10) {
-            if !isUser { Image(systemName: message.phase == .commentary ? "ellipsis.bubble" : "graduationcap.circle.fill").foregroundStyle(message.phase == .commentary ? Color.secondary : Color.teal).accessibilityLabel("学业助理") }
-            Group {
-                if message.role == .assistant { Markdown(message.text).markdownTheme(.gitHub).textSelection(.enabled) }
-                else { Text(message.text).textSelection(.enabled) }
-            }
-            .padding(12)
-            .background(isUser ? Color.blue.opacity(0.18) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(alignment: .bottomLeading) {
-                if let state = message.turnState, state != .completed, message.role == .user {
-                    Text(state == .interrupted ? "已中断" : state == .failed ? "未完成" : "进行中")
-                        .font(.caption2).foregroundStyle(.secondary).padding(.top, 3).offset(y: 18)
-                }
-            }
-            .frame(maxWidth: 780, alignment: isUser ? .trailing : .leading)
-            if isUser {
-                Image(systemName: "person.circle.fill").foregroundStyle(.blue).accessibilityLabel("我")
-                Spacer(minLength: 20)
-            } else { Spacer(minLength: 20) }
-        }
-        .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+        Image(systemName: "point.3.connected.trianglepath.dotted")
+            .font(.system(size: size * 0.43, weight: .semibold)).foregroundStyle(.white)
+            .frame(width: size, height: size).background(Color.teal, in: RoundedRectangle(cornerRadius: size * 0.26, style: .continuous))
     }
 }
 
-struct ProposalPanel: View {
+struct ChatDateDivider: View {
+    let date: Date
+    var body: some View { Text(date.formatted(.dateTime.year().month().day().weekday())).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 2) }
+}
+
+struct ChatTurnView: View {
+    @EnvironmentObject private var chat: StudyChatStore
+    @EnvironmentObject private var workspace: WorkspaceStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let turn: ChatTurnPresentation
+    @State private var showTime = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let user = turn.userMessage { UserMessageView(message: user, showTime: $showTime) }
+            ForEach(turn.finalMessages) { message in AssistantMessageView(message: message) }
+            if turn.status == .inProgress, turn.finalMessages.isEmpty { ThinkingRow(status: chat.status) }
+            if !turn.processMessages.isEmpty { ProcessDisclosureView(turnID: turn.id, messages: turn.processMessages) }
+            let turnProposals = chat.proposals.filter { $0.turnID == turn.id }
+            if !turnProposals.isEmpty { InlineProposalPanel(turnID: turn.id, proposals: turnProposals) }
+            if let error = turn.errorMessage { Label(error, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange).padding(.leading, 42) }
+        }.id(turn.id)
+    }
+}
+
+struct UserMessageView: View {
+    let message: ChatMessage
+    @Binding var showTime: Bool
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            Spacer(minLength: 120)
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(message.text).textSelection(.enabled).padding(.horizontal, 14).padding(.vertical, 11)
+                    .background(Color.blue, in: RoundedRectangle(cornerRadius: 16, style: .continuous)).foregroundStyle(.white)
+                    .frame(maxWidth: 600, alignment: .leading)
+                    .contextMenu { Button("复制", systemImage: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.text, forType: .string) } }
+                HStack(spacing: 5) {
+                    if let state = message.turnState, state != .completed { Text(state == .interrupted ? "已中断" : state == .failed ? "未完成" : "进行中") }
+                    if showTime { Text(message.date.formatted(date: .omitted, time: .shortened)) }
+                }.font(.caption2).foregroundStyle(.secondary)
+            }.onHover { showTime = $0 }
+        }
+    }
+}
+
+struct AssistantMessageView: View {
+    let message: ChatMessage
+    @State private var hovering = false
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            StudyRocketAvatar(size: 28)
+            VStack(alignment: .leading, spacing: 6) {
+                Markdown(message.text).markdownTheme(.gitHub).markdownTextStyle { FontSize(16); ForegroundColor(.primary) }.textSelection(.enabled).frame(maxWidth: 820, alignment: .leading)
+                if hovering { HStack(spacing: 8) { Text(message.date.formatted(date: .omitted, time: .shortened)); Button("复制", systemImage: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.text, forType: .string) }.labelStyle(.iconOnly).buttonStyle(.plain).help("复制回答") }.font(.caption2).foregroundStyle(.secondary) }
+            }.onHover { hovering = $0 }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+struct ThinkingRow: View {
+    let status: String
+    var body: some View { HStack(spacing: 10) { StudyRocketAvatar(size: 28); ProgressView().controlSize(.small); Text(status == "重连中..." ? "连接波动，Codex 正在重试" : "正在读取资料").font(.caption).foregroundStyle(.secondary) }.accessibilityLabel(status) }
+}
+
+struct ProcessDisclosureView: View {
+    @EnvironmentObject private var chat: StudyChatStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let turnID: String
+    let messages: [ChatMessage]
+    var body: some View {
+        let expanded = chat.expandedProcessTurnIDs.contains(turnID)
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                if reduceMotion { chat.toggleProcess(for: turnID) }
+                else { withAnimation(.easeInOut(duration: 0.18)) { chat.toggleProcess(for: turnID) } }
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "chevron.right").rotationEffect(.degrees(expanded ? 90 : 0))
+                    Image(systemName: "waveform.path.ecg")
+                    Text(expanded ? "收起过程" : "查看过程（\(messages.count)）")
+                    Spacer()
+                }.font(.caption.weight(.medium)).foregroundStyle(.secondary).frame(minHeight: 44).padding(.horizontal, 12)
+                    .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel(expanded ? "收起过程，\(messages.count) 条" : "查看过程，\(messages.count) 条").accessibilityHint("双击展开或收起该回合的过程消息")
+            if expanded { VStack(alignment: .leading, spacing: 8) { ForEach(messages) { Text($0.text).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).padding(.leading, 14) } }.padding(.bottom, 4) }
+        }.padding(.leading, 38)
+    }
+}
+
+struct InlineProposalPanel: View {
     @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var chat: StudyChatStore
+    let turnID: String
+    let proposals: [MarkdownChangeProposal]
     var body: some View {
+        let expanded = chat.expandedProposalTurnIDs.contains(turnID)
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("待确认的 Markdown 修改", systemImage: "doc.badge.gearshape").font(.headline)
-                Spacer()
-                Button("应用已选修改") { chat.applySelectedChanges(workspace: workspace) }.buttonStyle(.borderedProminent)
-            }
-            ForEach($chat.proposals) { $proposal in
+            Button { chat.toggleProposal(for: turnID) } label: {
+                HStack { Image(systemName: expanded ? "chevron.down" : "chevron.right"); Label("待确认修改（\(proposals.count)）", systemImage: "doc.badge.gearshape"); Spacer(); Text(proposals.first?.reason ?? "").lineLimit(1).foregroundStyle(.secondary) }
+                    .font(.caption.weight(.medium)).frame(minHeight: 44).padding(.horizontal, 12).background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous)).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel(expanded ? "收起待确认修改" : "查看待确认修改")
+            if expanded {
+            ForEach(proposals) { proposal in
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .top) {
-                        Toggle("", isOn: $proposal.isSelected).labelsHidden()
+                        Toggle("", isOn: Binding(get: { proposal.isSelected }, set: { chat.setProposal(proposal.id, selected: $0) })).labelsHidden()
                         VStack(alignment: .leading, spacing: 3) {
                             Text(proposal.relativePath).font(.subheadline.weight(.semibold))
                             Text(proposal.reason).font(.caption).foregroundStyle(.secondary)
@@ -339,7 +414,30 @@ struct ProposalPanel: View {
                     }.font(.caption)
                 }.padding(.vertical, 4)
             }
-        }.padding(12).background(Color.orange.opacity(0.08))
+            HStack { Spacer(); Button("应用已选修改") { chat.applySelectedChanges(workspace: workspace, for: turnID) }.buttonStyle(.borderedProminent) }
+            }
+        }.padding(.leading, 38)
+    }
+}
+
+struct ChatComposer: View {
+    @EnvironmentObject private var chat: StudyChatStore
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                ForEach(ReminderRoute.allCases) { route in Button(route.title) { chat.prepare(prompt: route.prompt) }.buttonStyle(.borderless).font(.caption) }
+                Button("学业答疑") { chat.prepare(prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") }.buttonStyle(.borderless).font(.caption)
+                Spacer()
+            }.foregroundStyle(.secondary)
+            HStack(alignment: .bottom, spacing: 10) {
+                TextField("输入问题或今天完成的事实…", text: $chat.draft, axis: .vertical).lineLimit(2...8).font(.body).textFieldStyle(.plain).padding(11)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.quaternary))
+                    .onSubmit { chat.send() }
+                if chat.isBusy { Button { chat.stop() } label: { Image(systemName: "stop.fill") }.help("停止生成").buttonStyle(.bordered).controlSize(.large) }
+                else { Button { chat.send() } label: { Image(systemName: "arrow.up") }.help("发送（Return）").buttonStyle(.borderedProminent).controlSize(.large).disabled(chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+            }
+            Text("使用当前 Codex 登录和只读学业任务；修改会先生成草案。Shift+Return 换行。") .font(.caption2).foregroundStyle(.secondary)
+        }.padding(.horizontal, 20).padding(.vertical, 12).background(.bar)
     }
 }
 

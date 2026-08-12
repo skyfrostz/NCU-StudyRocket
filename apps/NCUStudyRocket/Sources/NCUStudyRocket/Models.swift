@@ -107,6 +107,7 @@ final class MarkdownRepository {
 
 struct MarkdownChangeProposal: Identifiable, Hashable {
     let id = UUID()
+    let turnID: String
     let relativePath: String
     let originalContent: String
     let proposedContent: String

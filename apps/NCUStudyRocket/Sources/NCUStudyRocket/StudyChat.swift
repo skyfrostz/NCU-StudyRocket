@@ -42,9 +42,30 @@ struct ChatMessage: Identifiable, Hashable {
     }
 }
 
+struct ChatTurnPresentation: Identifiable, Hashable {
+    let id: String
+    var userMessage: ChatMessage?
+    var finalMessages: [ChatMessage]
+    var processMessages: [ChatMessage]
+    var status: ChatTurnState
+    var startedAt: Date?
+    var completedAt: Date?
+    var errorMessage: String?
+
+    init(id: String, userMessage: ChatMessage? = nil, finalMessages: [ChatMessage] = [], processMessages: [ChatMessage] = [], status: ChatTurnState = .inProgress, startedAt: Date? = nil, completedAt: Date? = nil, errorMessage: String? = nil) {
+        self.id = id; self.userMessage = userMessage; self.finalMessages = finalMessages
+        self.processMessages = processMessages; self.status = status
+        self.startedAt = startedAt; self.completedAt = completedAt; self.errorMessage = errorMessage
+    }
+
+    var date: Date { startedAt ?? userMessage?.date ?? completedAt ?? .now }
+}
+
 struct ChatTurnResult {
+    let turnID: String
     let status: ChatTurnState
     let errorMessage: String?
+    let completedAt: Date?
 }
 
 enum StudyChatError: LocalizedError {
@@ -76,8 +97,9 @@ final class CodexAppServerClient: NSObject {
     private var stderrTail = ""
     private var connectionGeneration = 0
 
-    var onReplyDelta: ((String, String, ChatMessagePhase) -> Void)?
-    var onItemCompleted: ((String, String, ChatMessagePhase) -> Void)?
+    var onTurnStarted: ((String, Date?) -> Void)?
+    var onReplyDelta: ((String, String, String, ChatMessagePhase) -> Void)?
+    var onItemCompleted: ((String, String, String, ChatMessagePhase) -> Void)?
     var onToolCall: (([String: Any]) -> [String: Any])?
     var onTurnCompleted: ((ChatTurnResult) -> Void)?
     var onRetry: ((String) -> Void)?
@@ -165,6 +187,7 @@ final class CodexAppServerClient: NSObject {
             throw StudyChatError.protocolError("Codex 没有返回本轮 turn ID。")
         }
         activeTurnID = turnID
+        onTurnStarted?(turnID, date(fromUnix: turn["startedAt"]))
         return try await withCheckedThrowingContinuation { continuation in
             turnContinuation = continuation
         }
@@ -174,7 +197,7 @@ final class CodexAppServerClient: NSObject {
         guard let threadID = currentThreadID, let turnID = activeTurnID, isRunning else { return }
         sendRequest(method: "turn/interrupt", params: ["threadId": threadID, "turnId": turnID])
         activeTurnID = nil
-        finishTurn(.success(ChatTurnResult(status: .interrupted, errorMessage: nil)))
+        finishTurn(.success(ChatTurnResult(turnID: turnID, status: .interrupted, errorMessage: nil, completedAt: .now)))
     }
 
     func disconnect() {
@@ -235,14 +258,14 @@ final class CodexAppServerClient: NSObject {
             guard matchesCurrentTurn(params), let itemID = params["itemId"] as? String, let delta = params["delta"] as? String else { return }
             let phase = streamItems[itemID]?.phase ?? .unknown
             streamItems[itemID, default: ("", phase)].text += delta
-            onReplyDelta?(itemID, delta, phase)
+            onReplyDelta?(activeTurnID!, itemID, delta, phase)
         case "item/completed":
             guard matchesCurrentTurn(params), let item = params["item"] as? [String: Any], let itemID = item["id"] as? String, !completedItems.contains(itemID) else { return }
             completedItems.insert(itemID)
             let phase = ChatMessagePhase(rawValue: item["phase"] as? String ?? "") ?? streamItems[itemID]?.phase ?? .unknown
             let text = (item["text"] as? String) ?? streamItems[itemID]?.text ?? ""
             streamItems[itemID] = (text, phase)
-            onItemCompleted?(itemID, text, phase)
+            onItemCompleted?(activeTurnID!, itemID, text, phase)
         case "item/tool/call":
             guard matchesCurrentTurn(params), let requestID = object["id"] else { return }
             let result = onToolCall?(params) ?? ["success": false, "contentItems": [["type": "inputText", "text": "应用未接收到该工具调用。"]]]
@@ -253,7 +276,7 @@ final class CodexAppServerClient: NSObject {
             let rawStatus = turn["status"] as? String ?? "failed"
             let status = ChatTurnState(rawValue: rawStatus) ?? .failed
             let error = (turn["error"] as? [String: Any])?["message"] as? String
-            let result = ChatTurnResult(status: status, errorMessage: error)
+            let result = ChatTurnResult(turnID: activeTurnID!, status: status, errorMessage: error, completedAt: date(fromUnix: turn["completedAt"]))
             onTurnCompleted?(result)
             switch status {
             case .failed:
@@ -313,20 +336,27 @@ final class CodexAppServerClient: NSObject {
         return result
     }
 
+    private func date(fromUnix value: Any?) -> Date? {
+        guard let seconds = value as? TimeInterval else { return nil }
+        return Date(timeIntervalSince1970: seconds)
+    }
+
     private func parseHistory(_ thread: [String: Any]?) -> [ChatMessage]? {
         guard let turns = thread?["turns"] as? [[String: Any]] else { return nil }
         var result: [ChatMessage] = []
         for turn in turns {
             guard let items = turn["items"] as? [[String: Any]] else { continue }
-            let turnID = turn["id"] as? String
+            guard let turnID = turn["id"] as? String else { continue }
             let status = ChatTurnState(rawValue: turn["status"] as? String ?? "")
+            let startedAt = date(fromUnix: turn["startedAt"])
+            let completedAt = date(fromUnix: turn["completedAt"])
             for item in items {
                 guard let type = item["type"] as? String, let id = item["id"] as? String else { continue }
                 if type == "agentMessage", let text = item["text"] as? String {
                     let phase = ChatMessagePhase(rawValue: item["phase"] as? String ?? "") ?? .unknown
-                    result.append(ChatMessage(id: id, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase, turnState: status))
+                    result.append(ChatMessage(id: id, role: .assistant, text: text, date: completedAt ?? startedAt ?? .now, turnID: turnID, phase: phase, turnState: status))
                 } else if type == "userMessage", let content = item["content"] as? [[String: Any]], let text = content.compactMap({ $0["text"] as? String }).first {
-                    result.append(ChatMessage(id: id, role: .user, text: text, date: .now, turnID: turnID, turnState: status))
+                    result.append(ChatMessage(id: id, role: .user, text: text, date: startedAt ?? completedAt ?? .now, turnID: turnID, turnState: status))
                 }
             }
         }
@@ -347,23 +377,23 @@ final class CodexAppServerClient: NSObject {
 
 @MainActor
 final class StudyChatStore: ObservableObject {
-    @Published var messages: [ChatMessage] = []
-    @Published var processMessages: [ChatMessage] = []
+    @Published var turns: [ChatTurnPresentation] = []
     @Published var proposals: [MarkdownChangeProposal] = []
+    @Published var expandedProcessTurnIDs = Set<String>()
+    @Published var expandedProposalTurnIDs = Set<String>()
     @Published var draft = ""
-    @Published var streamingReply = ""
-    @Published var streamingPhase: ChatMessagePhase = .unknown
     @Published var status = ChatConnectionState.disconnected.rawValue
     @Published var connectionState: ChatConnectionState = .disconnected
     @Published var errorMessage: String?
     @Published var isBusy = false
     @Published var lastSubmitted: String?
+    @Published var scrollTargetID: String?
     @Published private(set) var threadID: String?
     private let client = CodexAppServerClient()
     private var root: URL?
-    private var streamingItemID: String?
     private var pendingPrompt: String?
-    private var pendingUnknownMessages: [ChatMessage] = []
+    private var pendingUnknownMessages: [String: [ChatMessage]] = [:]
+    private var pendingSubmissionID: String?
 
     private func threadKey(for root: URL) -> String {
         let digest = SHA256.hash(data: Data(root.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -371,36 +401,35 @@ final class StudyChatStore: ObservableObject {
     }
 
     init() {
-        client.onReplyDelta = { [weak self] itemID, delta, phase in
-            guard let self else { return }
-            if self.streamingItemID != itemID { self.streamingReply = ""; self.streamingItemID = itemID }
-            self.streamingPhase = phase; self.streamingReply += delta
+        client.onTurnStarted = { [weak self] turnID, startedAt in
+            self?.assignPendingSubmission(to: turnID, startedAt: startedAt)
         }
-        client.onItemCompleted = { [weak self] itemID, text, phase in
+        client.onReplyDelta = { [weak self] turnID, itemID, delta, phase in
+            self?.appendStreaming(turnID: turnID, itemID: itemID, delta: delta, phase: phase)
+        }
+        client.onItemCompleted = { [weak self] turnID, itemID, text, phase in
             guard let self else { return }
             if phase == .commentary {
-                self.processMessages.append(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, phase: phase))
+                self.appendProcess(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase))
             } else if phase == .unknown {
-                self.pendingUnknownMessages.append(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, phase: phase))
+                self.pendingUnknownMessages[turnID, default: []].append(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase))
             } else if !text.isEmpty {
-                self.messages.append(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, phase: phase))
+                self.appendFinal(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase))
             }
-            if self.streamingItemID == itemID { self.streamingReply = ""; self.streamingItemID = nil }
         }
         client.onTurnCompleted = { [weak self] result in
             guard let self else { return }
             switch result.status {
             case .completed:
-                if !self.pendingUnknownMessages.isEmpty {
-                    let unknown = self.pendingUnknownMessages
-                    self.processMessages.append(contentsOf: unknown.dropLast())
-                    if let final = unknown.last { self.messages.append(final) }
+                if let unknown = self.pendingUnknownMessages.removeValue(forKey: result.turnID), !unknown.isEmpty {
+                    unknown.dropLast().forEach(self.appendProcess)
+                    if let final = unknown.last { self.appendFinal(final) }
                 }
-                self.pendingUnknownMessages.removeAll(); self.markLastUser(.completed); self.setState(.connected); self.isBusy = false
+                self.completeTurn(result); self.setState(.connected); self.isBusy = false
             case .interrupted:
-                self.pendingUnknownMessages.removeAll(); self.markLastUser(.interrupted); self.setState(.stopped); self.isBusy = false
+                self.pendingUnknownMessages.removeValue(forKey: result.turnID); self.completeTurn(result); self.setState(.stopped); self.isBusy = false
             case .failed:
-                self.pendingUnknownMessages.removeAll(); self.markLastUser(.failed); self.setState(.failed); self.isBusy = false; self.errorMessage = result.errorMessage ?? "本轮对话失败。"
+                self.pendingUnknownMessages.removeValue(forKey: result.turnID); self.completeTurn(result); self.setState(.failed); self.isBusy = false; self.errorMessage = result.errorMessage ?? "本轮对话失败。"
             case .inProgress: break
             }
         }
@@ -411,22 +440,103 @@ final class StudyChatStore: ObservableObject {
         }
         client.onProcessEnded = { [weak self] message in
             guard let self else { return }
-            self.isBusy = false; self.setState(.failed); self.errorMessage = message
+            self.isBusy = false; self.markLatestTurn(.failed, errorMessage: message); self.setState(.failed); self.errorMessage = message
         }
         client.onHistory = { [weak self] history in
             guard let self else { return }
-            self.messages = history.filter { $0.phase != .commentary }
-            self.processMessages = history.filter { $0.phase == .commentary }
+            self.turns = Self.present(history)
         }
         client.onToolCall = { [weak self] params in self?.receiveToolCall(params) ?? ["success": false, "contentItems": []] }
     }
 
     private func setState(_ state: ChatConnectionState) { connectionState = state; status = state.rawValue }
 
-    private func markLastUser(_ state: ChatTurnState) {
-        guard let index = messages.lastIndex(where: { $0.role == .user }) else { return }
-        let message = messages[index]
-        messages[index] = ChatMessage(id: message.id, role: message.role, text: message.text, date: message.date, turnID: message.turnID, phase: message.phase, turnState: state)
+    private func turnIndex(_ id: String) -> Int? { turns.firstIndex(where: { $0.id == id }) }
+
+    private func ensureTurn(_ id: String, date: Date? = nil) -> Int {
+        if let index = turnIndex(id) { return index }
+        turns.append(ChatTurnPresentation(id: id, startedAt: date))
+        return turns.count - 1
+    }
+
+    private func assignPendingSubmission(to turnID: String, startedAt: Date?) {
+        guard let pendingSubmissionID, let index = turnIndex(pendingSubmissionID) else { return }
+        var turn = turns.remove(at: index)
+        turn = ChatTurnPresentation(id: turnID, userMessage: turn.userMessage.map { ChatMessage(id: $0.id, role: $0.role, text: $0.text, date: startedAt ?? $0.date, turnID: turnID, phase: $0.phase, turnState: .inProgress) }, finalMessages: turn.finalMessages, processMessages: turn.processMessages, status: .inProgress, startedAt: startedAt ?? turn.startedAt, completedAt: nil)
+        turns.insert(turn, at: index)
+        self.pendingSubmissionID = nil
+    }
+
+    private func appendStreaming(turnID: String, itemID: String, delta: String, phase: ChatMessagePhase) {
+        let index = ensureTurn(turnID)
+        var turn = turns[index]
+        let partial = ChatMessage(id: "streaming-\(itemID)", role: .assistant, text: delta, date: .now, turnID: turnID, phase: phase)
+        if phase == .commentary {
+            if let existing = turn.processMessages.firstIndex(where: { $0.id == partial.id }) {
+                let previous = turn.processMessages[existing]
+                turn.processMessages[existing] = ChatMessage(id: previous.id, role: .assistant, text: previous.text + delta, date: previous.date, turnID: turnID, phase: phase)
+            } else { turn.processMessages.append(partial) }
+        } else {
+            if let existing = turn.finalMessages.firstIndex(where: { $0.id == partial.id }) {
+                let previous = turn.finalMessages[existing]
+                turn.finalMessages[existing] = ChatMessage(id: previous.id, role: .assistant, text: previous.text + delta, date: previous.date, turnID: turnID, phase: phase)
+            } else { turn.finalMessages.append(partial) }
+        }
+        turns[index] = turn
+    }
+
+    private func appendProcess(_ message: ChatMessage) {
+        guard let turnID = message.turnID else { return }
+        let index = ensureTurn(turnID)
+        var turn = turns[index]
+        turn.processMessages.removeAll { $0.id == message.id || $0.id == "streaming-\(message.id)" }
+        turn.processMessages.append(message); turns[index] = turn
+    }
+
+    private func appendFinal(_ message: ChatMessage) {
+        guard let turnID = message.turnID else { return }
+        let index = ensureTurn(turnID)
+        var turn = turns[index]
+        turn.finalMessages.removeAll { $0.id == message.id || $0.id == "streaming-\(message.id)" }
+        turn.finalMessages.append(message); turns[index] = turn
+        scrollTargetID = turnID
+    }
+
+    private func completeTurn(_ result: ChatTurnResult) {
+        let index = ensureTurn(result.turnID)
+        var turn = turns[index]
+        turn.status = result.status; turn.completedAt = result.completedAt ?? .now; turn.errorMessage = result.errorMessage
+        if let user = turn.userMessage {
+            turn.userMessage = ChatMessage(id: user.id, role: user.role, text: user.text, date: user.date, turnID: result.turnID, phase: user.phase, turnState: result.status)
+        }
+        turns[index] = turn
+        if result.status == .failed { scrollTargetID = result.turnID }
+    }
+
+    private func markLatestTurn(_ status: ChatTurnState, errorMessage: String? = nil) {
+        guard let index = turns.indices.last else { return }
+        var turn = turns[index]; turn.status = status; turn.errorMessage = errorMessage; turn.completedAt = .now
+        if let user = turn.userMessage { turn.userMessage = ChatMessage(id: user.id, role: user.role, text: user.text, date: user.date, turnID: user.turnID, phase: user.phase, turnState: status) }
+        turns[index] = turn
+        if status == .failed { scrollTargetID = turn.id }
+    }
+
+    static func present(_ history: [ChatMessage]) -> [ChatTurnPresentation] {
+        var output: [ChatTurnPresentation] = []
+        for message in history {
+            guard let turnID = message.turnID else { continue }
+            let index = output.firstIndex(where: { $0.id == turnID }) ?? {
+                output.append(ChatTurnPresentation(id: turnID, status: message.turnState ?? .completed, startedAt: message.date, completedAt: message.turnState == .inProgress ? nil : message.date))
+                return output.count - 1
+            }()
+            var turn = output[index]
+            if message.role == .user { turn.userMessage = message; turn.startedAt = message.date }
+            else if message.phase == .commentary { turn.processMessages.append(message) }
+            else { turn.finalMessages.append(message) }
+            if let state = message.turnState { turn.status = state; if state != .inProgress { turn.completedAt = message.date } }
+            output[index] = turn
+        }
+        return output
     }
 
     func connect(to root: URL) async { await connectInternal(to: root, forceCreate: false) }
@@ -434,7 +544,7 @@ final class StudyChatStore: ObservableObject {
     private func connectInternal(to root: URL, forceCreate: Bool) async {
         if !forceCreate, self.root?.standardizedFileURL == root.standardizedFileURL, client.isRunning { return }
         self.root = root.standardizedFileURL
-        messages = []; processMessages = []; pendingUnknownMessages.removeAll(); proposals = []; streamingReply = ""; errorMessage = nil; setState(.connecting)
+        turns = []; pendingUnknownMessages.removeAll(); proposals = []; expandedProcessTurnIDs.removeAll(); expandedProposalTurnIDs.removeAll(); errorMessage = nil; setState(.connecting)
         let key = threadKey(for: root)
         let stored = forceCreate ? nil : UserDefaults.standard.string(forKey: key)
         threadID = stored
@@ -461,14 +571,34 @@ final class StudyChatStore: ObservableObject {
     var canCreateNewTask: Bool { root != nil && connectionState == .failed }
     func prepare(prompt: String) { pendingPrompt = prompt; draft = prompt }
 
+    func toggleProcess(for turnID: String) {
+        if expandedProcessTurnIDs.contains(turnID) { expandedProcessTurnIDs.remove(turnID) }
+        else { expandedProcessTurnIDs.insert(turnID) }
+    }
+
+    func toggleProposal(for turnID: String) {
+        if expandedProposalTurnIDs.contains(turnID) { expandedProposalTurnIDs.remove(turnID) }
+        else { expandedProposalTurnIDs.insert(turnID) }
+    }
+
+    func setProposal(_ id: UUID, selected: Bool) {
+        guard let index = proposals.firstIndex(where: { $0.id == id }) else { return }
+        proposals[index].isSelected = selected
+    }
+
     func send() { send(appendUser: true) }
 
     private func send(appendUser: Bool) {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isBusy else { return }
         lastSubmitted = text
-        if appendUser { messages.append(ChatMessage(id: UUID().uuidString, role: .user, text: text, date: .now, turnState: .inProgress)) }
-        draft = ""; errorMessage = nil; isBusy = true; setState(.thinking); streamingReply = ""; processMessages = []; pendingUnknownMessages.removeAll()
+        if appendUser {
+            let localID = "local-\(UUID().uuidString)"
+            pendingSubmissionID = localID
+            turns.append(ChatTurnPresentation(id: localID, userMessage: ChatMessage(id: UUID().uuidString, role: .user, text: text, date: .now, turnID: localID, turnState: .inProgress), status: .inProgress, startedAt: .now))
+            scrollTargetID = localID
+        }
+        draft = ""; errorMessage = nil; isBusy = true; setState(.thinking); pendingUnknownMessages.removeAll()
         Task {
             do {
                 let result = try await client.send(text)
@@ -479,12 +609,12 @@ final class StudyChatStore: ObservableObject {
         }
     }
 
-    func retryLast() { guard let lastSubmitted else { return }; draft = lastSubmitted; send(appendUser: false) }
-    func stop() { client.interrupt(); markLastUser(.interrupted); isBusy = false; setState(.stopped) }
+    func retryLast() { guard let lastSubmitted else { return }; draft = lastSubmitted; send(appendUser: true) }
+    func stop() { client.interrupt(); markLatestTurn(.interrupted); isBusy = false; setState(.stopped) }
     func disconnect() { client.disconnect(); isBusy = false; setState(.disconnected) }
 
-    func applySelectedChanges(workspace: WorkspaceStore) {
-        let selected = proposals.filter(\.isSelected); guard !selected.isEmpty else { return }
+    func applySelectedChanges(workspace: WorkspaceStore, for turnID: String) {
+        let selected = proposals.filter { $0.turnID == turnID && $0.isSelected }; guard !selected.isEmpty else { return }
         do {
             let changes = selected.map { MarkdownRepository.Change(relative: $0.relativePath, content: $0.proposedContent, loadedHash: $0.baseHash) }
             try MarkdownRepository(root: workspace.rootURL).saveBatch(changes)
@@ -511,8 +641,9 @@ final class StudyChatStore: ObservableObject {
         do {
             guard repository.isAllowedStudyPath(path) else { throw MarkdownError.outsideWorkspace }
             let original = try repository.read(path)
-            let proposal = MarkdownChangeProposal(relativePath: path, originalContent: original, proposedContent: content, reason: reason, baseHash: repository.hash(original))
-            proposals.removeAll { $0.relativePath == path }; proposals.append(proposal)
+            guard let turnID = params["turnId"] as? String else { throw StudyChatError.protocolError("草案缺少回合 ID。") }
+            let proposal = MarkdownChangeProposal(turnID: turnID, relativePath: path, originalContent: original, proposedContent: content, reason: reason, baseHash: repository.hash(original))
+            proposals.removeAll { $0.turnID == turnID && $0.relativePath == path }; proposals.append(proposal)
             return ["success": true, "contentItems": [["type": "inputText", "text": "已建立修改草案：\(path)。应用将展示差异，用户确认后才会写入。"]]]
         } catch { return ["success": false, "contentItems": [["type": "inputText", "text": "无法建立草案：\(error.localizedDescription)"]] ] }
     }
