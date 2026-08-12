@@ -1,0 +1,4 @@
+interface:
+  display_name: "周复盘"
+  short_description: "用行为证据复盘本周并提出下周调整"
+  default_prompt: "用 $retro-weekly 写本周复盘，先列出需要我确认的事实。"

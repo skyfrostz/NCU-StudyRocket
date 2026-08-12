@@ -1,0 +1,4 @@
+interface:
+  display_name: "每日行为账"
+  short_description: "三分钟记录学习、睡眠和明日第一任务"
+  default_prompt: "用 $daily-checkin 帮我完成今天的三分钟行为账。"

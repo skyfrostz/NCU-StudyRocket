@@ -1,0 +1,319 @@
+北京启德考培
+
+
+雅思突破写作 LESSON 3
+
+Intermediate IELTS Writing - Lesson 3
+      PART ONE
+ 01   小作文组合图及非数据类写作框架
+
+      PART TWO
+ 02   组合图小作文各段落写作方法及句型
+
+      PART THREE
+ 03   流程图及地图题各段落写作方法及句型
+
+      PART FOUR
+ 04   课堂内容总结
+06
+PART ONE 小作文组合图及非数据类写作框架
+PART ONE 小作文组合图及非数据类写作框架
+
+
+
+
+                           summarise information
+
+
+
+
+                           main features and
+                           comparison
+PART TWO 组合图小作文各段落写作方法及句型
+PART TWO 组合图小作文各段落写作方法及句型
+Introduction 写作
+
+题干示例：
+
+The table below give information on the police budget for 2017 and 2018 in one area of Britain.
+  图表名称              描述动词              话题事件                   时间                地点
+
+
+The chart below gives information about how families in one country spent their weekly income in 1968 and in 2018.
+  图表名称             描述动词              话题事件                  地点               话题事件                      时间
+
+
+The graph below shows the number of shops that closed and the number of new shops that opened in one country
+图表名称           描述动词                                    话题事件                                        地点
+
+between 2011 and 2018.
+         时间
+PART TWO 组合图小作文各段落写作方法及句型
+Introduction 写作
+Introduction 信息构成： 图表名称+描述动词+话题事件+时间+地点
+PART TWO 组合图小作文各段落写作方法及句型
+Overview 写作（组合图-Combined Chart）
+
+PARAGRAPH 2 - Overview
+
+主要内容：描述图表主要特征
+写作要求：一般用两句话进行概述
+     不用写出具体数值
+
+ - 概述方式：
+分别概述，饼图/表格采用饼图/表格的概述方式
+PART TWO 静态图小作文各段落写作方法及句型
+Overview 写作（组合图-Combined Chart）
+Sentence 1：用饼图的概述方式进行概述（最值分布）
+
+ 结论：
+ Full-time work的人数占比是最多的
+
+e.g. People who worked as full-time took up the vast majority.
+               主体事件                   动词        特征信息
+PART TWO 组合图小作文各段落写作方法及句型
+Overview 写作（组合图-Combined Chart）
+Sentence 2：用表格的概述方式进行概述（最值分布）
+
+  结论：
+ freelance和government工资处于75000-10000的人＞在
+ private companies工作的人
+
+e.g. After 5 years’ work, the proportion of people whose salary
+                                       主体事件
+
+was between $75,000 and $10,000 in freelance consultants and
+
+government sector was higher/greater than that
+                   动词         特征信息
+
+in private companies.
+      主体事件
+PART TWO 组合图小作文各段落写作方法及句型
+Details 写作（组合图-Combined Chart）
+
+PARAGRAPH 3&4 - Details
+
+主要内容：对重要的细节数据进行描述/对比
+写作要求：单个组别/图例内部数据需要比较
+     不同组别/图例之间的相关数据需要比较
+
+ - 分段方式：
+  每张图对应一个主体段
+PART TWO 静态图小作文各段落写作方法及句型
+Details 写作（组合图-Combined Chart）
+
+DETAILS 1: 饼图
+
+SENTENCE 1: 描述第一大值
+  → full-time work（52%）
+
+SENTENCE 2: 描述第二大值
+  → part-time+unemployed（15%/12%）
+
+SENTENCE 3: 描述剩余数据
+  → postgraduate+not known+past time postgraduate
+   （8%/8%/5%）
+PART TWO 静态图小作文各段落写作方法及句型
+Details 写作（组合图-Combined Chart）
+
+DETAILS 2: 表格
+
+SENTENCE 1: 描述Freelance consultants的第一大值
+
+SENTENCE 2: 描述Government sector的第二大值
+
+SENTENCE 3: 描述F和G的剩余数据
+
+SENTENCE 4: 描述Private companies的第一大值
+
+SENTENCE 5: 描述Private companies的第二大值
+PART THREE 流程图及地图题各段落写作方法及句型
+PART THREE 流程图及地图题各段落写作方法及句型
+Overview 写作（流程图-Diagram）
+                           The diagram below shows how instant noodles are manufactured.
+PARAGRAPH 2 - Overview
+
+主要内容：描述流程图主要特征
+写作要求：一般用两句话进行概述
+     不用写出具体操作
+
+ - 概述方式：
+  固定句式
+PART THREE 流程图及地图题各段落写作方法及句型
+Overview 写作（流程图-Diagram）
+                                                 The diagram below shows how instant noodles are manufactured.
+
+Sentence 1：主体事件的形成需要经历一个复杂的过程
+
+The production/manufacturing of A needs to experience several complex steps
+
+Several complex steps are used to form/create/produce A.
+
+
+
+Sentence 2：描述包含的大致步骤
+
+ This/Such procedure involves preparation, processing, labeling
+ and packaging
+PART THREE 流程图及地图题各段落写作方法及句型
+Details 写作（流程图-Diagram）
+                          The diagram below shows how instant noodles are manufactured.
+PARAGRAPH 3&4 - Details
+
+主要内容：对每一个阶段步骤描述
+写作要求：包含所有信息
+     使用连接词
+     注意是否有步骤存在图中没有明示的操作目的
+
+ - 分段方式：
+  中位数
+PART THREE 流程图及地图题各段落写作方法及句型
+Details 写作（流程图-Diagram）
+                                   The diagram below shows how instant noodles are manufactured.
+DETAILS 1: step 1-4
+
+SENTENCE 1: 描述Step 1
+  → flour从storage silos被delivered了出来去到了工厂/流
+水线
+
+SENTENCE 2: 描述Step 2
+  → flour和water以及oil一起被put进了mixer里进行搅拌
+    然后create了dough
+
+SENTENCE 3: 描述Step 3
+  → 做好的dough被放在了rollers上，经过rolled out之后变
+     成了dough sheets
+
+SENTENCE 4: 描述Step 4
+  → 做好的dough sheets被放在了machine上，被cut成了
+    dough strips
+PART THREE 流程图及地图题各段落写作方法及句型
+Details 写作（流程图-Diagram）   The diagram below shows how instant noodles are manufactured.
+
+DETAILS 2: step 5-8
+
+过渡句：经过前四个步骤，某东西还没有被完成，因此需要
+进行下一步。
+
+SENTENCE 1: 描述Step 5
+
+SENTENCE 2: 描述Step 6
+
+SENTENCE 3: 描述Step 7
+
+SENTENCE 4: 描述Step 8
+PART THREE 流程图及地图题各段落写作方法及句型
+Overview 写作（地图-maps）
+
+PARAGRAPH 2 - Overview
+
+主要内容：描述地图主要特征
+写作要求：一般用两句话进行概述
+     不用写出具体事物
+
+ - 概述方式：
+  固定句式
+PART THREE 流程图及地图题各段落写作方法及句型
+ Overview 写作（地图-maps）
+
+
+Sentence 1：
+
+Some changes happened in the place for development in order
+to facilitate local people/public.
+
+
+
+
+Sentence 2：
+
+It is clear to see that one of the most significant improvement happened in
+ the expansion of housing areas.
+PART THREE 流程图及地图题各段落写作方法及句型
+Details 写作（地图-maps）
+
+PARAGRAPH 3&4 - Details
+
+主要内容：对每一个地理事物进行描述
+写作要求：包含所有信息
+     使用方位连接词
+     描述地理事物发生的变化
+
+ - 分段方式：
+  变化前-变化后
+PART THREE 流程图及地图题各段落写作方法及句型
+Details 写作（地图-maps）
+
+DETAILS 1: Map 1（空间方位顺序）
+
+SENTENCE 1: 描述Countryside
+  → 最北部/countryside
+
+SENTENCE 2: 描述Countryside南边
+  → main road/从西向东/两边是shops
+
+SENTENCE 3: 描述Housing areas
+  → 在城市的中部，shops的南端
+
+SENTENCE 4: 描述parks/school/housing
+  → southeast/end of the path
+    side of the winding road
+    the most southern area of the town
+PART THREE 流程图及地图题各段落写作方法及句型
+Details 写作（地图-maps）
+
+DETAILS 1: Map 2（变化+新事物/描述顺序）
+
+SENTENCE 1: 描述Countryside→road
+  → 最北部/countryside disappeared/replaced by the dual
+     carriageway
+
+SENTENCE 2: shops扩建为一系列基础设施
+
+SENTENCE 3: 描述mainroad+housing areas
+
+SENTENCE 4: 描述剩余其他改变
+Detai-2
+In the planned development, the countryside will be replaced
+by a dual carriageway encircling the town center.
+
+The shops currently along the main road will be expanded into
+a series of new facilities, including a bus station, shopping
+center, and car park. The new layout also designates the area
+adjacent to these shops as a pedestrian-only zone.
+
+The main road that currently runs through the center of the
+town will be transformed to accommodate pedestrians
+exclusively, enhancing the town's walkability. Additionally, new
+housing areas will be developed both north and south of this
+pedestrian zone, replacing some of the existing housing.
+
+Other notable changes include the introduction of a park area
+to the southeast, adjacent to the new housing, and the
+continued presence of the school in the southwest, which will
+remain in its current location but be connected to the dual
+carriageway for better accessibility.
+PART FOUR   课堂内容总结
+PART FOUR 课堂内容总结
+
+
+
+       易错点总结       05
+            时态
+      不能使用祈使句
+                        句式语言表达
+         写作顺序      04
+                        固定句型+常用词汇
+
+   三类题型主体段写作       03
+     分组方式及句型结构          组合图+非数据概述方式及
+        饼图句型转化          句型
+                   02   组合图概述方式及句型
+ 小作文组合图+非数据文
+                        流程图概述方式及句型（×2）
+         章结构       01
+         分段方式           地图概述方式及句型（×2）
+
+     每段主要任务/内容
+

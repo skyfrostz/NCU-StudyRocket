@@ -1,0 +1,4 @@
+interface:
+  display_name: "节点倒排"
+  short_description: "从截止日反推每周具体交付物"
+  default_prompt: "用 $node-countdown 帮我倒排这个升学或竞赛节点。"

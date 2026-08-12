@@ -1,0 +1,580 @@
+北京启德考培
+
+
+雅思突破写作 LESSON 1
+
+Intermediate IELTS Writing - Lesson 1
+      PART ONE
+ 01   小作文任务完成要求及写作框架
+
+      PART TWO
+ 02   动态图小作文各段落写作方法及句型
+
+      PART THREE
+ 03   小作文动态图主体段写作要求及句型结构
+
+      PART FOUR
+ 04   课堂内容总结
+06
+PART ONE 小作文任务完成要求及写作框架
+PART ONE 小作文任务完成要求及写作框架
+PART ONE 小作文任务完成要求及写作框架
+
+
+
+
+                          summarise information
+
+
+
+
+                          main features and
+                          comparison
+PART TWO 动态图小作文各段落写作方法及句型
+PART TWO 动态图小作文各段落写作方法及句型
+动态图与静态图
+PART TWO 动态图小作文各段落写作方法及句型
+动态图与静态图
+PART TWO 动态图小作文各段落写作方法及句型
+Introduction 写作
+
+题干示例：
+
+The table below give information on the police budget for 2017 and 2018 in one area of Britain.
+  图表名称              描述动词              话题事件                   时间                地点
+
+
+The chart below gives information about how families in one country spent their weekly income in 1968 and in 2018.
+  图表名称             描述动词              话题事件                  地点               话题事件                      时间
+
+
+The graph below shows the number of shops that closed and the number of new shops that opened in one country
+图表名称           描述动词                                    话题事件                                        地点
+
+between 2011 and 2018.
+         时间
+PART TWO 动态图小作文各段落写作方法及句型
+Introduction 写作
+Introduction 信息构成： 图表名称+描述动词+话题事件+时间+地点
+PART TWO 动态图小作文各段落写作方法及句型
+Practice 1: 改写下列标题信息
+PART TWO 动态图小作文各段落写作方法及句型
+Overview 写作（线图——Line Graph）
+PART TWO 动态图小作文各段落写作方法及句型
+Overview 写作（线图——Line Graph）
+方法1：从横向关注整体趋势走向
+
+  结论：
+  意大利/葡萄牙——总趋势为上升
+  英国 / 瑞典 ——总趋势为下降
+
+e.g. The average carbon dioxide emissions produced
+                  主体事件
+
+    from Italy and Portugal, as a whole, displayed an
+                                         描述动词
+
+    upward trend, while those from UK and Sweden
+      趋势变化        连接词            主体事件
+
+    experienced a decline.
+      描述动词       趋势变化
+PART TWO 动态图小作文各段落写作方法及句型
+Overview 写作（线图——Line Graph）
+
+方法2：从纵向关注线图所处位置
+
+  结论：
+  英国——在图表中一直居于最高位置
+  →英国在这 40 年里始终是 CO2 排放量最大的国家
+
+
+e.g. The average carbon dioxide emissions produced
+                  主体事件
+
+    from UK were (always) in the dominant position.
+                动词                特征信息
+PART TWO 动态图小作文各段落写作方法及句型
+Overview 写作（线图——Line Graph）
+
+方法3：从横向和纵向关注差距变化
+
+  结论：
+  图形左宽右窄——四个国家之间的差距在缩小
+
+
+e.g. In terms of average carbon dioxide emissions
+                         主体事件
+
+produced from the 4 countries, the gap narrowed down.
+                                差距           缩小
+PART TWO 动态图小作文各段落写作方法及句型
+Practice 2: 完成下图概述段的写作
+
+The chart below shows the total number of minutes (in billions) of telephone calls
+in the UK, divided into three categories, from 1995-2002.
+PART TWO 动态图小作文各段落写作方法及句型
+Overview 写作（饼图——Pie Chart）   The charts below show US spending patterns from 1966 to 1996.
+PART TWO 动态图小作文各段落写作方法及句型
+Overview 写作（饼图——Pie Chart）                                  The charts below show US spending patterns from 1966 to 1996.
+
+方法1：关注项目类别变化的整体趋势
+
+- 上升组：Cars/Restaurants/Computers
+- 下降组：Food/Books
+
+e.g. From 1966 to 1996, spending on cars, restaurants and
+           时间                       主体事件
+
+computers experienced an upward trend, while that on
+food
+            描述动词           趋势描述          连接词       主体事件
+
+and books showed a decrease.
+         描述动词 趋势描述
+PART TWO 动态图小作文各段落写作方法及句型
+Overview 写作（饼图——Pie Chart）                                 The charts below show US spending patterns from 1966 to 1996.
+
+方法2：关注项目类别占比情况（e.g.是否始终处于最大值）
+
+- Food+Cars 始终排名前二
+
+e.g. In the same period, spending on cars and food   was
+          时间                     主体事件                动词
+
+in the majority (of total expenditure).
+            特征信息
+PART TWO 动态图小作文各段落写作方法及句型
+Practice 3: 完成下图概述段的写作
+
+The charts show pollutants entering a particular area of ocean in 1997 and in
+2007.
+PART TWO 动态图小作文各段落写作方法及句型
+Detail 写作（线图——Line Graph）
+PART TWO 动态图小作文各段落写作方法及句型
+Detail 写作（线图——Line Graph）
+
+DETAILS 1: UK+Sweden
+
+SENTENCE 1: 描述时间起点的数值
+  → 1967（UK-10.9/Sweden-8.7）
+
+SENTENCE 2: 描述阶段趋势1（起点—特殊点1）进行趋势
+             /数值之间的对比
+  → 1967-1977（UK-几乎不变/Sweden-上升到最值10.2）
+
+SENTENCE 3: 描述阶段趋势2（特殊点1—特殊点 2）进行
+             趋势数值之间对比
+  → 1977-1987（UK平缓下降/Sweden显著下降）
+
+SENTENCE 4: 描述阶段趋势3（特殊点2—终点）进行趋势
+             /数值之间的对比
+  → 1987-2007（UK/Sweden平稳下降/均到达最低点）
+PART TWO 动态图小作文各段落写作方法及句型
+Detail 写作（线图——Line Graph）
+
+DETAILS 2: Italy+Portugal
+
+SENTENCE 1: 描述时间起点的数值
+  → 1967（Italy-4.3/Portugal-1.3/最低点）
+
+SENTENCE 2: 描述阶段趋势1（起点—特殊点1）进行趋势
+             /数值之间的对比
+  → 1967-1997（两国数据均上升-上升到最值7.8/5.2）
+
+SENTENCE 3: 描述阶段趋势2（特殊点1—特殊点 2）进行
+            趋势数值之间对比
+  → 1997-2007（两国数据保持稳定）
+
+SENTENCE 4: 描述交汇点
+  → 1987（Italy超过Sweden/成为第二名）
+PART TWO 动态图小作文各段落写作方法及句型
+Practice 4: 对下图信息进行分组，并挑选其中重要数据
+        The chart below shows the results of a survey asking if people from UK travelled abroad
+        and why they travelled for the period 1994-98.
+
+                  Visits abroad by UK residents by purpose of visit (1994-98)
+                          1994           1995           1996           1997           1998
+          Holiday         15246          14898         17896          19703          20700
+         Business         3155           3788           3049           3639           3957
+          Visits to
+        friends and       2689           2328           3774           4051           4181
+          relatives
+          Other
+                           982            896           1030           1054            990
+         reasons
+PART TWO 动态图小作文各段落写作方法及句型
+Detail 写作（饼图——Pie Chart）      The charts below show US spending patterns from 1966 to 1996.
+
+
+PARAGRAPH 3&4 - Details 1&2
+
+主要内容：对重要的细节数据/变化情况进行描述/对比
+写作要求：按照数值高低/变化的显著程度进行描述
+     描述过程中注意分组
+
+  - 饼图分组方式：
+1. 按照总趋势进行划分（上升一组，下降一组）
+2. 按照变化幅度进行分组（变化显著为一组，剩余为一组）
+PART TWO 动态图小作文各段落写作方法及句型
+Detail 写作（饼图——Pie Chart）                         The charts below show US spending patterns from 1966 to 1996.
+
+
+Detail 1: 上升类别的数据及变化情况
+
+- Cars(23%-45%) / restaurants(7%-14%) / computers(1%-10%)
+
+SENTENCE 1: 变化最显著的数据（过去+变化+现在）
+ → Cars/1966: 23%/第二大占比/增加到45%/第一大占比
+
+SENTENCE 2: 变化第二显著的数据（过去+变化+现在）
+ → Restaurants/1966: 7%/中间水平/增加到14%/第二大
+
+SENTENCE 3: 变化最不显著的数据（过去+变化+现在）
+ → Computers/1966: 1%/最小值/增加到10%
+PART TWO 动态图小作文各段落写作方法及句型
+Detail 写作（饼图——Pie Chart）                         The charts below show US spending patterns from 1966 to 1996.
+
+
+Detail 2: 剩余数据及变化情况（下降+不变）
+
+- Food(44%-14%) / Books(6%-1%) / petrol+furniture(≈10%)
+
+SENTENCE 1: 变化最显著的数据（过去+变化+现在）
+ → Food/1966: 44%/第一大占比/下降到14%/第二大占比/=Restaurant
+
+SENTENCE 2: 变化第二显著的数据（过去+变化+现在）
+ → Books/1966: 6%/下降到1%/最小值
+
+SENTENCE 3: 变化最不显著的数据（过去+变化+现在）
+ → petrol+furniture/几乎不变/变动幅度在2%及以内
+PART TWO 动态图小作文各段落写作方法及句型
+Practice 5: 对下图信息进行分组，并挑选其中需描述的信息
+
+The charts show pollutants entering a particular area of ocean in 1997 and in
+2007.
+PART THREE 主体段句型结构
+PART THREE 主体段句型结构
+线图主体段句型
+                    句型1：起点描述句型          句型2/3/4：
+DETAILS 1:                               - 阶段趋势描述
+                                         - 稳定阶段描述
+SENTENCE 1: 描述时间起点的数值                    - 特殊区间描述句型
+SENTENCE 2: 描述阶段趋势1（起点—特殊点1）进行趋势/数值之间的对比
+SENTENCE 3: 描述阶段趋势2（特殊点1—特殊点 2）进行趋势数值之间对比
+SENTENCE 4: 描述阶段趋势3（特殊点2—终点）进行趋势/数值之间的对比
+
+DETAILS 2:
+
+SENTENCE 1: 描述时间起点的数值
+SENTENCE 2: 描述阶段趋势1（起点—特殊点1）进行趋势/数值之间的对比
+SENTENCE 3: 描述阶段趋势2（特殊点1—特殊点 2）进行趋势数值之间对比
+SENTENCE 4: 描述交汇点
+                         句型5：交汇点描述句型
+PART THREE 主体段句型结构
+线图主体段句型——起点描述
+
+e.g. 在1967年，英国和瑞典的人均二氧化碳排放量分别是10.8和8.9，其中英国在这一年的排放量是这
+  几十年里的最大值
+
+
+                         信息要构成要素
+                  时间                   1967
+
+                 主体事件          英国和瑞典的人均二氧化碳排放量
+
+                  数据                  10.8/8.9
+
+                 特征信息               英国—最大值
+PART THREE 主体段句型结构
+线图主体段句型——起点描述
+
+e.g. 在1967年，英国和瑞典的人均二氧化碳排放量分别是10.8和8.9，其中英国在这一年的排放量是这
+  几十年里的最大值
+
+  起点句型结构写作
+
+  句型1：主体事件做主语
+
+               主语                  系/谓语动词    表语/宾语                   附加信息
+
+   Average CO2 emissions from UK            10.8 and 8.9     and in this year emissions
+                                    were
+        and Sweden in 1967                  respectively,   in UK was the highest point.
+PART THREE 主体段句型结构
+线图主体段句型——起点描述
+
+e.g. 在1967年，英国和瑞典的人均二氧化碳排放量分别是10.8和8.9，其中英国在这一年的排放量是这
+  几十年里的最大值
+
+  起点句型结构写作
+
+  句型2：时间做主语
+
+        主语            系/谓语动词               表语/宾语                           附加信息
+
+                                  10.8 and 8.9 CO2 emissions in    and in this year emissions
+   The year of 1967   witnessed
+                                   UK and Sweden respectively,    in UK was the highest point.
+PART THREE 主体段句型结构
+线图主体段句型——起点描述
+
+e.g. 在1967年，英国和瑞典的人均二氧化碳排放量分别是10.8和8.9，其中英国在这一年的排放量是这
+   几十年里的最大值
+
+   起点句型结构写作
+
+   句型3：数值信息做主语
+
+                   主语                       系/谓语动词          表语/宾语                    附加信息
+
+   10.8 and 8.9 metric tons CO2 emissions                  in the year of    and in this year emissions
+                                            can be found
+        produced by UK and Sweden                               1967,       in UK was the highest point.
+
+
+Practice 6: 使用不同句型描述下列信息
+
+— 在 2000 年牛肉的销售额是最多的，达到了 200 万欧元，而羊肉的销售额在这一年为160万欧元
+PART THREE 主体段句型结构
+线图主体段句型——阶段趋势描述
+
+e.g. 在 1987 年到 1997 年期间，瑞典人均二氧化碳排放量从 200 （百万立方吨：metric tonnes）显著
+  上升到最大值 400
+
+
+                             信息要构成要素
+                    主体事件              瑞典的人均二氧化碳排放量
+
+                    变化趋势                    显著上升
+
+                具体数值（特征信息）              200-400（两倍+最值）
+
+                    发生时间                    1987-1997
+PART THREE 主体段句型结构
+线图主体段句型——阶段趋势描述
+
+e.g. 在 1987 年到 1997 年期间，瑞典人均二氧化碳排放量从 200 （百万立方吨：metric tonnes）显著
+  上升到最大值 400
+
+   阶段趋势句型结构写作
+
+   句型1：主体事件做主语
+
+             主语                      系/谓语动词               表语/宾语                 附加信息
+
+   From 1987 to 1997, average                                          doubling from 200 to 400, at
+                                dramatically increased,       /
+   CO2 emissions from Sweden                                            which it reached the peak.
+
+                                                                       with the figure doubling from
+   From 1987 to 1997, average     showed/displayed/       a dramatic
+                                                                          200 to 400, at which it
+   CO2 emissions from Sweden         experienced           increase,
+                                                                             reached the peak.
+PART THREE 主体段句型结构
+线图主体段句型——阶段趋势描述
+
+e.g. 在 1987 年到 1997 年期间，瑞典人均二氧化碳排放量从 200 （百万立方吨：metric tonnes）显著
+  上升到最大值 400
+
+   阶段趋势句型结构写作
+
+   句型2：变化趋势做主语
+
+               主语                   系/谓语动词         表语/宾语                  附加信息
+                                    can be found           in the period from 1987 to 1997, with the
+   A dramatic increase of average
+                                     /happened/      /         figure doubling from 200 to 400, at
+    emissions in UK and Sweden
+                                      appeared                      which it reached the peak.
+PART THREE 主体段句型结构
+线图主体段句型——阶段趋势描述
+
+e.g. 在 1987 年到 1997 年期间，瑞典人均二氧化碳排放量从 200 （百万立方吨：metric tonnes）显著
+  上升到最大值 400
+
+   阶段趋势句型结构写作
+
+   句型3：具体数据做主语
+
+                  主语                     系/谓语动词         表语/宾语              附加信息
+
+                                                                in the period from 1987 to 1997,
+   A two fold increase from 200 to 400   can be found     /
+                                                                  in which it reached the peak.
+
+
+                                                                in the period from 1987 to 1997,
+         The increment of 200            can be found     /
+                                                                  in which it reached the peak.
+PART THREE 主体段句型结构
+线图主体段句型——阶段趋势描述
+
+e.g. 在 1987 年到 1997 年期间，瑞典人均二氧化碳排放量从 200 （百万立方吨：metric tonnes）显著
+  上升到最大值 400
+
+   阶段趋势句型结构写作
+
+   句型4：时间做主语
+
+        主语           系/谓语动词                 表语/宾语                           附加信息
+
+   The period from                    an increase in average   with the figure doubling from 200 to
+                     witnessed/saw
+    1987 to 1997                     CO2 emissions in Sweden   400, at which it reached the peak.
+PART THREE 主体段句型结构
+线图主体段句型——阶段趋势描述
+
+e.g. 在 1987 年到 1997 年期间，瑞典人均二氧化碳排放量从 200 （百万立方吨：metric tonnes）显著
+   上升到最大值 400
+
+   阶段趋势句型结构写作
+
+   句型5：There be句型
+
+    there be           主语                                       附加信息
+
+                                       in average CO2 emissions in Sweden, with the figure doubling
+    there was   a dramatic increase
+                                      from 200 to 400 between 87 and 97, when it reached the peak.
+
+
+Practice 7: 使用不同句型描述下列信息
+
+— 在 2000到2010年期间，美国失业人口百分比从 6%上升到了 12%，达到了最大值
+PART THREE 主体段句型结构
+线图主体段句型——稳定阶段描述
+
+e.g. 在 2000 年以后，在汽油和家具方面的开支保持稳定
+
+
+
+                          信息要构成要素
+                  主体事件              汽油和家具的开支
+
+                  变化情况                稳定不变
+
+                  发生时间               2000年以后
+PART THREE 主体段句型结构
+线图主体段句型——稳定阶段描述
+
+e.g. 在 2000 年以后，在汽油和家具方面的开支保持稳定
+PART THREE 主体段句型结构
+线图主体段句型——交汇点描述
+
+
+
+
+线图主体段句型——特殊区间描述
+
+ e.g. 煤炭的消耗量从1995到2015几乎都在上升，只有一个例外出现在2000-2001年,在这
+     一年从200下降到了180。
+
+   The consumption of coal almost increased in the period from 1995 to 2015, with only one
+   exception appearing in the period from 2000 to 2001, when it slightly fell from 200 to 180.
+PART THREE 主体段句型结构
+饼图主体段句型
+                                  句型1：变化数据描述句型
+DETAILS 1: 上升类别的数据及变化情况
+
+SENTENCE 1: 变化最显著的数据（过去+变化+现在）
+SENTENCE 2: 变化第二显著的数据（过去+变化+现在）    句型2：相似数据描述句型
+SENTENCE 3: 变化最不显著的数据（过去+变化+现在）
+
+
+
+DETAILS 2: 剩余数据及变化情况（下降+不变）
+
+SENTENCE 1: 变化最显著的数据（过去+变化+现在）
+SENTENCE 2: 变化第二显著的数据（过去+变化+现在）
+SENTENCE 3: 变化最不显著的数据（过去+变化+现在）
+PART THREE 主体段句型结构
+饼图主体段句型——变化前数据描
+述            小句1（过去数据+特征信息+主体事件）
+                                                                     小句2
+
+
+e.g. 在1966年，在汽车方面的开支占比为23%，是第二大构成部分；而到了1996年它扩张至45%，成
+  为了最大的构成部分
+
+
+  In 1966, spending on cars was the second largest component, which accounted for 23%, while it
+    时间        主体事件 动词描述                   特征信息                        具体数据             连接词 主体事件
+
+
+  expanded   to 45% after 3 decades, becoming the top of the list.
+  动词描述       具体数据          时间               特征信息
+
+
+ → 小句2 = 线图阶段趋势描述（主体事件+变化趋势+具体数据及其特征信息+时间）
+PART THREE 主体段句型结构
+饼图主体段句型——变化前数据描述
+
+e.g. 食物方面的花销是最大的构成部分，占比为 44%
+
+
+
+                         信息要构成要素
+                 主体事件              食物方面的开支
+
+                 具体数据                44%
+
+                 特征信息              最大构成部分
+PART THREE 主体段句型结构
+饼图主体段句型——变化前数据描述
+
+e.g. 食物方面的花销是最大的构成部分，占比为 44%，在1966年
+
+  变化前数据描述句型结构写作
+
+  句型1：主体事件做主语
+             主语                  系/谓语动词               表语/宾语                    附加信息
+       Spending on food              was        the largest component,     accounting for 44%
+
+
+  句型2：特征信息做主语
+
+  The largest part of spending   can be found   in the category of food,    occupying 44%
+PART THREE 主体段句型结构
+饼图主体段句型——变化前数据描述
+
+e.g. 食物方面的花销是最大的构成部分，占比为 44%，在1966年
+
+    变化前数据描述句型结构写作
+    句型1：主体事件做主语
+               主语                  系/谓语动词               表语/宾语                    附加信息
+         Spending on food              was        the largest component,     accounting for 44%
+
+
+    句型2：特征信息做主语
+
+    The largest part of spending   can be found   in the category of food,    occupying 44%
+
+
+Practice 7: 使用具体数据做主语，描述上述句子信息
+
+44% of spending can be found /lied in food, occupying the largest component.
+PART THREE 主体段句型结构
+饼图主体段句型——相似数据描述
+PART FOUR   课堂内容总结
+PART FOUR 课堂内容总结
+
+
+                   05
+        易错点总结
+           主谓搭配
+                        句式语言表达
+        定语从句引导词    04
+                        不同信息要素做主语
+
+    动态图主体段写作       03
+     分组方式及句型结构
+   线图句型×5+饼图句型×2        动态图概述方式及句型
+                   02   线图概述方式及句型（×3）
+                        饼图概述方式及句型（×2）
+  小作文动态图文章结构       01
+           分段方式         线图饼图与柱状图及表格的转化
+
+      每段主要任务/内容
+

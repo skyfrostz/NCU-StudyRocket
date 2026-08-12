@@ -1,0 +1,461 @@
+北京启德考培
+
+
+雅思突破写作 LESSON 2
+
+Intermediate IELTS Writing - Lesson 2
+      PART ONE
+ 01   小作文静态图写作框架
+
+      PART TWO
+ 02   静态图小作文各段落写作方法及句型
+
+      PART THREE
+ 03   静态图主体段写作要求及句型结构
+
+      PART FOUR
+ 04   课堂内容总结
+06
+PART ONE 小作文静态图写作框架
+PART ONE 小作文静态图写作框架
+
+
+
+
+                      summarise information
+
+
+
+
+                      main features and
+                      comparison
+PART TWO 静态图小作文各段落写作方法及句型
+PART TWO 静态图小作文各段落写作方法及句型
+动态图与静态图
+PART TWO 静态图小作文各段落写作方法及句型
+动态图与静态图
+PART TWO 静态图小作文各段落写作方法及句型
+Introduction 写作
+
+题干示例：
+
+The table below give information on the police budget for 2017 and 2018 in one area of Britain.
+  图表名称              描述动词              话题事件                   时间                地点
+
+
+The chart below gives information about how families in one country spent their weekly income in 1968 and in 2018.
+  图表名称             描述动词              话题事件                  地点               话题事件                      时间
+
+
+The graph below shows the number of shops that closed and the number of new shops that opened in one country
+图表名称           描述动词                                    话题事件                                        地点
+
+between 2011 and 2018.
+         时间
+PART TWO 静态图小作文各段落写作方法及句型
+Introduction 写作
+Introduction 信息构成： 图表名称+描述动词+话题事件+时间+地点
+PART TWO 静态图小作文各段落写作方法及句型
+Overview 写作（饼图——Pie Chart）
+
+PARAGRAPH 2 - Overview
+
+主要内容：描述图表主要特征
+写作要求：一般用两句话进行概述
+     不用写出具体数值
+
+ - 概述方式：
+1. 观察最值进行概述
+2. 观察总量进行概述
+3. 对已有的项目类别进行进一步归类进行概述
+4. 观察各项占比差异性进行概述
+PART TWO 静态图小作文各段落写作方法及句型
+Overview 写作（饼图——Pie Chart）
+方法1：观察最值进行概述
+
+  结论：
+  住宿/食物——占比最多
+
+e.g. The spending on food and accommodation was
+                        主体事件                    动词
+
+in the majority (of total expenditure) among students
+             特征信息                       主体事件
+
+from the 3 countries.
+PART TWO 静态图小作文各段落写作方法及句型
+Overview 写作（饼图——Pie Chart）
+
+方法2：观察总量（total）进行概述
+
+  结论：
+  Country A和Country B远远大于Country C
+
+
+e.g. Total spending from students in Country A and B was
+                      主体事件                          动词
+
+over than      that of students in Country C.
+特征信息              主体事件
+PART TWO 静态图小作文各段落写作方法及句型
+Practice 1: 完成下图概述段的写作
+PART TWO 静态图小作文各段落写作方法及句型
+Overview 写作（柱图——Bar Chart）
+
+PARAGRAPH 2 - Overview
+
+主要内容：描述图表主要特征
+写作要求：一般用两句话进行概述
+     不用写出具体数值
+
+ - 概述方式：
+1. 观察最值分布进行概述
+2. 关注图例内部的最值差异进行概述
+3. 关注组别内部的数据差异进行概述
+PART TWO 静态图小作文各段落写作方法及句型
+Overview 写作（柱图——Bar Chart）
+方法1：观察最值分布进行概述
+
+  结论：
+  Female最值：35-64 / Male最值：15-24
+
+e.g. It is clear to see that the greatest proportion of males who
+           连接句型                   特征信息
+
+did regular physical activities was in the group ranging from 15-
+         主体事件                 动词              组别描述
+
+24, while females with this feature can be mainly found in the
+    连接词             特征信息                     动词
+
+group from 35-64.
+     组别描述
+PART TWO 静态图小作文各段落写作方法及句型
+Overview 写作（柱图——Bar Chart）
+方法2：关注图例内部的最值差异进行概述
+
+  结论：
+  就做常规运动的人数比例而言，Male的差异大于Female
+
+e.g. In terms of the proportion of people who did exercises
+     连接短语                       主体事件
+
+on a daily basis, the difference among males seems to be
+                    特征信息                        动词
+
+even more significant than that among women.
+        特征信息
+PART TWO 静态图小作文各段落写作方法及句型
+Overview 写作（柱图——Bar Chart）
+方法3：关注组别内部的数据差异进行概述
+
+  结论：
+  除 15-24 岁，Female高于Male
+
+e.g. The proportion of women who did regular sports was (always)
+                          主体事件                           动词
+
+higher than that of man, with the only exception appearing in the
+ 特征信息                           连接短语                动词
+
+age group from 15-24.
+      组别描述
+PART TWO 静态图小作文各段落写作方法及句型
+Practice 2: 完成下图概述段的写作
+
+         The chart below shows the health spending among five different countries in 2002.
+PART TWO 静态图小作文各段落写作方法及句型
+Overview 写作（表格——Table）
+
+PARAGRAPH 2 - Overview
+
+主要内容：描述图表主要特征
+写作要求：一般用两句话进行概述
+     不用写出具体数值
+
+ - 概述方式：
+1. 观察横向/纵向最值分布并进行概述
+2. 关注组别内部的数据差异进行概述
+PART TWO 静态图小作文各段落写作方法及句型
+Overview 写作（表格——Table）
+
+方法1：观察横向/纵向最值分布并进行概述
+
+  结论：
+  除了 50+外，看电视是人们最喜欢的娱乐活动
+  GROUP/IS/GC 和 TV / PE相比不那么流行
+
+
+e.g. It is clear to see that watching TV, as a whole, was the most popular activity among each age group with
+          连接短语             主体事件         连接短语                   特征信息                    组别描述
+
+the only exception appearing in people who were 50 and over; and compared with watching TV and pub
+     连接短语         动词（非谓）                 组别描述                       连接短语
+
+entertainment, group, individual sport and going to the cinema were less welcomed by nearly all age groups.
+                           主体事件                                              动词               组别描述
+PART TWO 静态图小作文各段落写作方法及句型
+Overview 写作（表格——Table）
+
+方法2：关注组别内部的数据差异进行概述
+
+  结论：
+  年纪——花费时间→负相关
+
+
+
+
+e.g. There was a negative relationship between the time spent and the age.
+               特征信息                                    主体事件
+PART TWO 静态图小作文各段落写作方法及句型
+Practice 3: 完成下图概述段的写作
+
+       The table below shows the water usage for different purposes in six different countries
+       in 2001. Summarize the information by selecting and reporting the main features and
+       make comparisons where relevant. (2024.3.9)
+PART TWO 静态图小作文各段落写作方法及句型
+Detail 写作（饼图——Pie Chart）
+PART TWO 静态图小作文各段落写作方法及句型
+Detail 写作（饼图——Pie Chart）
+
+DETAILS 1: 第一大值+第二大值+对比
+
+SENTENCE 1: 描述Country A&B的第一大值
+  → accommodation（Country A: 45%/Country B: 35%）
+
+SENTENCE 2: 描述Country A&B的第二大值
+  → food（Country A: 22%, =2/1×45% / Country B: 27%）
+
+SENTENCE 3: 描述Country C的第一大值
+  → food（Country C: 35%）
+
+SENTENCE 4: 描述Country C的第二大值
+  → accommodation（Country C: 31%）
+PART TWO 静态图小作文各段落写作方法及句型
+Detail 写作（饼图——Pie Chart）
+
+DETAILS 2: 剩余数值+对比
+
+SENTENCE 1: 描述Country A&B&C的Leisure
+  → leisure（Country A: 22% / Country B: 20% / Country C: 12%）
+
+SENTENCE 2: 描述Country A&B&C的Books
+  → Books（Country A: 3% / Country B: 12% / Country C: 21%）
+
+SENTENCE 3: 描述Country A&B&C的Others
+  → food（Country A: 8% / Country B: 6% / Country C: 1%）
+PART TWO 静态图小作文各段落写作方法及句型
+Practice 4: 对下图信息进行分组，并挑选其中重要数据描述特征
+
+        The charts below show the average percentages in typical meals of three types of
+        nutrients, all of which may be unhealthy if eaten too much
+PART TWO 静态图小作文各段落写作方法及句型
+Detail 写作（柱图——Bar Chart）
+
+PARAGRAPH 3&4 - Details 1&2
+
+主要内容：对重要的细节数据进行描述/对比
+写作要求：单个组别/图例内部数据需要比较
+     不同组别/图例之间的相关数据需要比较
+
+  - 柱图分组方式：
+1. 按照图例进行划分
+2. 按照组别进行分组
+PART TWO 静态图小作文各段落写作方法及句型
+Detail 写作（柱图——Bar Chart）
+
+Detail 1: Sydney+Melbourne+Hobart（柱形相似）
+
+SENTENCE 1: 三个城市里的最大值
+ → Cafe/60%-65%/第一大数值/Melbourne+Hobart相似
+
+SENTENCE 2: 三个城市里的第二大值
+ → instant coffee/54%-48%-45%/第二大数值
+
+SENTENCE 3: 三个城市里的最小值
+ → fresh coffee/43%-42%-37%/最小值
+
+SENTENCE 4: 在Sydney, fresh coffee和instant coffee数据相似
+ → 43%-45%
+PART TWO 静态图小作文各段落写作方法及句型
+Detail 写作（柱图——Bar Chart）
+
+Detail 2: Brisbane+Adelaide（剩余组别）
+
+SENTENCE 1: 两个城市里的最大值
+ → Brisbane：55%（cafe）/Adelaide：50%（instant coffee）
+
+SENTENCE 2: 两个城市里的第二大值
+ → Brisbane：53%（instant）/Adelaide：49%（cafe）
+
+SENTENCE 3: 两个城市里的最小值
+ → Brisbane: 34%（fresh coffee）/Adelaide: 34%（fresh coffee）
+   数据相似
+
+SENTENCE 4: 在Adelaide, cafe和instant coffee数据相似
+ → 50%左右
+PART TWO 静态图小作文各段落写作方法及句型
+Practice 5: 对下图信息进行分组，并挑选其中重要数据描述特征
+
+        The chart below shows the health spending among five different countries in 2002.
+PART TWO 静态图小作文各段落写作方法及句型
+Detail 写作（表格——Table）
+PART TWO 静态图小作文各段落写作方法及句型
+Detail 写作（表格——Table）
+
+Detail 1: 20s/30s/40s（最值分布情况相似）
+
+SENTENCE 1: 三个年龄段的最大值
+ → Watching TV（500/420/380）
+
+SENTENCE 2: 三个年龄段的第二大值
+ → Pub entertainment（400/300/200）
+   倍数关系（20s-40s）
+
+SENTENCE 3: 三个年龄段的中间值
+ → Cinema/Individual sport
+
+SENTENCE 4: 三个年龄段的最小值
+ → Group(70/40/30)
+PART TWO 静态图小作文各段落写作方法及句型
+Detail 写作（表格——Table）
+
+Detail 2: teens/50s（剩余年龄组）
+
+SENTENCE 1: 两个年龄段的最大值
+ → Teens：Watching TV（800）
+   50s+：Pub entertainment（120）
+
+SENTENCE 2: 两个年龄段的第二大值
+ → Teens：Group（120）
+   50s+：Individual sport（90）
+
+SENTENCE 3: 两个年龄段的中间值+最小值
+ → Teens：Individual sport/Cinema/Pub entertainment(40/30/20, 最小)
+   50s：Cinema/Watching TV/Group(40/40/10, 最小)
+PART TWO 静态图小作文各段落写作方法及句型
+Practice 6: 对下图信息进行分组，并挑选其中重要数据描述特征
+
+      The table below shows the water usage for different purposes in six different countries
+      in 2001. Summarize the information by selecting and reporting the main features and
+      make comparisons where relevant. (2024.3.9)
+PART THREE 静态图主体段写作要求及句型结构
+PART THREE 静态图主体段写作要求及句型结构
+Practice 7: 观察下列句子构成，讨论其共性特征
+饼图主体段句型示例：Country A和Country B的学生在accommodation的花销是最多的，占比分别为45%和35%
+
+As for students in Country A and B, their spending on accommodation was the largest component, taking up
+45% and 35% respectively.
+
+柱图主体段句型：在Sydney/Melbourne/Hobart，购买instant coffee的人数比例是最高的，分别为58%/48%/45%
+
+In Sydney, Melbourne and Hobart, people who bought instant coffee took up the highest proportion, with the
+figure being 58%, 48% and 45% respectively.
+
+表格主体段句型：在三个年龄段，人们最不喜欢的娱乐活动是Group activities，只会花费50小时不到
+
+In the three age groups, the least popular way for entertainment was group activities, which was spent less
+than 50 hours.
+PART THREE 静态图主体段写作要求及句型结构
+Practice 7: 观察下列句子构成，讨论其共性特征
+饼图主体段句型示例：Country A和Country B的学生在accommodation的花销是最多的，占比分别为45%和35%
+As for students in Country A and B, their spending on accommodation was the largest component, taking up
+连接词                            主体事件                                 动词          特征信息              动词
+
+45% and 35% respectively.
+      具体数据
+
+柱图主体段句型：在Sydney/Melbourne/Hobart，购买instant coffee的人数比例是最高的，分别为58%/48%/45%
+In Sydney, Melbourne and Hobart, people who bought instant coffee took up the highest proportion, with the
+                          主体事件                                      动词            特征信息             连接词
+
+figure being 58%, 48% and 45% respectively.
+                       具体数据
+
+表格主体段句型：在三个年龄段，人们最不喜欢的娱乐活动是Group activities，只会花费50小时不到
+In the three age groups, the least popular way for entertainment was group activities, which was spent less than 50 hours.
+        主体事件                            特征信息                     动词     主体事件                  动词             具体数据
+PART THREE 静态图主体段写作要求及句型结构
+饼图主体段句型——变化前数据描述
+                                                                     小句2
+                           小句1（过去数据+特征信息+主体事件）
+
+e.g. 在1966年，在汽车方面的开支占比为23%，是第二大构成部分；而到了1996年它扩张至45%，成
+  为了最大的构成部分
+
+
+  In 1966, spending on cars was the second largest component, which accounted for 23%, while it
+    时间        主体事件 动词描述                   特征信息                        具体数据             连接词 主体事件
+
+
+  expanded   to 45% after 3 decades, becoming the top of the list.
+  动词描述       具体数据          时间               特征信息
+PART THREE 静态图主体段写作要求及句型结构
+饼图主体段句型——变化前数据描述
+
+e.g. 食物方面的花销是最大的构成部分，占比为 44%
+
+
+
+                         信息要构成要素
+                 主体事件              食物方面的开支
+
+                 具体数据                44%
+
+                 特征信息              最大构成部分
+PART THREE 静态图主体段写作要求及句型结构
+饼图主体段句型——变化前数据描述
+
+e.g. 食物方面的花销是最大的构成部分，占比为 44%，在1966年
+
+  变化前数据描述句型结构写作
+
+  句型1：主体事件做主语
+             主语                  系/谓语动词               表语/宾语                    附加信息
+       Spending on food              was        the largest component,     accounting for 44%
+
+
+  句型2：特征信息做主语
+
+  The largest part of spending   can be found   in the category of food,    occupying 44%
+PART THREE 静态图主体段写作要求及句型结构
+饼图主体段句型——变化前数据描述
+
+e.g. 食物方面的花销是最大的构成部分，占比为 44%，在1966年
+
+  变化前数据描述句型结构写作
+  句型1：主体事件做主语
+             主语                  系/谓语动词               表语/宾语                    附加信息
+       Spending on food              was        the largest component,     accounting for 44%
+
+
+  句型2：特征信息做主语
+
+  The largest part of spending   can be found   in the category of food,    occupying 44%
+
+
+Practice 7: 使用具体数据做主语，描述上述句子信息
+PART THREE 静态图主体段写作要求及句型结构
+饼图主体段句型——相似数据描述
+PART FOUR   课堂内容总结
+PART FOUR 课堂内容总结
+
+
+
+       易错点总结       05
+         主谓搭配
+      定语从句引导词
+                        句式语言表达
+      后置定语的写作      04
+                        不同信息要素做主语
+
+    静态图主体段写作       03
+     分组方式及句型结构
+        饼图句型转化          静态图概述方式及句型
+                   02   饼图概述方式及句型（×2）
+                        柱图概述方式及句型（×3）
+  小作文静态图文章结构       01
+         分段方式           表格概述方式及句型（×2）
+
+     每段主要任务/内容
+

@@ -1,0 +1,21 @@
+# Original PDFs are backed up separately and are not committed.
+*.pdf
+*.PDF
+
+# Local/runtime files
+.DS_Store
+.codex-log/
+tmp/
+*.log
+*.tmp
+*.swp
+
+# Secrets and credentials
+.env
+.env.*
+auth.json
+credentials.json
+
+# Generated local caches
+__pycache__/
+.pytest_cache/

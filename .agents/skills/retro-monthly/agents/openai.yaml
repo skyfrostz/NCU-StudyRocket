@@ -1,0 +1,4 @@
+interface:
+  display_name: "月度复盘"
+  short_description: "汇总四周行为并更新学期与保研路线"
+  default_prompt: "用 $retro-monthly 做本月复盘，指出需要我补充的事实。"
