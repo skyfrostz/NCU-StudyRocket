@@ -55,3 +55,37 @@
 - Skill 不出现：重启 Codex，并确认从本目录启动。
 - 规则不生效：检查根目录 `AGENTS.md` 是否为空、是否存在更近的 `AGENTS.override.md`。
 - 资料过大：只把 Markdown 或 `PDF提取文本/` 的文本交给助理，PDF 保留在云盘。
+# NCU-StudyRocket
+
+南昌大学玛丽女王学院数据科学与大数据技术（中外合作办学）学生的个人学业工作台。Markdown 是唯一数据源，Codex 负责答疑、规划与复盘，原生 macOS 应用负责清晰查看和编辑。
+
+## 原生应用
+
+应用源码位于 `apps/NCUStudyRocket/`，不启动服务器、不创建后台常驻进程、不使用数据库。
+
+```bash
+cd apps/NCUStudyRocket
+./Scripts/install_app.sh
+```
+
+安装后从 `/Applications/NCU StudyRocket.app` 打开。首次路径失效时，在“设置”或侧边栏选择包含 `AGENTS.md` 与 `PROFILE.md` 的仓库目录。应用只写入仓库内 Markdown，明确点击“保存”后才落盘；Git 提交和推送仍由用户在终端完成。
+
+## 常用操作
+
+- 首页：查看今日第一任务、本周航线和待核实事项。
+- 周计划：编辑七日时间块与交付物，按 `⌘S` 或“保存”写入 `工作台/下周计划.md`。
+- 每日复盘：填写五项行为账，保存到对应月份文件。
+- 航线、保研、资料库：查看或编辑 Markdown 原文。
+- “打开 Codex”：通过 `codex://` 深链接带入当前仓库和预设提示。
+
+## 重新构建与卸载
+
+```bash
+cd apps/NCUStudyRocket
+swift test
+./Scripts/build_app.sh
+```
+
+卸载只需退出应用并移除 `/Applications/NCU StudyRocket.app`。备份位于 `~/Library/Application Support/NCU StudyRocket/Backups/`，不会提交到 GitHub。
+
+原始 PDF 继续由 `.gitignore` 排除并使用私有云盘单独备份；不要把账号、令牌、身份证号或医疗隐私写入仓库。

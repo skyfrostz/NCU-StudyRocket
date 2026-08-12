@@ -19,3 +19,7 @@ credentials.json
 # Generated local caches
 __pycache__/
 .pytest_cache/
+
+# Native app build output
+apps/NCUStudyRocket/.build/
+apps/NCUStudyRocket/.swiftpm/
