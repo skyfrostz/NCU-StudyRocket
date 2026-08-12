@@ -3,12 +3,48 @@ import SwiftUI
 import AppKit
 import CryptoKit
 
+enum ChatConnectionState: String {
+    case disconnected = "未连接"
+    case connecting = "连接中..."
+    case connected = "已连接"
+    case thinking = "思考中..."
+    case reconnecting = "重连中..."
+    case stopped = "已停止"
+    case failed = "连接失败"
+}
+
+enum ChatMessagePhase: String, Hashable {
+    case commentary
+    case finalAnswer = "final_answer"
+    case unknown
+}
+
+enum ChatTurnState: String, Hashable {
+    case completed
+    case interrupted
+    case failed
+    case inProgress
+}
+
 struct ChatMessage: Identifiable, Hashable {
     enum Role: String { case user, assistant, system }
     let id: String
     let role: Role
     let text: String
     let date: Date
+    let turnID: String?
+    let phase: ChatMessagePhase
+    let turnState: ChatTurnState?
+
+    init(id: String, role: Role, text: String, date: Date, turnID: String? = nil, phase: ChatMessagePhase = .unknown, turnState: ChatTurnState? = nil) {
+        self.id = id; self.role = role; self.text = text; self.date = date
+        self.turnID = turnID; self.phase = phase; self.turnState = turnState
+    }
+}
+
+struct ChatTurnResult {
+    let status: ChatTurnState
+    let errorMessage: String?
 }
 
 enum StudyChatError: LocalizedError {
@@ -30,29 +66,47 @@ final class CodexAppServerClient: NSObject {
     private var outputBuffer = Data()
     private var requestID = 0
     private var pending: [Int: CheckedContinuation<[String: Any], Error>] = [:]
-    private var turnContinuation: CheckedContinuation<Void, Error>?
-    private var currentReply = ""
+    private var turnContinuation: CheckedContinuation<ChatTurnResult, Error>?
     private var currentThreadID: String?
+    private var activeTurnID: String?
     private var rootURL: URL?
+    private var isDisconnecting = false
+    private var completedItems = Set<String>()
+    private var streamItems: [String: (text: String, phase: ChatMessagePhase)] = [:]
+    private var stderrTail = ""
+    private var connectionGeneration = 0
 
-    var onReplyDelta: ((String) -> Void)?
+    var onReplyDelta: ((String, String, ChatMessagePhase) -> Void)?
+    var onItemCompleted: ((String, String, ChatMessagePhase) -> Void)?
     var onToolCall: (([String: Any]) -> [String: Any])?
-    var onReplyCompleted: ((String) -> Void)?
+    var onTurnCompleted: ((ChatTurnResult) -> Void)?
+    var onRetry: ((String) -> Void)?
+    var onProcessEnded: ((String) -> Void)?
     var onHistory: (([ChatMessage]) -> Void)?
 
     var isRunning: Bool { process?.isRunning == true }
+    var threadID: String? { currentThreadID }
 
     func connect(root: URL, threadID: String?) async throws -> String {
-        if isRunning, currentThreadID != nil { return currentThreadID! }
+        if isRunning, self.rootURL?.standardizedFileURL == root.standardizedFileURL, currentThreadID == threadID, threadID != nil {
+            return threadID!
+        }
+        if isRunning { disconnect() }
         guard FileManager.default.isExecutableFile(atPath: executable) else {
             throw StudyChatError.unavailable("找不到 Codex 本地程序，请先打开或更新 Codex。")
         }
-        rootURL = root
+        rootURL = root.standardizedFileURL
+        isDisconnecting = false
+        connectionGeneration += 1
+        let generation = connectionGeneration
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = ["app-server", "--stdio"]
         let stdin = Pipe(); let stdout = Pipe(); let stderr = Pipe()
         process.standardInput = stdin; process.standardOutput = stdout; process.standardError = stderr
+        process.terminationHandler = { [weak self] process in
+            Task { @MainActor in self?.processEnded(process, generation: generation, message: process.terminationReason == .uncaughtSignal ? "Codex 子进程异常退出。" : "Codex 子进程已退出。") }
+        }
         try process.run()
         self.process = process; input = stdin.fileHandleForWriting; output = stdout.fileHandleForReading
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -60,9 +114,14 @@ final class CodexAppServerClient: NSObject {
             guard !data.isEmpty else { return }
             Task { @MainActor in self?.consume(data) }
         }
+        stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            Task { @MainActor in self?.consumeStderr(data) }
+        }
 
         _ = try await request(method: "initialize", params: [
-            "clientInfo": ["name": "ncu-studyrocket", "version": "1.0"],
+            "clientInfo": ["name": "ncu-studyrocket", "version": "1.1"],
             "capabilities": ["experimentalApi": true]
         ])
         sendNotification(method: "initialized", params: [:])
@@ -70,24 +129,16 @@ final class CodexAppServerClient: NSObject {
         let thread: [String: Any]
         if let threadID {
             let response = try await request(method: "thread/resume", params: [
-                "threadId": threadID,
-                "includeTurns": true,
-                "cwd": root.path,
-                "sandbox": "read-only",
-                "approvalPolicy": "never",
-                "runtimeWorkspaceRoots": [root.path]
+                "threadId": threadID, "includeTurns": true, "cwd": root.path,
+                "sandbox": "read-only", "approvalPolicy": "never", "runtimeWorkspaceRoots": [root.path]
             ])
             thread = try resultObject(response)
             currentThreadID = threadID
         } else {
             let response = try await request(method: "thread/start", params: [
-                "cwd": root.path,
-                "sandbox": "read-only",
-                "approvalPolicy": "never",
-                "runtimeWorkspaceRoots": [root.path],
-                "threadSource": "studyrocket",
-                "developerInstructions": Self.developerInstructions,
-                "dynamicTools": [Self.proposalTool]
+                "cwd": root.path, "sandbox": "read-only", "approvalPolicy": "never",
+                "runtimeWorkspaceRoots": [root.path], "threadSource": "studyrocket",
+                "developerInstructions": Self.developerInstructions, "dynamicTools": [Self.proposalTool]
             ])
             thread = try resultObject(response)
             guard let newID = (thread["thread"] as? [String: Any])?["id"] as? String else {
@@ -100,30 +151,55 @@ final class CodexAppServerClient: NSObject {
         return currentThreadID!
     }
 
-    func send(_ text: String) async throws {
+    func send(_ text: String) async throws -> ChatTurnResult {
         guard let threadID = currentThreadID, isRunning else { throw StudyChatError.unavailable("学业对话尚未连接。") }
-        currentReply = ""
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        guard turnContinuation == nil else { throw StudyChatError.unavailable("上一轮对话仍在运行。") }
+        completedItems.removeAll(); streamItems.removeAll(); activeTurnID = nil
+        let response = try await request(method: "turn/start", params: [
+            "threadId": threadID, "input": [["type": "text", "text": text]],
+            "cwd": rootURL?.path ?? FileManager.default.currentDirectoryPath,
+            "sandboxPolicy": ["type": "readOnly", "networkAccess": true],
+            "approvalPolicy": "never", "effort": "medium"
+        ])
+        guard let turn = response["turn"] as? [String: Any], let turnID = turn["id"] as? String else {
+            throw StudyChatError.protocolError("Codex 没有返回本轮 turn ID。")
+        }
+        activeTurnID = turnID
+        return try await withCheckedThrowingContinuation { continuation in
             turnContinuation = continuation
-            sendRequest(method: "turn/start", params: [
-                "threadId": threadID,
-                "input": [["type": "text", "text": text]],
-                "cwd": rootURL?.path ?? FileManager.default.currentDirectoryPath,
-                "sandboxPolicy": ["type": "readOnly", "networkAccess": true],
-                "approvalPolicy": "never",
-                "effort": "medium"
-            ], awaitResponse: false)
         }
     }
 
-    func stop() {
-        process?.terminate()
-        output?.readabilityHandler = nil
-        process = nil; input = nil; output = nil; currentThreadID = nil
-        turnContinuation?.resume(throwing: StudyChatError.unavailable("已停止本轮对话。")); turnContinuation = nil
+    func interrupt() {
+        guard let threadID = currentThreadID, let turnID = activeTurnID, isRunning else { return }
+        sendRequest(method: "turn/interrupt", params: ["threadId": threadID, "turnId": turnID])
+        activeTurnID = nil
+        finishTurn(.success(ChatTurnResult(status: .interrupted, errorMessage: nil)))
     }
 
-    func disconnect() { stop() }
+    func disconnect() {
+        isDisconnecting = true
+        connectionGeneration += 1
+        output?.readabilityHandler = nil
+        if let process, process.isRunning { process.terminate() }
+        self.process = nil; input = nil; output = nil; currentThreadID = nil; activeTurnID = nil
+        let error = StudyChatError.unavailable("学业对话已断开。")
+        finishPending(with: error)
+        finishTurn(.failure(error))
+    }
+
+    private func processEnded(_ process: Process, generation: Int, message: String) {
+        guard generation == connectionGeneration, self.process === process, !isDisconnecting else { return }
+        self.process = nil; input = nil; output = nil; currentThreadID = nil; activeTurnID = nil
+        finishPending(with: StudyChatError.unavailable(message))
+        finishTurn(.failure(StudyChatError.unavailable(message)))
+        onProcessEnded?(message)
+    }
+
+    private func consumeStderr(_ data: Data) {
+        guard let text = String(data: data, encoding: .utf8) else { return }
+        stderrTail = String((stderrTail + text).suffix(8192))
+    }
 
     private func consume(_ data: Data) {
         outputBuffer.append(data)
@@ -134,34 +210,84 @@ final class CodexAppServerClient: NSObject {
         }
     }
 
+    private func matchesCurrentTurn(_ params: [String: Any]) -> Bool {
+        guard let threadID = params["threadId"] as? String, threadID == currentThreadID else { return false }
+        guard let activeTurnID else { return false }
+        return (params["turnId"] as? String ?? activeTurnID) == activeTurnID
+    }
+
     private func handle(_ object: [String: Any]) {
-        if let id = object["id"] as? Int {
-            if let continuation = pending.removeValue(forKey: id) {
-                if let error = object["error"] as? [String: Any] { continuation.resume(throwing: StudyChatError.protocolError(error["message"] as? String ?? "Codex 请求失败。")) }
-                else { continuation.resume(returning: object["result"] as? [String: Any] ?? [:]) }
-                return
-            }
+        if let id = object["id"] as? Int, let continuation = pending.removeValue(forKey: id) {
             if let error = object["error"] as? [String: Any] {
-                turnContinuation?.resume(throwing: StudyChatError.protocolError(error["message"] as? String ?? "Codex turn 启动失败。")); turnContinuation = nil
-                return
+                continuation.resume(throwing: StudyChatError.protocolError(error["message"] as? String ?? "Codex 请求失败。"))
+            } else {
+                continuation.resume(returning: object["result"] as? [String: Any] ?? [:])
             }
+            return
         }
         guard let method = object["method"] as? String, let params = object["params"] as? [String: Any] else { return }
         switch method {
+        case "item/started":
+            guard matchesCurrentTurn(params), let item = params["item"] as? [String: Any], let itemID = item["id"] as? String else { return }
+            let phase = ChatMessagePhase(rawValue: item["phase"] as? String ?? "") ?? .unknown
+            streamItems[itemID] = ("", phase)
         case "item/agentMessage/delta":
-            if let delta = params["delta"] as? String { currentReply += delta; onReplyDelta?(delta) }
+            guard matchesCurrentTurn(params), let itemID = params["itemId"] as? String, let delta = params["delta"] as? String else { return }
+            let phase = streamItems[itemID]?.phase ?? .unknown
+            streamItems[itemID, default: ("", phase)].text += delta
+            onReplyDelta?(itemID, delta, phase)
+        case "item/completed":
+            guard matchesCurrentTurn(params), let item = params["item"] as? [String: Any], let itemID = item["id"] as? String, !completedItems.contains(itemID) else { return }
+            completedItems.insert(itemID)
+            let phase = ChatMessagePhase(rawValue: item["phase"] as? String ?? "") ?? streamItems[itemID]?.phase ?? .unknown
+            let text = (item["text"] as? String) ?? streamItems[itemID]?.text ?? ""
+            streamItems[itemID] = (text, phase)
+            onItemCompleted?(itemID, text, phase)
         case "item/tool/call":
-            guard let requestID = object["id"] else { return }
+            guard matchesCurrentTurn(params), let requestID = object["id"] else { return }
             let result = onToolCall?(params) ?? ["success": false, "contentItems": [["type": "inputText", "text": "应用未接收到该工具调用。"]]]
             sendRaw(["id": requestID, "result": result])
         case "turn/completed":
-            onReplyCompleted?(currentReply)
-            turnContinuation?.resume(); turnContinuation = nil
+            guard matchesCurrentTurn(params), let turn = params["turn"] as? [String: Any] else { return }
+            guard (turn["id"] as? String) == activeTurnID else { return }
+            let rawStatus = turn["status"] as? String ?? "failed"
+            let status = ChatTurnState(rawValue: rawStatus) ?? .failed
+            let error = (turn["error"] as? [String: Any])?["message"] as? String
+            let result = ChatTurnResult(status: status, errorMessage: error)
+            onTurnCompleted?(result)
+            switch status {
+            case .failed:
+                finishTurn(.failure(StudyChatError.protocolError(error ?? "本轮对话失败。")))
+            case .completed, .interrupted:
+                finishTurn(.success(result))
+            case .inProgress:
+                break
+            }
         case "error":
-            let message = params["message"] as? String ?? "Codex 返回错误。"
-            turnContinuation?.resume(throwing: StudyChatError.protocolError(message)); turnContinuation = nil
+            guard let threadID = params["threadId"] as? String, threadID == currentThreadID else { return }
+            if let eventTurnID = params["turnId"] as? String, eventTurnID != activeTurnID { return }
+            let message = (params["error"] as? [String: Any])?["message"] as? String ?? "Codex 返回错误。"
+            if params["willRetry"] as? Bool == true {
+                onRetry?(message)
+            } else {
+                finishTurn(.failure(StudyChatError.protocolError(message)))
+            }
         default: break
         }
+    }
+
+    private func finishTurn(_ result: Result<ChatTurnResult, Error>) {
+        guard let continuation = turnContinuation else { return }
+        turnContinuation = nil; activeTurnID = nil
+        switch result {
+        case .success(let value): continuation.resume(returning: value)
+        case .failure(let error): continuation.resume(throwing: error)
+        }
+    }
+
+    private func finishPending(with error: Error) {
+        let continuations = pending.values; pending.removeAll()
+        for continuation in continuations { continuation.resume(throwing: error) }
     }
 
     private func request(method: String, params: [String: Any]) async throws -> [String: Any] {
@@ -171,9 +297,8 @@ final class CodexAppServerClient: NSObject {
         }
     }
 
-    private func sendRequest(method: String, params: [String: Any], awaitResponse: Bool) {
-        requestID += 1
-        sendRaw(["id": requestID, "method": method, "params": params])
+    private func sendRequest(method: String, params: [String: Any]) {
+        requestID += 1; sendRaw(["id": requestID, "method": method, "params": params])
     }
 
     private func sendNotification(method: String, params: [String: Any]) { sendRaw(["method": method, "params": params]) }
@@ -193,28 +318,24 @@ final class CodexAppServerClient: NSObject {
         var result: [ChatMessage] = []
         for turn in turns {
             guard let items = turn["items"] as? [[String: Any]] else { continue }
+            let turnID = turn["id"] as? String
+            let status = ChatTurnState(rawValue: turn["status"] as? String ?? "")
             for item in items {
                 guard let type = item["type"] as? String, let id = item["id"] as? String else { continue }
-                if type == "agentMessage", let text = item["text"] as? String { result.append(ChatMessage(id: id, role: .assistant, text: text, date: .now)) }
-                if type == "userMessage", let content = item["content"] as? [[String: Any]], let text = content.first?["text"] as? String { result.append(ChatMessage(id: id, role: .user, text: text, date: .now)) }
+                if type == "agentMessage", let text = item["text"] as? String {
+                    let phase = ChatMessagePhase(rawValue: item["phase"] as? String ?? "") ?? .unknown
+                    result.append(ChatMessage(id: id, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase, turnState: status))
+                } else if type == "userMessage", let content = item["content"] as? [[String: Any]], let text = content.compactMap({ $0["text"] as? String }).first {
+                    result.append(ChatMessage(id: id, role: .user, text: text, date: .now, turnID: turnID, turnState: status))
+                }
             }
         }
         return result.isEmpty ? nil : result
     }
 
     static let proposalTool: [String: Any] = [
-        "name": "studyrocket_propose_changes",
-        "description": "提出对学业 Markdown 的修改草案。绝不直接写文件；应用会展示差异并等待用户确认。",
-        "type": "function",
-        "inputSchema": [
-            "type": "object",
-            "properties": [
-                "path": ["type": "string", "description": "仓库内 Markdown 相对路径"],
-                "content": ["type": "string", "description": "完整候选文件正文"],
-                "reason": ["type": "string", "description": "修改理由"]
-            ],
-            "required": ["path", "content", "reason"]
-        ]
+        "name": "studyrocket_propose_changes", "description": "提出对学业 Markdown 的修改草案。绝不直接写文件；应用会展示差异并等待用户确认。", "type": "function",
+        "inputSchema": ["type": "object", "properties": ["path": ["type": "string", "description": "仓库内 Markdown 相对路径"], "content": ["type": "string", "description": "完整候选文件正文"], "reason": ["type": "string", "description": "修改理由"]], "required": ["path", "content", "reason"]]
     ]
 
     static let developerInstructions = """
@@ -227,16 +348,22 @@ final class CodexAppServerClient: NSObject {
 @MainActor
 final class StudyChatStore: ObservableObject {
     @Published var messages: [ChatMessage] = []
+    @Published var processMessages: [ChatMessage] = []
     @Published var proposals: [MarkdownChangeProposal] = []
     @Published var draft = ""
     @Published var streamingReply = ""
-    @Published var status = "未连接"
+    @Published var streamingPhase: ChatMessagePhase = .unknown
+    @Published var status = ChatConnectionState.disconnected.rawValue
+    @Published var connectionState: ChatConnectionState = .disconnected
     @Published var errorMessage: String?
     @Published var isBusy = false
+    @Published var lastSubmitted: String?
     @Published private(set) var threadID: String?
     private let client = CodexAppServerClient()
     private var root: URL?
+    private var streamingItemID: String?
     private var pendingPrompt: String?
+    private var pendingUnknownMessages: [ChatMessage] = []
 
     private func threadKey(for root: URL) -> String {
         let digest = SHA256.hash(data: Data(root.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -244,50 +371,117 @@ final class StudyChatStore: ObservableObject {
     }
 
     init() {
-        client.onReplyDelta = { [weak self] delta in self?.streamingReply += delta }
-        client.onReplyCompleted = { [weak self] reply in
+        client.onReplyDelta = { [weak self] itemID, delta, phase in
             guard let self else { return }
-            if !reply.isEmpty { messages.append(ChatMessage(id: UUID().uuidString, role: .assistant, text: reply, date: .now)) }
-            streamingReply = ""; isBusy = false; status = "已连接"
+            if self.streamingItemID != itemID { self.streamingReply = ""; self.streamingItemID = itemID }
+            self.streamingPhase = phase; self.streamingReply += delta
         }
-        client.onHistory = { [weak self] history in self?.messages = history }
+        client.onItemCompleted = { [weak self] itemID, text, phase in
+            guard let self else { return }
+            if phase == .commentary {
+                self.processMessages.append(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, phase: phase))
+            } else if phase == .unknown {
+                self.pendingUnknownMessages.append(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, phase: phase))
+            } else if !text.isEmpty {
+                self.messages.append(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, phase: phase))
+            }
+            if self.streamingItemID == itemID { self.streamingReply = ""; self.streamingItemID = nil }
+        }
+        client.onTurnCompleted = { [weak self] result in
+            guard let self else { return }
+            switch result.status {
+            case .completed:
+                if !self.pendingUnknownMessages.isEmpty {
+                    let unknown = self.pendingUnknownMessages
+                    self.processMessages.append(contentsOf: unknown.dropLast())
+                    if let final = unknown.last { self.messages.append(final) }
+                }
+                self.pendingUnknownMessages.removeAll(); self.markLastUser(.completed); self.setState(.connected); self.isBusy = false
+            case .interrupted:
+                self.pendingUnknownMessages.removeAll(); self.markLastUser(.interrupted); self.setState(.stopped); self.isBusy = false
+            case .failed:
+                self.pendingUnknownMessages.removeAll(); self.markLastUser(.failed); self.setState(.failed); self.isBusy = false; self.errorMessage = result.errorMessage ?? "本轮对话失败。"
+            case .inProgress: break
+            }
+        }
+        client.onRetry = { [weak self] message in
+            guard let self else { return }
+            self.setState(.reconnecting); self.errorMessage = nil
+            if !message.isEmpty { self.status = "重连中..." }
+        }
+        client.onProcessEnded = { [weak self] message in
+            guard let self else { return }
+            self.isBusy = false; self.setState(.failed); self.errorMessage = message
+        }
+        client.onHistory = { [weak self] history in
+            guard let self else { return }
+            self.messages = history.filter { $0.phase != .commentary }
+            self.processMessages = history.filter { $0.phase == .commentary }
+        }
         client.onToolCall = { [weak self] params in self?.receiveToolCall(params) ?? ["success": false, "contentItems": []] }
     }
 
-    func connect(to root: URL) async {
-        guard self.root?.standardizedFileURL != root.standardizedFileURL || !client.isRunning else { return }
-        self.root = root; messages = []; proposals = []; streamingReply = ""; status = "连接中..."
+    private func setState(_ state: ChatConnectionState) { connectionState = state; status = state.rawValue }
+
+    private func markLastUser(_ state: ChatTurnState) {
+        guard let index = messages.lastIndex(where: { $0.role == .user }) else { return }
+        let message = messages[index]
+        messages[index] = ChatMessage(id: message.id, role: message.role, text: message.text, date: message.date, turnID: message.turnID, phase: message.phase, turnState: state)
+    }
+
+    func connect(to root: URL) async { await connectInternal(to: root, forceCreate: false) }
+
+    private func connectInternal(to root: URL, forceCreate: Bool) async {
+        if !forceCreate, self.root?.standardizedFileURL == root.standardizedFileURL, client.isRunning { return }
+        self.root = root.standardizedFileURL
+        messages = []; processMessages = []; pendingUnknownMessages.removeAll(); proposals = []; streamingReply = ""; errorMessage = nil; setState(.connecting)
         let key = threadKey(for: root)
-        let stored = UserDefaults.standard.string(forKey: key)
+        let stored = forceCreate ? nil : UserDefaults.standard.string(forKey: key)
+        threadID = stored
         do {
             let id = try await client.connect(root: root, threadID: stored)
-            threadID = id; UserDefaults.standard.set(id, forKey: key); status = "已连接"
+            threadID = id; UserDefaults.standard.set(id, forKey: key); setState(.connected)
             if let pendingPrompt { draft = pendingPrompt; self.pendingPrompt = nil }
         } catch {
-            guard stored != nil else { status = "连接失败"; errorMessage = error.localizedDescription; return }
-            client.stop()
-            do {
-                let id = try await client.connect(root: root, threadID: nil)
-                threadID = id; UserDefaults.standard.set(id, forKey: key); status = "已创建新任务"
-                if let pendingPrompt { draft = pendingPrompt; self.pendingPrompt = nil }
-            } catch { status = "连接失败"; errorMessage = error.localizedDescription }
+            client.disconnect(); setState(.failed); errorMessage = error.localizedDescription
         }
     }
 
+    func reconnect() async {
+        guard let root else { return }
+        client.disconnect(); await connectInternal(to: root, forceCreate: false)
+    }
+
+    func createNewTask() async {
+        guard let root else { return }
+        UserDefaults.standard.removeObject(forKey: threadKey(for: root)); client.disconnect(); threadID = nil
+        await connectInternal(to: root, forceCreate: true)
+    }
+
+    var canCreateNewTask: Bool { root != nil && connectionState == .failed }
     func prepare(prompt: String) { pendingPrompt = prompt; draft = prompt }
 
-    func send() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines); guard !text.isEmpty, !isBusy else { return }
-        draft = ""; messages.append(ChatMessage(id: UUID().uuidString, role: .user, text: text, date: .now)); isBusy = true; status = "思考中..."
+    func send() { send(appendUser: true) }
+
+    private func send(appendUser: Bool) {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !isBusy else { return }
+        lastSubmitted = text
+        if appendUser { messages.append(ChatMessage(id: UUID().uuidString, role: .user, text: text, date: .now, turnState: .inProgress)) }
+        draft = ""; errorMessage = nil; isBusy = true; setState(.thinking); streamingReply = ""; processMessages = []; pendingUnknownMessages.removeAll()
         Task {
-            do { try await client.send(text) }
-            catch { isBusy = false; status = "连接失败"; errorMessage = error.localizedDescription }
+            do {
+                let result = try await client.send(text)
+                if result.status == .interrupted { setState(.stopped) }
+            } catch {
+                isBusy = false; setState(.failed); errorMessage = error.localizedDescription; if draft.isEmpty { draft = text }
+            }
         }
     }
 
-    func stop() { client.stop(); isBusy = false; status = "已停止" }
-
-    func disconnect() { client.disconnect(); isBusy = false; status = "未连接" }
+    func retryLast() { guard let lastSubmitted else { return }; draft = lastSubmitted; send(appendUser: false) }
+    func stop() { client.interrupt(); markLastUser(.interrupted); isBusy = false; setState(.stopped) }
+    func disconnect() { client.disconnect(); isBusy = false; setState(.disconnected) }
 
     func applySelectedChanges(workspace: WorkspaceStore) {
         let selected = proposals.filter(\.isSelected); guard !selected.isEmpty else { return }
@@ -319,8 +513,7 @@ final class StudyChatStore: ObservableObject {
             let original = try repository.read(path)
             let proposal = MarkdownChangeProposal(relativePath: path, originalContent: original, proposedContent: content, reason: reason, baseHash: repository.hash(original))
             proposals.removeAll { $0.relativePath == path }; proposals.append(proposal)
-            let result = "已建立修改草案：\(path)。应用将展示差异，用户确认后才会写入。"
-            return ["success": true, "contentItems": [["type": "inputText", "text": result]]]
+            return ["success": true, "contentItems": [["type": "inputText", "text": "已建立修改草案：\(path)。应用将展示差异，用户确认后才会写入。"]]]
         } catch { return ["success": false, "contentItems": [["type": "inputText", "text": "无法建立草案：\(error.localizedDescription)"]] ] }
     }
 }

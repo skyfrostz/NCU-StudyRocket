@@ -244,24 +244,65 @@ struct StudyChatView: View {
                     LazyVStack(alignment: .leading, spacing: 14) {
                         if chat.messages.isEmpty { ContentUnavailableView("开始你的学业对话", systemImage: "bubble.left.and.bubble.right", description: Text("可以问课程、保研、科研，也可以让助理生成计划修改草案。")) }
                         ForEach(chat.messages) { message in ChatBubble(message: message).id(message.id) }
+                        if !chat.processMessages.isEmpty {
+                            DisclosureGroup("查看过程（\(chat.processMessages.count)）") {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    ForEach(chat.processMessages) { message in ChatBubble(message: message).id(message.id) }
+                                }.padding(.top, 4)
+                            }.font(.caption).foregroundStyle(.secondary).id("process")
+                        }
                         if !chat.streamingReply.isEmpty { ChatBubble(message: ChatMessage(id: "streaming", role: .assistant, text: chat.streamingReply, date: .now)).id("streaming") }
                     }.padding(20)
-                }.onChange(of: chat.messages.count) { _, _ in if let last = chat.messages.last { proxy.scrollTo(last.id, anchor: .bottom) } }
+                }.onChange(of: chat.messages.count) { _, _ in if let last = chat.messages.last { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last.id, anchor: .bottom) } } }
+                 .onChange(of: chat.streamingReply) { _, _ in proxy.scrollTo("streaming", anchor: .bottom) }
             }
             if !chat.proposals.isEmpty { ProposalPanel() }
             Divider()
+            if let error = chat.errorMessage {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text(error).font(.caption).foregroundStyle(.primary).textSelection(.enabled)
+                    Spacer(minLength: 8)
+                    if chat.lastSubmitted != nil { Button("重试本条") { chat.retryLast() }.buttonStyle(.bordered) }
+                    Button("重新连接") { Task { await chat.reconnect() } }.buttonStyle(.bordered)
+                    if chat.canCreateNewTask { Button("创建新学业任务") { Task { await chat.createNewTask() } }.buttonStyle(.bordered) }
+                }.padding(.horizontal, 14).padding(.vertical, 8).background(Color.orange.opacity(0.10))
+            }
             HStack(spacing: 8) {
                 Menu("快捷报告", systemImage: "wand.and.stars") { ForEach(ReminderRoute.allCases) { route in Button(route.title) { chat.prepare(prompt: route.prompt) } }; Button("学业答疑") { chat.prepare(prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") } }
                 TextField("输入问题或今天完成的事实…", text: $chat.draft, axis: .vertical).textFieldStyle(.roundedBorder).lineLimit(1...5).onSubmit { chat.send() }
                 if chat.isBusy { Button("停止", systemImage: "stop.circle") { chat.stop() }.buttonStyle(.bordered) } else { Button("发送", systemImage: "paperplane.fill") { chat.send() }.buttonStyle(.borderedProminent).disabled(chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
             }.padding(14)
-        }.task { await chat.connect(to: workspace.rootURL) }.onChange(of: workspace.rootURL) { _, root in Task { await chat.connect(to: root) } }.onDisappear { chat.disconnect() }.sheet(isPresented: $showHelp) { ChatHelpView() }.alert("学业对话", isPresented: Binding(get: { chat.errorMessage != nil }, set: { if !$0 { chat.errorMessage = nil } })) { Button("好", role: .cancel) {} } message: { Text(chat.errorMessage ?? "") }
+        }.task { await chat.connect(to: workspace.rootURL) }.onChange(of: workspace.rootURL) { _, root in Task { await chat.connect(to: root) } }.onDisappear { chat.disconnect() }.sheet(isPresented: $showHelp) { ChatHelpView() }
     }
 }
 
 struct ChatBubble: View {
     let message: ChatMessage
-    var body: some View { HStack(alignment: .top, spacing: 10) { Image(systemName: message.role == .user ? "person.circle.fill" : "graduationcap.circle.fill").foregroundStyle(message.role == .user ? .blue : .teal); Group { if message.role == .assistant { Markdown(message.text).markdownTheme(.gitHub).textSelection(.enabled) } else { Text(message.text).textSelection(.enabled) } }.padding(12).background(message.role == .user ? Color.blue.opacity(0.10) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8)).frame(maxWidth: 780, alignment: .leading); Spacer(minLength: 20) }.frame(maxWidth: .infinity, alignment: .leading) }
+    var body: some View {
+        let isUser = message.role == .user
+        return HStack(alignment: .top, spacing: 10) {
+            if !isUser { Image(systemName: message.phase == .commentary ? "ellipsis.bubble" : "graduationcap.circle.fill").foregroundStyle(message.phase == .commentary ? Color.secondary : Color.teal).accessibilityLabel("学业助理") }
+            Group {
+                if message.role == .assistant { Markdown(message.text).markdownTheme(.gitHub).textSelection(.enabled) }
+                else { Text(message.text).textSelection(.enabled) }
+            }
+            .padding(12)
+            .background(isUser ? Color.blue.opacity(0.18) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(alignment: .bottomLeading) {
+                if let state = message.turnState, state != .completed, message.role == .user {
+                    Text(state == .interrupted ? "已中断" : state == .failed ? "未完成" : "进行中")
+                        .font(.caption2).foregroundStyle(.secondary).padding(.top, 3).offset(y: 18)
+                }
+            }
+            .frame(maxWidth: 780, alignment: isUser ? .trailing : .leading)
+            if isUser {
+                Image(systemName: "person.circle.fill").foregroundStyle(.blue).accessibilityLabel("我")
+                Spacer(minLength: 20)
+            } else { Spacer(minLength: 20) }
+        }
+        .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+    }
 }
 
 struct ProposalPanel: View {

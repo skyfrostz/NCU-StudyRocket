@@ -11,7 +11,18 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "NCUStudyRocket",
-            dependencies: [.product(name: "MarkdownUI", package: "swift-markdown-ui")]
+            dependencies: [
+                "StudyRocketChatCore",
+                .product(name: "MarkdownUI", package: "swift-markdown-ui")
+            ]
+        ),
+        .target(
+            name: "StudyRocketChatCore"
+        ),
+        .executableTarget(
+            name: "NCUStudyRocketTests",
+            dependencies: ["StudyRocketChatCore"],
+            path: "Tests/NCUStudyRocketTests"
         )
     ]
 )
