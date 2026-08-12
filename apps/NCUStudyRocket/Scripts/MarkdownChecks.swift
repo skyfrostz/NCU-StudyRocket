@@ -21,6 +21,28 @@ struct MarkdownChecks {
         let dailyUpdated = MarkdownParser.replaceDaily(daily, entry: entry)
         check(dailyUpdated.components(separatedBy: "### 2026-08-12").count - 1 == 1, "daily does not duplicate")
         check(dailyUpdated.contains("新交付物") && dailyUpdated.contains("### 2026-08-13"), "daily update preserves later records")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("StudyRocketChecks-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try? Data("# 课程\n内容 A".utf8).write(to: root.appendingPathComponent("课程.md"))
+        try? Data("# 科研\n内容 B".utf8).write(to: root.appendingPathComponent("科研.md"))
+        let document = MarkdownDocumentModel(root: root)
+        document.load("课程.md")
+        check(document.relative == "课程.md" && document.text.contains("内容 A"), "first document loads")
+        document.text = "# 课程\n未保存草稿"
+        check(document.isDirty, "document dirty state")
+        document.discardAndLoad("科研.md")
+        check(document.relative == "科研.md" && document.text.contains("内容 B") && !document.isDirty, "switching loads selected file")
+        check(document.mode == .preview, "documents default to preview")
+        let repository = MarkdownRepository(root: root)
+        let first = try! repository.read("科研.md")
+        try! repository.save("# 科研\n已保存", relative: "科研.md", loadedHash: repository.hash(first))
+        check((try! repository.read("科研.md")).contains("已保存"), "repository saves current version")
+        let staleHash = repository.hash("# 科研\n已保存")
+        try! Data("# 科研\n外部修改".utf8).write(to: root.appendingPathComponent("科研.md"))
+        do { try repository.save("# 科研\n覆盖", relative: "科研.md", loadedHash: staleHash); check(false, "conflict must reject overwrite") }
+        catch MarkdownError.conflict { }
+        catch { check(false, "conflict reports correct error") }
         print("Markdown checks passed")
     }
 }

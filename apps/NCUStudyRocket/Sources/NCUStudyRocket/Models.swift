@@ -97,6 +97,41 @@ final class MarkdownRepository {
     func markdownFiles() -> [String] { let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]); return e?.compactMap { item in guard let url = item as? URL, url.pathExtension.lowercased() == "md" else { return nil }; return url.path.replacingOccurrences(of: root.path + "/", with: "") }.sorted() ?? [] }
 }
 
+enum MarkdownMode: String, CaseIterable, Identifiable { case preview, edit
+    var id: String { rawValue }
+    var title: String { self == .preview ? "查看" : "编辑" }
+}
+
+@MainActor
+final class MarkdownDocumentModel: ObservableObject {
+    @Published private(set) var relative: String?
+    @Published var text = ""
+    @Published private(set) var original = ""
+    @Published private(set) var loadedHash = ""
+    @Published var mode: MarkdownMode = .preview
+    @Published var errorMessage: String?
+
+    private var root: URL
+    init(root: URL) { self.root = root }
+    var isDirty: Bool { text != original }
+
+    func updateRoot(_ root: URL) {
+        guard self.root.standardizedFileURL != root.standardizedFileURL else { return }
+        self.root = root; relative = nil; text = ""; original = ""; loadedHash = ""; mode = .preview
+    }
+    func load(_ relative: String) {
+        let repo = MarkdownRepository(root: root)
+        do { let contents = try repo.read(relative); self.relative = relative; original = contents; text = contents; loadedHash = repo.hash(contents); mode = .preview; errorMessage = nil }
+        catch { errorMessage = "无法读取 \(relative)：\(error.localizedDescription)" }
+    }
+    func discardAndLoad(_ relative: String) { load(relative) }
+    func save() -> Bool {
+        guard let relative else { return true }
+        do { let repo = MarkdownRepository(root: root); try repo.save(text, relative: relative, loadedHash: loadedHash); original = text; loadedHash = repo.hash(text); errorMessage = nil; return true }
+        catch { errorMessage = error.localizedDescription; return false }
+    }
+}
+
 enum MarkdownParser {
     static func weekly(_ text: String) -> WeeklyPlan {
         var plan = WeeklyPlan(); let lines = text.components(separatedBy: .newlines)

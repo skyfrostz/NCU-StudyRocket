@@ -1,12 +1,16 @@
 import SwiftUI
+import MarkdownUI
 
 struct ContentView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
+    @EnvironmentObject private var document: MarkdownDocumentModel
     @State private var selection: AppSection? = .home
+    @State private var pendingSection: AppSection?
     @State private var showBinder = false
+    @State private var showUnsavedSectionDialog = false
     var body: some View {
         NavigationSplitView {
-            List(AppSection.allCases, selection: $selection) { section in
+            List(AppSection.allCases, selection: Binding(get: { selection }, set: { requestSection($0) })) { section in
                 Label(section.title, systemImage: section.icon).tag(section)
             }
             .navigationTitle("StudyRocket")
@@ -26,7 +30,7 @@ struct ContentView: View {
                 case .week: WeeklyPlanView()
                 case .daily: DailyCheckinView()
                 case .routes: RouteView(title: "四条航线", files: ["工作台/航线/课程.md", "工作台/航线/科研.md", "工作台/航线/保研.md", "工作台/航线/生活.md"])
-                case .baoyan: RouteView(title: "保研", files: ["保研/保研看板.md", "保研/目标院校库.md", "工作台/航线/保研.md"])
+                case .baoyan: RouteView(title: "保研", files: ["保研/保研进度看板.md", "保研/目标院校库.md", "保研/保研政策与时间线.md", "保研/背景提升清单.md", "工作台/航线/保研.md"])
                 case .library: LibraryView()
                 case .settings: SettingsView()
                 }
@@ -36,7 +40,13 @@ struct ContentView: View {
         .onAppear { workspace.startMonitoring() }
         .onDisappear { workspace.stopMonitoring() }
         .alert("无法绑定仓库", isPresented: Binding(get: { workspace.errorMessage != nil }, set: { if !$0 { workspace.errorMessage = nil } })) { Button("好", role: .cancel) {} } message: { Text(workspace.errorMessage ?? "") }
+        .confirmationDialog("未保存的 Markdown 修改", isPresented: $showUnsavedSectionDialog, titleVisibility: .visible) {
+            Button("保存并切换") { if document.save(), let pendingSection { selection = pendingSection; self.pendingSection = nil; workspace.refreshGitStatus() } }
+            Button("放弃修改并切换", role: .destructive) { if let pendingSection { selection = pendingSection; self.pendingSection = nil } }
+            Button("取消", role: .cancel) { pendingSection = nil }
+        } message: { Text("当前文件有未保存的内容。") }
     }
+    private func requestSection(_ next: AppSection?) { guard let next, next != selection else { return }; if document.isDirty { pendingSection = next; showUnsavedSectionDialog = true } else { selection = next } }
 }
 
 struct PageHeader: View {
@@ -103,22 +113,93 @@ struct DailyCheckinView: View {
 }
 
 struct RouteView: View {
-    @EnvironmentObject private var workspace: WorkspaceStore; let title: String; let files: [String]; @State private var selected: String?
-    var body: some View { NavigationSplitView { List(files, id: \.self, selection: $selected) { Text($0.split(separator: "/").last.map(String.init) ?? $0).tag(Optional($0)) }.navigationTitle(title) } detail: { if let selected { MarkdownEditor(relative: selected) } else { ContentUnavailableView("选择一份 Markdown", systemImage: "doc.text", description: Text("详细内容保留在仓库文件中")) } } }
+    let title: String; let files: [String]
+    var body: some View { MarkdownBrowserView(title: title, suppliedFiles: files, showsSearch: false) }
 }
 
 struct LibraryView: View {
-    @EnvironmentObject private var workspace: WorkspaceStore; @State private var query = ""; @State private var selected: String?
-    var files: [String] { MarkdownRepository(root: workspace.rootURL).markdownFiles().filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) } }
-    var body: some View { NavigationSplitView { VStack { TextField("过滤 Markdown", text: $query).textFieldStyle(.roundedBorder).padding(10); List(files, id: \.self, selection: $selected) { Label($0, systemImage: "doc.text") } }.navigationTitle("资料库") } detail: { if let selected { MarkdownEditor(relative: selected) } else { ContentUnavailableView("仓库资料", systemImage: "books.vertical", description: Text("PDF 仍在私有云盘，Markdown 可在这里查看和编辑")) } } }
+    var body: some View { MarkdownBrowserView(title: "资料库", suppliedFiles: nil, showsSearch: true) }
 }
 
-struct MarkdownEditor: View {
-    @EnvironmentObject private var workspace: WorkspaceStore; let relative: String; @State private var text = ""; @State private var original = ""; @State private var hash = ""; @State private var notice: String?
-    var body: some View { VStack(alignment: .leading) { HStack { Text(relative).font(.headline); Spacer(); Button("保存", systemImage: "square.and.arrow.down") { save() }.buttonStyle(.borderedProminent) }; TextEditor(text: $text).font(.system(.body, design: .monospaced)).padding(8).overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary)); Text("Markdown 源码 · 明确保存后才写入仓库").font(.caption).foregroundStyle(.secondary) }.padding(20).onAppear { load() }.alert("保存结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? "") } }
-    private func load() { let repo = MarkdownRepository(root: workspace.rootURL); original = (try? repo.read(relative)) ?? ""; text = original; hash = repo.hash(original) }
-    private func save() { do { try MarkdownRepository(root: workspace.rootURL).save(text, relative: relative, loadedHash: hash); notice = "已保存"; load(); workspace.refreshGitStatus() } catch { notice = error.localizedDescription } }
+struct MarkdownBrowserView: View {
+    @EnvironmentObject private var workspace: WorkspaceStore
+    @EnvironmentObject private var document: MarkdownDocumentModel
+    let title: String; let suppliedFiles: [String]?; let showsSearch: Bool
+    @State private var query = ""
+    @State private var selected: String?
+    @State private var pendingSelection: String?
+    @State private var showUnsavedDialog = false
+
+    private var files: [String] { (suppliedFiles ?? MarkdownRepository(root: workspace.rootURL).markdownFiles()).filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) } }
+
+    var body: some View {
+        NavigationSplitView {
+            VStack(spacing: 0) {
+                if showsSearch { TextField("过滤 Markdown", text: $query).textFieldStyle(.roundedBorder).padding(10).onChange(of: query) { _, _ in ensureSelection() } }
+                List(selection: Binding(get: { selected }, set: { requestSelection($0) })) {
+                    ForEach(files, id: \.self) { file in Label(file.split(separator: "/").last.map(String.init) ?? file, systemImage: "doc.text").tag(Optional(file)) }
+                }
+            }.navigationTitle(title)
+        } detail: {
+            if document.relative != nil { MarkdownDocumentView(document: document) }
+            else { ContentUnavailableView("选择一份 Markdown", systemImage: "doc.text", description: Text("详细内容保留在仓库文件中")) }
+        }
+        .onAppear { configureAndLoad() }
+        .onChange(of: workspace.rootURL) { _, _ in configureAndLoad() }
+        .confirmationDialog("未保存的 Markdown 修改", isPresented: $showUnsavedDialog, titleVisibility: .visible) {
+            Button("保存并切换") { if document.save(), let pendingSelection { selected = pendingSelection; document.load(pendingSelection); workspace.refreshGitStatus(); self.pendingSelection = nil } }
+            Button("放弃修改并切换", role: .destructive) { if let pendingSelection { selected = pendingSelection; document.discardAndLoad(pendingSelection); self.pendingSelection = nil } }
+            Button("取消", role: .cancel) { pendingSelection = nil }
+        } message: { Text("当前文件有未保存的内容。") }
+    }
+
+    private func configureAndLoad() { document.updateRoot(workspace.rootURL); if let current = document.relative, files.contains(current) { selected = current } else { selected = files.first; if let selected { document.load(selected) } } }
+    private func ensureSelection() { guard let selected, files.contains(selected) else { self.selected = files.first; if let first = files.first { document.load(first) }; return } }
+    private func requestSelection(_ next: String?) { guard let next, next != selected else { return }; if document.isDirty { pendingSelection = next; showUnsavedDialog = true } else { selected = next; document.load(next) } }
 }
+
+struct MarkdownDocumentView: View {
+    @EnvironmentObject private var workspace: WorkspaceStore
+    @ObservedObject var document: MarkdownDocumentModel
+    @State private var notice: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(document.relative ?? "Markdown").font(.headline)
+                    if document.isDirty { Label("未保存", systemImage: "circle.fill").font(.caption).foregroundStyle(.orange) }
+                }
+                Spacer()
+                Picker("显示模式", selection: $document.mode) { ForEach(MarkdownMode.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented).frame(width: 132)
+                Button("保存", systemImage: "square.and.arrow.down") { save() }.keyboardShortcut("s", modifiers: .command).disabled(!document.isDirty).buttonStyle(.borderedProminent)
+            }.padding(.horizontal, 20).padding(.vertical, 14).background(.bar)
+            Divider()
+            Group {
+                if document.mode == .preview { MarkdownPreview(text: document.text, baseURL: workspace.rootURL) }
+                else { TextEditor(text: $document.text).font(.system(.body, design: .monospaced)).padding(16).overlay(alignment: .bottomLeading) { Text("Markdown 源码 · 预览会显示当前草稿").font(.caption).foregroundStyle(.secondary).padding(20) } }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .alert("Markdown", isPresented: Binding(get: { notice != nil || document.errorMessage != nil }, set: { if !$0 { notice = nil; document.errorMessage = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? document.errorMessage ?? "") }
+    }
+    private func save() { if document.save() { workspace.refreshGitStatus(); notice = "已保存" } }
+}
+
+struct MarkdownPreview: View {
+    let text: String; let baseURL: URL
+    var body: some View {
+        ScrollView {
+            Markdown(text, baseURL: baseURL)
+                .markdownTheme(.gitHub)
+                .markdownTextStyle { FontSize(16); ForegroundColor(.primary) }
+                .markdownBlockStyle(\.blockquote) { configuration in configuration.label.padding(.leading, 14).padding(.vertical, 4).overlay(alignment: .leading) { Rectangle().fill(Color.teal).frame(width: 3) } }
+                .textSelection(.enabled)
+                .frame(maxWidth: 900, alignment: .leading)
+                .padding(28)
+        }.background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
 
 struct SettingsView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
