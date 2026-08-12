@@ -78,13 +78,17 @@ cd apps/NCUStudyRocket
 - 航线、保研、资料库：查看或编辑 Markdown 原文。
 - “打开 Codex”：通过 `codex://` 深链接带入当前仓库和预设提示。
 
+应用是 Markdown 的轻量视图，不维护独立数据库。Codex Skill 生成的内容先展示草案；应用中的结构化编辑只有点击“保存”后才写入文件。若 Codex 与应用同时编辑同一文件，应用会按加载时哈希提示冲突，不会静默覆盖。
+
 ## 重新构建与卸载
 
 ```bash
 cd apps/NCUStudyRocket
-swift test
+./Scripts/test_markdown.sh
 ./Scripts/build_app.sh
 ```
+
+快速验证使用 `./Scripts/test_markdown.sh`，不依赖完整 Xcode 或 XCTest。
 
 卸载只需退出应用并移除 `/Applications/NCU StudyRocket.app`。备份位于 `~/Library/Application Support/NCU StudyRocket/Backups/`，不会提交到 GitHub。
 
