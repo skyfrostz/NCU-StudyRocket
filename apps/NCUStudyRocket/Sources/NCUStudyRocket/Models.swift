@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import CryptoKit
 
 struct WeeklyCell: Identifiable, Hashable {
     let id = UUID()
@@ -25,13 +26,13 @@ struct DailyEntry: Identifiable {
 }
 
 enum AppSection: String, CaseIterable, Identifiable {
-    case home, week, daily, routes, baoyan, library, settings
+    case home, chat, week, daily, routes, baoyan, library, settings
     var id: String { rawValue }
     var title: String {
-        switch self { case .home: "首页"; case .week: "周计划"; case .daily: "每日复盘"; case .routes: "四条航线"; case .baoyan: "保研"; case .library: "资料库"; case .settings: "设置" }
+        switch self { case .home: "首页"; case .chat: "学业对话"; case .week: "周计划"; case .daily: "每日复盘"; case .routes: "四条航线"; case .baoyan: "保研"; case .library: "资料库"; case .settings: "设置" }
     }
     var icon: String {
-        switch self { case .home: "rectangle.grid.2x2"; case .week: "calendar"; case .daily: "checkmark.circle"; case .routes: "point.3.connected.trianglepath.dotted"; case .baoyan: "arrow.up.right.circle"; case .library: "books.vertical"; case .settings: "gearshape" }
+        switch self { case .home: "rectangle.grid.2x2"; case .chat: "bubble.left.and.bubble.right"; case .week: "calendar"; case .daily: "checkmark.circle"; case .routes: "point.3.connected.trianglepath.dotted"; case .baoyan: "arrow.up.right.circle"; case .library: "books.vertical"; case .settings: "gearshape" }
     }
 }
 
@@ -80,11 +81,16 @@ final class MarkdownRepository {
     init(root: URL) { self.root = root.standardizedFileURL }
     func url(_ relative: String) -> URL { root.appendingPathComponent(relative) }
     func read(_ relative: String) throws -> String { try String(contentsOf: url(relative), encoding: .utf8) }
-    func hash(_ content: String) -> String { String(content.hashValue) }
+    func hash(_ content: String) -> String {
+        SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
     func save(_ content: String, relative: String, loadedHash: String) throws {
         let target = url(relative).standardizedFileURL
-        guard target.path.hasPrefix(root.path + "/") else { throw MarkdownError.outsideWorkspace }
+        let resolvedRoot = root.resolvingSymlinksInPath()
+        let resolvedTarget = target.resolvingSymlinksInPath()
+        guard resolvedTarget.path.hasPrefix(resolvedRoot.path + "/") else { throw MarkdownError.outsideWorkspace }
         guard target.pathExtension.lowercased() == "md" else { throw MarkdownError.nonMarkdown }
+        guard !Self.isSymbolicLink(target) else { throw MarkdownError.outsideWorkspace }
         let current = (try? read(relative)) ?? ""
         guard hash(current) == loadedHash else { throw MarkdownError.conflict }
         let backupDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/NCU StudyRocket/Backups", isDirectory: true)
@@ -94,7 +100,19 @@ final class MarkdownRepository {
         pruneBackups(in: backupDir, prefix: relative.replacingOccurrences(of: "/", with: "_") + ".")
     }
     private func pruneBackups(in dir: URL, prefix: String) { let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey]))?.filter { $0.lastPathComponent.hasPrefix(prefix) }.sorted { $0.lastPathComponent > $1.lastPathComponent } ?? []; for file in files.dropFirst(20) { try? FileManager.default.removeItem(at: file) } }
-    func markdownFiles() -> [String] { let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]); return e?.compactMap { item in guard let url = item as? URL, url.pathExtension.lowercased() == "md" else { return nil }; return url.path.replacingOccurrences(of: root.path + "/", with: "") }.sorted() ?? [] }
+    func markdownFiles() -> [String] { let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles]); return e?.compactMap { item in guard let url = item as? URL, url.pathExtension.lowercased() == "md", !Self.isSymbolicLink(url) else { return nil }; return url.path.replacingOccurrences(of: root.path + "/", with: "") }.sorted() ?? [] }
+
+    static func isSymbolicLink(_ url: URL) -> Bool { (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) ?? false }
+}
+
+struct MarkdownChangeProposal: Identifiable, Hashable {
+    let id = UUID()
+    let relativePath: String
+    let originalContent: String
+    let proposedContent: String
+    let reason: String
+    let baseHash: String
+    var isSelected = true
 }
 
 enum MarkdownMode: String, CaseIterable, Identifiable { case preview, edit

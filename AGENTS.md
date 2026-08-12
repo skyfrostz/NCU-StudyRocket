@@ -74,6 +74,9 @@
 - 应用编辑周计划、每日行为账或 Markdown 时，先保存到内存，点击“保存”后才写文件；Codex 修改文件后重新打开应用即可刷新。
 - Skill 负责生成规划、复盘和知识结论；先展示拟写入草案，用户确认后再修改 Markdown。应用出现“文件已被其他程序修改”时，先重新加载并比较差异，不直接覆盖。
 - 应用只读显示 Git 状态，不自动提交或推送；构建/安装使用 `apps/NCUStudyRocket/Scripts/install_app.sh`，不创建后台服务。
+- 应用内“学业对话”固定连接独立的 `StudyRocket 学业助理` Codex 任务；开发维护继续在当前开发任务中进行，禁止使用最近任务或复用开发会话。
+- 学业对话使用只读 Codex 沙箱；任何 Markdown 修改必须先通过 `studyrocket_propose_changes` 形成草案，由应用展示差异并在用户确认后原子写入。禁止修改 `apps/`、`.agents/`、`.codex/`、脚本、PDF、`PDF提取文本/`、`AGENTS.md` 和 `README.md`。
+- 日、周、月提醒由应用 macOS 原生通知管理，三者独立执行；迁移验收前保留 Codex Scheduled Tasks，用户确认稳定后再停用旧任务。
 - 计划文件中的 `studyrocket` HTML 注释是应用管理边界，不能删除或移动；边界外的说明必须原样保留。
 
 ## 配套技能

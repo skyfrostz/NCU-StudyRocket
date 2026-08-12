@@ -76,9 +76,13 @@ cd apps/NCUStudyRocket
 - 周计划：编辑七日时间块与交付物，按 `⌘S` 或“保存”写入 `工作台/下周计划.md`。
 - 每日复盘：填写五项行为账，保存到对应月份文件。
 - 航线、保研、资料库：查看或编辑 Markdown 原文。
-- “打开 Codex”：通过 `codex://` 深链接带入当前仓库和预设提示。
+- 学业对话：打开独立的“StudyRocket 学业助理”任务，聊天历史由本机 Codex 保存；当前应用开发任务不会被续接。
+- “在 Codex 中打开”：通过 `codex://threads/<threadId>` 打开同一个学业任务；快捷报告会预填每日、每周或月度事实问题。
+- 原生提醒：设置页登记每日 21:30、每周日 19:30、每月最后一天 19:30 的 macOS 通知。三类提醒独立执行；验收完成前保留旧 Scheduled Tasks。
 
 应用是 Markdown 的轻量视图，不维护独立数据库。Codex Skill 生成的内容先展示草案；应用中的结构化编辑只有点击“保存”后才写入文件。若 Codex 与应用同时编辑同一文件，应用会按加载时哈希提示冲突，不会静默覆盖。
+
+学业对话中的修改同样先生成草案。应用只接受允许范围内的 `.md` 文件，显示候选正文和理由；确认“应用已选修改”后才进行 SHA-256 冲突检查、备份和原子保存。应用源码、Skills、脚本、PDF、提取文本和仓库规则不会通过对话修改。
 
 航线、保研和资料库默认以正常 Markdown 格式打开，支持标题、引用、任务清单、代码块和表格。顶部“查看 / 编辑”可在渲染预览与 Markdown 源码之间切换；切换文件前若有未保存修改，应用会要求选择保存、放弃或取消。
 
@@ -93,5 +97,7 @@ cd apps/NCUStudyRocket
 快速验证使用 `./Scripts/test_markdown.sh`，不依赖完整 Xcode 或 XCTest。
 
 卸载只需退出应用并移除 `/Applications/NCU StudyRocket.app`。备份位于 `~/Library/Application Support/NCU StudyRocket/Backups/`，不会提交到 GitHub。
+
+关闭应用会终止本次 app-server 子进程，不创建 LaunchAgent、登录项、菜单栏常驻程序或网络监听端口。系统通知由 macOS 独立投递，点击后重新打开应用并进入学业对话。
 
 原始 PDF 继续由 `.gitignore` 排除并使用私有云盘单独备份；不要把账号、令牌、身份证号或医疗隐私写入仓库。

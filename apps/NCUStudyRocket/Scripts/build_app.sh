@@ -27,6 +27,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIconFile</key><string>NCUStudyRocket</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSUserNotificationAlertStyle</key><string>alert</string>
 </dict></plist>
 PLIST
 codesign --force --deep --sign - "$APP" >/dev/null
