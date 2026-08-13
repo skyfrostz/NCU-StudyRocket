@@ -96,6 +96,9 @@ final class CodexAppServerClient: NSObject {
     private var streamItems: [String: (text: String, phase: ChatMessagePhase)] = [:]
     private var stderrTail = ""
     private var connectionGeneration = 0
+    private var lastDeltaEmission = Date.distantPast
+    private var bufferedDeltas: [String: (turnID: String, itemID: String, text: String, phase: ChatMessagePhase)] = [:]
+    private var deltaFlushTask: Task<Void, Never>?
 
     var onTurnStarted: ((String, Date?) -> Void)?
     var onReplyDelta: ((String, String, String, ChatMessagePhase) -> Void)?
@@ -160,7 +163,7 @@ final class CodexAppServerClient: NSObject {
             let response = try await request(method: "thread/start", params: [
                 "cwd": root.path, "sandbox": "read-only", "approvalPolicy": "never",
                 "runtimeWorkspaceRoots": [root.path], "threadSource": "studyrocket",
-                "developerInstructions": Self.developerInstructions, "dynamicTools": [Self.proposalTool]
+                "developerInstructions": Self.developerInstructions, "dynamicTools": [Self.proposalTool, Self.skillProposalTool]
             ])
             thread = try resultObject(response)
             guard let newID = (thread["thread"] as? [String: Any])?["id"] as? String else {
@@ -169,14 +172,18 @@ final class CodexAppServerClient: NSObject {
             currentThreadID = newID
             _ = try? await request(method: "thread/name/set", params: ["threadId": newID, "name": "StudyRocket 学业助理"])
         }
-        onHistory?(parseHistory(thread["thread"] as? [String: Any]) ?? [])
+        let history = await Task.detached(priority: .utility) { self.parseHistory(thread["thread"] as? [String: Any]) ?? [] }.value
+        var turnOrder: [String] = []
+        for id in history.compactMap(\.turnID) where !turnOrder.contains(id) { turnOrder.append(id) }
+        let recentTurnIDs = Set(turnOrder.suffix(20))
+        onHistory?(history.filter { $0.turnID.map(recentTurnIDs.contains) ?? false })
         return currentThreadID!
     }
 
     func send(_ text: String) async throws -> ChatTurnResult {
         guard let threadID = currentThreadID, isRunning else { throw StudyChatError.unavailable("学业对话尚未连接。") }
         guard turnContinuation == nil else { throw StudyChatError.unavailable("上一轮对话仍在运行。") }
-        completedItems.removeAll(); streamItems.removeAll(); activeTurnID = nil
+        completedItems.removeAll(); streamItems.removeAll(); bufferedDeltas.removeAll(); deltaFlushTask?.cancel(); activeTurnID = nil
         let response = try await request(method: "turn/start", params: [
             "threadId": threadID, "input": [["type": "text", "text": text]],
             "cwd": rootURL?.path ?? FileManager.default.currentDirectoryPath,
@@ -205,7 +212,7 @@ final class CodexAppServerClient: NSObject {
         connectionGeneration += 1
         output?.readabilityHandler = nil
         if let process, process.isRunning { process.terminate() }
-        self.process = nil; input = nil; output = nil; currentThreadID = nil; activeTurnID = nil
+        self.process = nil; input = nil; output = nil; currentThreadID = nil; activeTurnID = nil; deltaFlushTask?.cancel(); bufferedDeltas.removeAll()
         let error = StudyChatError.unavailable("学业对话已断开。")
         finishPending(with: error)
         finishTurn(.failure(error))
@@ -258,12 +265,13 @@ final class CodexAppServerClient: NSObject {
             guard matchesCurrentTurn(params), let itemID = params["itemId"] as? String, let delta = params["delta"] as? String else { return }
             let phase = streamItems[itemID]?.phase ?? .unknown
             streamItems[itemID, default: ("", phase)].text += delta
-            onReplyDelta?(activeTurnID!, itemID, delta, phase)
+            bufferDelta(turnID: activeTurnID!, itemID: itemID, text: streamItems[itemID]?.text ?? delta, phase: phase)
         case "item/completed":
             guard matchesCurrentTurn(params), let item = params["item"] as? [String: Any], let itemID = item["id"] as? String, !completedItems.contains(itemID) else { return }
             completedItems.insert(itemID)
             let phase = ChatMessagePhase(rawValue: item["phase"] as? String ?? "") ?? streamItems[itemID]?.phase ?? .unknown
             let text = (item["text"] as? String) ?? streamItems[itemID]?.text ?? ""
+            bufferedDeltas.removeValue(forKey: itemID)
             streamItems[itemID] = (text, phase)
             onItemCompleted?(activeTurnID!, itemID, text, phase)
         case "item/tool/call":
@@ -308,6 +316,19 @@ final class CodexAppServerClient: NSObject {
         }
     }
 
+    private func bufferDelta(turnID: String, itemID: String, text: String, phase: ChatMessagePhase) {
+        bufferedDeltas[itemID] = (turnID, itemID, text, phase)
+        guard deltaFlushTask == nil else { return }
+        deltaFlushTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled, let self else { return }
+            let pending = self.bufferedDeltas.values
+            self.bufferedDeltas.removeAll()
+            self.deltaFlushTask = nil
+            for delta in pending { self.onReplyDelta?(delta.turnID, delta.itemID, delta.text, delta.phase) }
+        }
+    }
+
     private func finishPending(with error: Error) {
         let continuations = pending.values; pending.removeAll()
         for continuation in continuations { continuation.resume(throwing: error) }
@@ -336,12 +357,12 @@ final class CodexAppServerClient: NSObject {
         return result
     }
 
-    private func date(fromUnix value: Any?) -> Date? {
+    nonisolated private func date(fromUnix value: Any?) -> Date? {
         guard let seconds = value as? TimeInterval else { return nil }
         return Date(timeIntervalSince1970: seconds)
     }
 
-    private func parseHistory(_ thread: [String: Any]?) -> [ChatMessage]? {
+    nonisolated private func parseHistory(_ thread: [String: Any]?) -> [ChatMessage]? {
         guard let turns = thread?["turns"] as? [[String: Any]] else { return nil }
         var result: [ChatMessage] = []
         for turn in turns {
@@ -368,10 +389,15 @@ final class CodexAppServerClient: NSObject {
         "inputSchema": ["type": "object", "properties": ["path": ["type": "string", "description": "仓库内 Markdown 相对路径"], "content": ["type": "string", "description": "完整候选文件正文"], "reason": ["type": "string", "description": "修改理由"]], "required": ["path", "content", "reason"]]
     ]
 
+    static let skillProposalTool: [String: Any] = [
+        "name": "studyrocket_propose_skill_update", "description": "仅在周复盘发现连续、可证据的稳定规律时，提出仓库 Skill 的修改草案。绝不直接写文件，用户必须确认。", "type": "function",
+        "inputSchema": ["type": "object", "properties": ["path": ["type": "string"], "content": ["type": "string"], "reason": ["type": "string"]], "required": ["path", "content", "reason"]]
+    ]
+
     static let developerInstructions = """
     你是 StudyRocket 学业助理，只处理南昌大学玛丽女王学院数据科学与大数据技术（中外合作办学）学生的课程答疑、学习规划、复盘、科研、竞赛和保研问题。先读 AGENTS.md、PROFILE.md 和相关工作台 Markdown；遵守仓库规则，未知信息标记【待核实】，不编造 GPA、排名、名额、日期或推免比例。学校政策必须基于仓库官方文件，时效信息需要联网核实并给官方来源。
     你运行在只读任务中，绝不直接编辑、创建、删除或提交文件。用户要求更新计划、交付物、复盘或档案时，读取当前内容后调用 studyrocket_propose_changes，传入完整候选正文和理由；不要把文件修改藏在普通回答里。应用会在用户确认后写入。
-    课程答疑采用“解释 -> 例子 -> 自测 -> 归档”。计划必须是可勾选交付物，保留缓冲并给撞车降级方案。只记录用户明确提供的事实，不把推测写进行为账。
+    课程答疑采用“解释 -> 例子 -> 自测 -> 归档”。计划必须是可勾选交付物，保留缓冲并给撞车降级方案。只记录用户明确提供的事实，不把推测写进行为账。执行日结、周复盘、月复盘或规划前，读取工作台/助理偏好与习惯.md。只有周复盘中同类事实连续至少 3 次时，才可调用 studyrocket_propose_skill_update；不得把个人事实写进 Skill。
     """
 }
 
@@ -379,6 +405,7 @@ final class CodexAppServerClient: NSObject {
 final class StudyChatStore: ObservableObject {
     @Published var turns: [ChatTurnPresentation] = []
     @Published var proposals: [MarkdownChangeProposal] = []
+    @Published var skillProposals: [SkillChangeProposal] = []
     @Published var expandedProcessTurnIDs = Set<String>()
     @Published var expandedProposalTurnIDs = Set<String>()
     @Published var draft = ""
@@ -405,7 +432,7 @@ final class StudyChatStore: ObservableObject {
             self?.assignPendingSubmission(to: turnID, startedAt: startedAt)
         }
         client.onReplyDelta = { [weak self] turnID, itemID, delta, phase in
-            self?.appendStreaming(turnID: turnID, itemID: itemID, delta: delta, phase: phase)
+            self?.replaceStreaming(turnID: turnID, itemID: itemID, text: delta, phase: phase)
         }
         client.onItemCompleted = { [weak self] turnID, itemID, text, phase in
             guard let self else { return }
@@ -467,19 +494,19 @@ final class StudyChatStore: ObservableObject {
         self.pendingSubmissionID = nil
     }
 
-    private func appendStreaming(turnID: String, itemID: String, delta: String, phase: ChatMessagePhase) {
+    private func replaceStreaming(turnID: String, itemID: String, text: String, phase: ChatMessagePhase) {
         let index = ensureTurn(turnID)
         var turn = turns[index]
-        let partial = ChatMessage(id: "streaming-\(itemID)", role: .assistant, text: delta, date: .now, turnID: turnID, phase: phase)
+        let partial = ChatMessage(id: "streaming-\(itemID)", role: .assistant, text: text, date: .now, turnID: turnID, phase: phase)
         if phase == .commentary {
             if let existing = turn.processMessages.firstIndex(where: { $0.id == partial.id }) {
                 let previous = turn.processMessages[existing]
-                turn.processMessages[existing] = ChatMessage(id: previous.id, role: .assistant, text: previous.text + delta, date: previous.date, turnID: turnID, phase: phase)
+                turn.processMessages[existing] = ChatMessage(id: previous.id, role: .assistant, text: text, date: previous.date, turnID: turnID, phase: phase)
             } else { turn.processMessages.append(partial) }
         } else {
             if let existing = turn.finalMessages.firstIndex(where: { $0.id == partial.id }) {
                 let previous = turn.finalMessages[existing]
-                turn.finalMessages[existing] = ChatMessage(id: previous.id, role: .assistant, text: previous.text + delta, date: previous.date, turnID: turnID, phase: phase)
+                turn.finalMessages[existing] = ChatMessage(id: previous.id, role: .assistant, text: text, date: previous.date, turnID: turnID, phase: phase)
             } else { turn.finalMessages.append(partial) }
         }
         turns[index] = turn
@@ -544,7 +571,7 @@ final class StudyChatStore: ObservableObject {
     private func connectInternal(to root: URL, forceCreate: Bool) async {
         if !forceCreate, self.root?.standardizedFileURL == root.standardizedFileURL, client.isRunning { return }
         self.root = root.standardizedFileURL
-        turns = []; pendingUnknownMessages.removeAll(); proposals = []; expandedProcessTurnIDs.removeAll(); expandedProposalTurnIDs.removeAll(); errorMessage = nil; setState(.connecting)
+        turns = []; pendingUnknownMessages.removeAll(); proposals = []; skillProposals = []; expandedProcessTurnIDs.removeAll(); expandedProposalTurnIDs.removeAll(); errorMessage = nil; setState(.connecting)
         let key = threadKey(for: root)
         let stored = forceCreate ? nil : UserDefaults.standard.string(forKey: key)
         threadID = stored
@@ -622,6 +649,26 @@ final class StudyChatStore: ObservableObject {
         } catch { errorMessage = error.localizedDescription }
     }
 
+    func applySelectedSkillChanges(workspace: WorkspaceStore, for turnID: String) {
+        let selected = skillProposals.filter { $0.turnID == turnID && $0.isSelected }
+        guard !selected.isEmpty else { return }
+        let repository = MarkdownRepository(root: workspace.rootURL)
+        do {
+            for proposal in selected {
+                guard SkillRepository.isAllowed(relative: proposal.relativePath) else { throw MarkdownError.outsideWorkspace }
+                let url = workspace.rootURL.appendingPathComponent(proposal.relativePath)
+                let current = try String(contentsOf: url, encoding: .utf8)
+                guard repository.hash(current) == proposal.baseHash else { throw MarkdownError.conflict }
+                try SkillRepository.validate(proposal.proposedContent)
+            }
+            for proposal in selected {
+                try Data(proposal.proposedContent.utf8).write(to: workspace.rootURL.appendingPathComponent(proposal.relativePath), options: .atomic)
+            }
+            skillProposals.removeAll { selected.contains($0) }
+            workspace.refreshGitStatus()
+        } catch { errorMessage = error.localizedDescription }
+    }
+
     func openInCodex() {
         guard let threadID else { return }
         var components = URLComponents(); components.scheme = "codex"; components.host = "threads"; components.path = "/\(threadID)"
@@ -629,7 +676,7 @@ final class StudyChatStore: ObservableObject {
     }
 
     private func receiveToolCall(_ params: [String: Any]) -> [String: Any] {
-        guard let tool = params["tool"] as? String, tool == "studyrocket_propose_changes", let root else {
+        guard let tool = params["tool"] as? String, let root else {
             return ["success": false, "contentItems": [["type": "inputText", "text": "工具参数无效，未建立草案。"]]]
         }
         let args: [String: Any]
@@ -639,6 +686,17 @@ final class StudyChatStore: ObservableObject {
         guard let path = args["path"] as? String, let content = args["content"] as? String, let reason = args["reason"] as? String else { return ["success": false, "contentItems": [["type": "inputText", "text": "草案缺少路径、正文或理由。"]]] }
         let repository = MarkdownRepository(root: root)
         do {
+            if tool == "studyrocket_propose_skill_update" {
+                guard let turnID = params["turnId"] as? String, SkillRepository.isAllowed(relative: path) else { throw MarkdownError.outsideWorkspace }
+                let url = root.appendingPathComponent(path)
+                let original = try String(contentsOf: url, encoding: .utf8)
+                try SkillRepository.validate(content)
+                let proposal = SkillChangeProposal(turnID: turnID, relativePath: path, originalContent: original, proposedContent: content, reason: reason, baseHash: repository.hash(original))
+                skillProposals.removeAll { $0.turnID == turnID && $0.relativePath == path }
+                skillProposals.append(proposal)
+                return ["success": true, "contentItems": [["type": "inputText", "text": "已建立 Skill 修改草案，等待用户确认。"]]]
+            }
+            guard tool == "studyrocket_propose_changes" else { throw StudyChatError.protocolError("不支持的工具。") }
             guard repository.isAllowedStudyPath(path) else { throw MarkdownError.outsideWorkspace }
             let original = try repository.read(path)
             guard let turnID = params["turnId"] as? String else { throw StudyChatError.protocolError("草案缺少回合 ID。") }
@@ -646,6 +704,22 @@ final class StudyChatStore: ObservableObject {
             proposals.removeAll { $0.turnID == turnID && $0.relativePath == path }; proposals.append(proposal)
             return ["success": true, "contentItems": [["type": "inputText", "text": "已建立修改草案：\(path)。应用将展示差异，用户确认后才会写入。"]]]
         } catch { return ["success": false, "contentItems": [["type": "inputText", "text": "无法建立草案：\(error.localizedDescription)"]] ] }
+    }
+}
+
+enum SkillRepository {
+    static let names = Set(["daily-checkin", "knowledge-ingest", "ncu-planner", "node-countdown", "retro-monthly", "retro-weekly", "term-roadmap", "weekly-reslot"])
+
+    static func isAllowed(relative: String) -> Bool {
+        let pieces = relative.split(separator: "/").map(String.init)
+        return pieces.count == 4 && pieces[0] == ".agents" && pieces[1] == "skills" && names.contains(pieces[2]) && pieces[3] == "SKILL.md"
+    }
+
+    static func validate(_ content: String) throws {
+        let lines = content.components(separatedBy: .newlines)
+        guard lines.count <= 300, lines.first == "---", lines.dropFirst().contains("---"), content.contains("name:"), content.contains("description:") else {
+            throw StudyChatError.protocolError("Skill 草案必须保留有效 frontmatter，且不得超过 300 行。")
+        }
     }
 }
 

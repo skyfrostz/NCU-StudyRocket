@@ -7,11 +7,17 @@ struct WeeklyCell: Identifiable, Hashable {
     var text: String
 }
 
+struct WeeklyDelivery: Identifiable, Hashable {
+    let id = UUID()
+    var text: String
+    var isCompleted: Bool
+}
+
 struct WeeklyPlan {
     static let days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     static let periods = ["上午", "下午", "晚上"]
     var cells: [[String]] = Array(repeating: Array(repeating: "", count: 7), count: 3)
-    var deliveries: [String] = []
+    var deliveries: [WeeklyDelivery] = []
     var buffer: String = "每天 17:00-18:30 弹性\n若全崩：只保最重要的一件事"
 }
 
@@ -23,6 +29,103 @@ struct DailyEntry: Identifiable {
     var sleep: String
     var exercise: String
     var firstTask: String
+}
+
+@MainActor
+final class DashboardModel: ObservableObject {
+    @Published private(set) var plan = WeeklyPlan()
+    @Published private(set) var original = ""
+    @Published private(set) var loadedHash = ""
+    @Published private(set) var errorMessage: String?
+
+    private let file = "工作台/下周计划.md"
+    private var root: URL?
+
+    var weekdayIndex: Int {
+        let weekday = Calendar(identifier: .gregorian).component(.weekday, from: .now)
+        return (weekday + 5) % 7
+    }
+
+    var todayCells: [(period: String, task: String)] {
+        WeeklyPlan.periods.enumerated().map { ($0.element, plan.cells[$0.offset][weekdayIndex]) }
+    }
+
+    var completedDeliveries: Int { plan.deliveries.filter(\.isCompleted).count }
+    var firstOpenTask: String? {
+        todayCells.first(where: { !$0.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.task
+            ?? plan.deliveries.first(where: { !$0.isCompleted && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.text
+    }
+
+    func load(from root: URL) {
+        self.root = root
+        let repository = MarkdownRepository(root: root)
+        do {
+            let text = try repository.read(file)
+            original = text
+            loadedHash = repository.hash(text)
+            plan = MarkdownParser.weekly(text)
+            errorMessage = nil
+        } catch { errorMessage = "无法读取周计划：\(error.localizedDescription)" }
+    }
+
+    func toggleDelivery(_ id: UUID, workspace: WorkspaceStore) {
+        guard let index = plan.deliveries.firstIndex(where: { $0.id == id }) else { return }
+        plan.deliveries[index].isCompleted.toggle()
+        guard let root else { return }
+        let repository = MarkdownRepository(root: root)
+        do {
+            let replacement = MarkdownParser.replaceWeekly(original, with: plan)
+            try repository.save(replacement, relative: file, loadedHash: loadedHash)
+            original = replacement
+            loadedHash = repository.hash(replacement)
+            errorMessage = nil
+            workspace.refreshGitStatus()
+        } catch {
+            plan.deliveries[index].isCompleted.toggle()
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+enum HabitProfileUpdater {
+    private static let file = "工作台/助理偏好与习惯.md"
+
+    static func update(after entry: DailyEntry, in root: URL) throws {
+        let repository = MarkdownRepository(root: root)
+        let existing = (try? repository.read(file)) ?? "# 助理偏好与习惯\n\n> 仅记录可证据的学习规律与用户明确表达的规划偏好；不记录情绪、页面点击、账号或隐私信息。\n\n## 已确认偏好\n\n- [待补]\n\n## 近 14 日行为摘要\n\n<!-- studyrocket:habits:start -->\n<!-- studyrocket:habits:end -->\n\n## 候选习惯\n\n- 证据不足：连续至少 3 次可证记录后，才可在周复盘中建议调整工作流程。\n\n## 最后更新\n\n- 待补\n"
+        let observation = "- \(entry.date)｜交付物：\(clean(entry.deliverables))｜净学习：\(clean(entry.studyTime))｜睡眠：\(clean(entry.sleep))｜运动：\(clean(entry.exercise))｜明日第一任务：\(clean(entry.firstTask))"
+        let updated = replaceObservation(in: existing, date: entry.date, with: observation)
+        let hash = repository.hash(existing)
+        if FileManager.default.fileExists(atPath: repository.url(file).path) {
+            try repository.save(updated, relative: file, loadedHash: hash)
+        } else {
+            let target = repository.url(file)
+            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(updated.utf8).write(to: target, options: .atomic)
+        }
+    }
+
+    private static func clean(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "待补" : trimmed.replacingOccurrences(of: "\n", with: " ")
+    }
+
+    private static func replaceObservation(in source: String, date: String, with observation: String) -> String {
+        let start = "<!-- studyrocket:habits:start -->"
+        let end = "<!-- studyrocket:habits:end -->"
+        guard let startRange = source.range(of: start), let endRange = source.range(of: end, range: startRange.upperBound..<source.endIndex) else { return source }
+        var observations = source[startRange.upperBound..<endRange.lowerBound].split(separator: "\n").map(String.init)
+        observations.removeAll { $0.hasPrefix("- \(date)｜") }
+        observations.append(observation)
+        observations = Array(observations.suffix(14))
+        var result = source
+        result.replaceSubrange(startRange.upperBound..<endRange.lowerBound, with: "\n" + observations.joined(separator: "\n") + "\n")
+        if let updatedRange = result.range(of: "## 最后更新"), let nextLine = result[updatedRange.upperBound...].range(of: "\n- ") {
+            let lineEnd = result[nextLine.upperBound...].firstIndex(of: "\n") ?? result.endIndex
+            result.replaceSubrange(nextLine.upperBound..<lineEnd, with: "\(date)（每日行为账保存后自动更新）")
+        }
+        return result
+    }
 }
 
 enum AppSection: String, CaseIterable, Identifiable {
@@ -41,12 +144,16 @@ final class WorkspaceStore: ObservableObject {
     @Published var rootURL: URL
     @Published var gitStatus = "读取中..."
     @Published var errorMessage: String?
+    @Published private(set) var markdownIndex: [String] = []
     private var timer: Timer?
+    private var gitRefreshTask: Task<Void, Never>?
+    private var indexTask: Task<Void, Never>?
 
     init() {
         let saved = UserDefaults.standard.string(forKey: "workspaceRoot").map(URL.init(fileURLWithPath:))
         rootURL = saved ?? URL(fileURLWithPath: "/Users/skyfrost/Desktop/大学")
         refreshGitStatus()
+        refreshMarkdownIndex()
     }
 
     var isValid: Bool { FileManager.default.fileExists(atPath: rootURL.appendingPathComponent("AGENTS.md").path) && FileManager.default.fileExists(atPath: rootURL.appendingPathComponent("PROFILE.md").path) }
@@ -56,19 +163,51 @@ final class WorkspaceStore: ObservableObject {
         rootURL = url.standardizedFileURL
         UserDefaults.standard.set(rootURL.path, forKey: "workspaceRoot")
         refreshGitStatus()
+        refreshMarkdownIndex()
     }
 
     func startMonitoring() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 8, repeats: true) { [weak self] _ in Task { @MainActor in self?.refreshGitStatus() } }
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in Task { @MainActor in self?.refreshGitStatus() } }
     }
 
-    func stopMonitoring() { timer?.invalidate(); timer = nil }
+    func stopMonitoring() { timer?.invalidate(); timer = nil; gitRefreshTask?.cancel(); indexTask?.cancel() }
 
     func refreshGitStatus() {
-        let task = Process(); task.executableURL = URL(fileURLWithPath: "/usr/bin/git"); task.arguments = ["-C", rootURL.path, "status", "--porcelain"]
-        let pipe = Pipe(); task.standardOutput = pipe; task.standardError = pipe
-        do { try task.run(); task.waitUntilExit(); let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""; gitStatus = output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "已同步" : "存在未提交修改" } catch { gitStatus = "无法读取 Git 状态" }
+        guard gitRefreshTask == nil else { return }
+        let root = rootURL
+        gitRefreshTask = Task { [weak self] in
+            let result = await Task.detached(priority: .utility) { Self.gitStatus(at: root) }.value
+            guard !Task.isCancelled, let self, self.rootURL == root else { return }
+            self.gitStatus = result
+            self.gitRefreshTask = nil
+        }
+    }
+
+    func refreshMarkdownIndex() {
+        indexTask?.cancel()
+        let root = rootURL
+        indexTask = Task { [weak self] in
+            let index = await Task.detached(priority: .utility) { MarkdownRepository(root: root).markdownFiles() }.value
+            guard !Task.isCancelled, let self, self.rootURL == root else { return }
+            self.markdownIndex = index
+        }
+    }
+
+    private nonisolated static func gitStatus(at root: URL) -> String {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", root.path, "status", "--porcelain"]
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            return output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "已同步" : "存在未提交修改"
+        } catch { return "无法读取 Git 状态" }
     }
 }
 
@@ -100,12 +239,33 @@ final class MarkdownRepository {
         pruneBackups(in: backupDir, prefix: relative.replacingOccurrences(of: "/", with: "_") + ".")
     }
     private func pruneBackups(in dir: URL, prefix: String) { let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey]))?.filter { $0.lastPathComponent.hasPrefix(prefix) }.sorted { $0.lastPathComponent > $1.lastPathComponent } ?? []; for file in files.dropFirst(20) { try? FileManager.default.removeItem(at: file) } }
-    func markdownFiles() -> [String] { let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles]); return e?.compactMap { item in guard let url = item as? URL, url.pathExtension.lowercased() == "md", !Self.isSymbolicLink(url) else { return nil }; return url.path.replacingOccurrences(of: root.path + "/", with: "") }.sorted() ?? [] }
+    func markdownFiles() -> [String] {
+        let excluded = Set([".git", ".build", "PDF提取文本", "Backups"])
+        let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles])
+        return enumerator?.compactMap { item in
+            guard let url = item as? URL else { return nil }
+            let relative = url.path.replacingOccurrences(of: root.path + "/", with: "")
+            if relative.split(separator: "/").contains(where: { excluded.contains(String($0)) }) { return nil }
+            guard url.pathExtension.lowercased() == "md", !Self.isSymbolicLink(url) else { return nil }
+            return relative
+        }.sorted() ?? []
+    }
 
     static func isSymbolicLink(_ url: URL) -> Bool { (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) ?? false }
 }
 
 struct MarkdownChangeProposal: Identifiable, Hashable {
+    let id = UUID()
+    let turnID: String
+    let relativePath: String
+    let originalContent: String
+    let proposedContent: String
+    let reason: String
+    let baseHash: String
+    var isSelected = true
+}
+
+struct SkillChangeProposal: Identifiable, Hashable {
     let id = UUID()
     let turnID: String
     let relativePath: String
@@ -155,14 +315,30 @@ enum MarkdownParser {
     static func weekly(_ text: String) -> WeeklyPlan {
         var plan = WeeklyPlan(); let lines = text.components(separatedBy: .newlines)
         if let start = lines.firstIndex(where: { $0.contains("| 时段 |") }) { for row in 0..<3 { let index = start + 2 + row; guard index < lines.count else { continue }; let raw: [String] = lines[index].split(separator: "|", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }; let parts = Array(raw.dropFirst().dropLast()); if parts.count >= 8 { plan.cells[row] = Array(parts[1...7]) } } }
-        if let start = lines.firstIndex(where: { $0.contains("## 交付物") }) { for line in lines[(start + 1)..<lines.count] { if line.hasPrefix("## ") { break }; if line.hasPrefix("- [") { plan.deliveries.append(String(line.dropFirst(6))) } } }
+        if let start = lines.firstIndex(where: { $0.contains("## 交付物") }) {
+            for line in lines[(start + 1)..<lines.count] {
+                if line.hasPrefix("## ") { break }
+                if line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") {
+                    plan.deliveries.append(WeeklyDelivery(text: String(line.dropFirst(6)), isCompleted: true))
+                } else if line.hasPrefix("- [ ] ") {
+                    plan.deliveries.append(WeeklyDelivery(text: String(line.dropFirst(6)), isCompleted: false))
+                }
+            }
+        }
         if let start = lines.firstIndex(where: { $0.contains("## 缓冲") }) { var values: [String] = []; for line in lines[(start + 1)..<lines.count] { if line.hasPrefix("## ") { break }; values.append(line.hasPrefix("- ") ? String(line.dropFirst(2)) : line) }; if !values.isEmpty { plan.buffer = values.joined(separator: "\n") } }
         return plan
     }
     static func replaceWeekly(_ old: String, with plan: WeeklyPlan) -> String {
         var lines = old.components(separatedBy: .newlines); guard let start = lines.firstIndex(where: { $0.contains("| 时段 |") }) else { return old }
         for row in 0..<3 { let index = start + 2 + row; guard index < lines.count else { continue }; lines[index] = "| " + ([WeeklyPlan.periods[row]] + plan.cells[row]).joined(separator: " | ") + " |" }
-        if let start = lines.firstIndex(where: { $0.contains("## 交付物") }) { var end = start + 1; while end < lines.count && !lines[end].hasPrefix("## ") { end += 1 }; lines.replaceSubrange((start + 1)..<end, with: plan.deliveries.isEmpty ? ["- [ ] 待生成"] : plan.deliveries.map { "- [ ] " + $0 }) }
+        if let start = lines.firstIndex(where: { $0.contains("## 交付物") }) {
+            var end = start + 1
+            while end < lines.count && !lines[end].hasPrefix("## ") { end += 1 }
+            let deliveryLines = plan.deliveries.isEmpty ? ["- [ ] 待生成"] : plan.deliveries.map { delivery in
+                "- [\(delivery.isCompleted ? "x" : " ")] \(delivery.text)"
+            }
+            lines.replaceSubrange((start + 1)..<end, with: deliveryLines)
+        }
         if let start = lines.firstIndex(where: { $0.contains("## 缓冲") }) { var end = start + 1; while end < lines.count && !lines[end].hasPrefix("## ") { end += 1 }; let bufferLines = plan.buffer.split(separator: "\n", omittingEmptySubsequences: false).map { "- " + $0 }; lines.replaceSubrange((start + 1)..<end, with: bufferLines) }
         return lines.joined(separator: "\n")
     }
