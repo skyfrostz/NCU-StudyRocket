@@ -13,7 +13,8 @@ struct ChatTurnReducerTests {
         testNamespacedProposalContract()
         testNestedProposalRoutesToVisibleTurn()
         testLegacyThreadRequiresOneTimeMigration()
-        print("ChatTurnReducerTests: 10 passed")
+        testChatScrollPolicy()
+        print("ChatTurnReducerTests: 11 passed")
     }
 
     private static func expect<T: Equatable>(_ actual: T, _ expected: T, _ message: String) {
@@ -182,5 +183,14 @@ struct ChatTurnReducerTests {
             nil,
             "late dynamic tools must be rejected after the active turn ends"
         )
+    }
+
+    private static func testChatScrollPolicy() {
+        var policy = ChatScrollPolicy()
+        expect(policy.shouldFollowIncrementalChanges(), true, "new chat follows the latest message")
+        policy.update(isNearBottom: false)
+        expect(policy.shouldFollowIncrementalChanges(), false, "reading history disables incremental following")
+        policy.forceToBottom()
+        expect(policy.isNearBottom && policy.shouldFollowIncrementalChanges(), true, "returning to bottom restores following")
     }
 }

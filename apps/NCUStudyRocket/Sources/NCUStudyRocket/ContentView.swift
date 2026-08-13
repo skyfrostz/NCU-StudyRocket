@@ -241,6 +241,7 @@ struct WeeklyPlanView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var chat: StudyChatStore
     @State private var plan = WeeklyPlan(); @State private var original = ""; @State private var loadedHash = ""; @State private var notice: String?
+    @State private var editingCell: WeeklyEditTarget?
     private let file = "工作台/下周计划.md"
     var body: some View { PageScaffold { VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
         PageTitleBar(title: "周计划", subtitle: "用时间块保护课程主线，也给临时任务留出缓冲") {
@@ -249,15 +250,131 @@ struct WeeklyPlanView: View {
                 StudyIconButton(systemImage: "bubble.left.and.bubble.right", label: "在学业对话中排下周") { chat.prepare(prompt: ReminderRoute.weekly.prompt); NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) }
             }
         }
-        StudySurface { ScrollView(.horizontal, showsIndicators: true) { Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) { GridRow { Text("时段").font(.caption.bold()).frame(width: 48, alignment: .leading); ForEach(WeeklyPlan.days, id: \.self) { Text($0).font(.caption.bold()).frame(width: 104) } }; ForEach(0..<3, id: \.self) { row in GridRow { Text(WeeklyPlan.periods[row]).font(.caption).foregroundStyle(.secondary).frame(width: 48, alignment: .leading); ForEach(0..<7, id: \.self) { col in TextField("", text: Binding(get: { plan.cells[row][col] }, set: { plan.cells[row][col] = $0 })).textFieldStyle(.roundedBorder).frame(width: 104) } } } } .padding(.bottom, 4) } }
+        if plan.format == .datedRows { DatedPlanEditor(plan: $plan) { target in editingCell = target } }
+        else { TimeGridPlanEditor(plan: $plan) { target in editingCell = target } }
         ResponsiveColumns {
-            StudySurface { VStack(alignment: .leading, spacing: 10) { Text("交付物清单").font(.system(size: 15, weight: .semibold)); ForEach(plan.deliveries.indices, id: \.self) { index in HStack(spacing: 8) { Toggle("", isOn: Binding(get: { plan.deliveries[index].isCompleted }, set: { plan.deliveries[index].isCompleted = $0 })).labelsHidden(); TextField("交付物", text: Binding(get: { plan.deliveries[index].text }, set: { plan.deliveries[index].text = $0 })) } }; Button("添加交付物", systemImage: "plus") { plan.deliveries.append(WeeklyDelivery(text: "", isCompleted: false)) }.buttonStyle(.link) } }
+            StudySurface { VStack(alignment: .leading, spacing: 10) {
+                Text("交付物清单").font(.system(size: 15, weight: .semibold))
+                ForEach(plan.deliveries.indices, id: \.self) { index in
+                    HStack(alignment: .top, spacing: 8) {
+                        Toggle("", isOn: Binding(get: { plan.deliveries[index].isCompleted }, set: { plan.deliveries[index].isCompleted = $0 })).labelsHidden().padding(.top, 4)
+                        DeliveryTextEditor(text: Binding(get: { plan.deliveries[index].text }, set: { plan.deliveries[index].text = $0 }))
+                    }
+                }
+                Button("添加交付物", systemImage: "plus") { plan.deliveries.append(WeeklyDelivery(text: "", isCompleted: false)) }.buttonStyle(.link)
+            } }
         } second: {
             StudySurface { VStack(alignment: .leading, spacing: 10) { Text("缓冲与降级").font(.system(size: 15, weight: .semibold)); TextEditor(text: $plan.buffer).font(.system(size: 14)).frame(minHeight: 110); Text("保持至少一天弹性，撞车时先保课程与唯一关键交付物。").font(.caption).foregroundStyle(.secondary) } }
         }
-    } }.onAppear(perform: load).alert("保存结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? "") } }
+    } }.onAppear(perform: load).popover(item: $editingCell) { target in
+        WeeklyCellEditorPopover(target: target) { value in commitCell(target, value: value); editingCell = nil }
+    }.alert("保存结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? "") } }
     private func load() { let repo = MarkdownRepository(root: workspace.rootURL); original = (try? repo.read(file)) ?? ""; loadedHash = repo.hash(original); plan = MarkdownParser.weekly(original) }
     private func save() { let repo = MarkdownRepository(root: workspace.rootURL); do { try repo.save(MarkdownParser.replaceWeekly(original, with: plan), relative: file, loadedHash: loadedHash); notice = "已保存到工作台/下周计划.md"; load(); workspace.refreshGitStatus() } catch { notice = error.localizedDescription } }
+    private func commitCell(_ target: WeeklyEditTarget, value: String) {
+        switch target.kind {
+        case .grid(let row, let column): plan.cells[row][column] = value
+        case .dated(let index): plan.datedRows[index].text = value
+        }
+    }
+}
+
+private struct DeliveryTextEditor: View {
+    @Binding var text: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var editorHeight: CGFloat {
+        let lines = max(1, text.split(separator: "\n", omittingEmptySubsequences: false).count)
+        return min(118, max(36, CGFloat(lines) * 20 + 12))
+    }
+    var body: some View {
+        TextEditor(text: $text)
+            .font(.system(size: StudyRocketTheme.bodySize))
+            .scrollContentBackground(.hidden)
+            .frame(height: editorHeight)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: editorHeight)
+    }
+}
+
+private struct WeeklyEditTarget: Identifiable {
+    enum Kind { case grid(row: Int, column: Int), dated(index: Int) }
+    let id: String
+    let title: String
+    let text: String
+    let kind: Kind
+}
+
+private struct WeeklyCellEditorPopover: View {
+    let target: WeeklyEditTarget
+    let onCommit: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var text: String
+    init(target: WeeklyEditTarget, onCommit: @escaping (String) -> Void) { self.target = target; self.onCommit = onCommit; _text = State(initialValue: target.text) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(target.title).font(.headline)
+            TextEditor(text: $text).font(.system(size: StudyRocketTheme.bodySize)).scrollContentBackground(.hidden).padding(8).frame(width: 380, height: 190).overlay(RoundedRectangle(cornerRadius: 7).stroke(.quaternary))
+            HStack { Spacer(); Button("取消") { dismiss() }.keyboardShortcut(.cancelAction); Button("完成") { onCommit(text); dismiss() }.buttonStyle(.borderedProminent).keyboardShortcut(.return, modifiers: [.command]) }
+        }.padding(16).frame(width: 420)
+    }
+}
+
+private struct TimeGridPlanEditor: View {
+    @Binding var plan: WeeklyPlan
+    let edit: (WeeklyEditTarget) -> Void
+    var body: some View {
+        StudySurface {
+            ScrollView(.horizontal, showsIndicators: true) {
+                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
+                    GridRow {
+                        Text("时段").font(.caption.bold()).frame(width: 48, alignment: .leading)
+                        ForEach(WeeklyPlan.days, id: \.self) { Text($0).font(.caption.bold()).frame(width: 136) }
+                    }
+                    ForEach(WeeklyPlan.periods.indices, id: \.self) { row in
+                        GridRow {
+                            Text(WeeklyPlan.periods[row]).font(.caption).foregroundStyle(.secondary).frame(width: 48, alignment: .leading)
+                            ForEach(WeeklyPlan.days.indices, id: \.self) { col in
+                                Button {
+                                    edit(WeeklyEditTarget(id: "grid-\(row)-\(col)", title: "\(WeeklyPlan.days[col]) · \(WeeklyPlan.periods[row])", text: plan.cells[row][col], kind: .grid(row: row, column: col)))
+                                } label: {
+                                    WeeklyCellPreview(text: plan.cells[row][col])
+                                }.buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }.padding(.bottom, 4)
+            }
+        }
+    }
+}
+
+private struct WeeklyCellPreview: View {
+    let text: String
+    var body: some View {
+        Text(text.isEmpty ? "未安排" : text)
+            .font(.caption).multilineTextAlignment(.leading).lineLimit(2)
+            .frame(width: 124, alignment: .topLeading)
+            .frame(minHeight: 44, maxHeight: 64, alignment: .topLeading).padding(6)
+            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+private struct DatedPlanEditor: View {
+    @Binding var plan: WeeklyPlan
+    let edit: (WeeklyEditTarget) -> Void
+    var body: some View {
+        StudySurface { VStack(alignment: .leading, spacing: 8) {
+            Text("按日期安排").font(.system(size: 15, weight: .semibold))
+            ForEach(plan.datedRows.indices, id: \.self) { index in
+                HStack(alignment: .top, spacing: 10) {
+                    Toggle("", isOn: Binding(get: { plan.datedRows[index].isCompleted }, set: { plan.datedRows[index].isCompleted = $0 })).labelsHidden().padding(.top, 5)
+                    Button { edit(WeeklyEditTarget(id: "dated-\(index)", title: plan.datedRows[index].dateLabel, text: plan.datedRows[index].text, kind: .dated(index: index))) } label: {
+                        VStack(alignment: .leading, spacing: 3) { Text(plan.datedRows[index].dateLabel).font(.caption.weight(.semibold)).foregroundStyle(.secondary); Text(plan.datedRows[index].text.isEmpty ? "未安排" : plan.datedRows[index].text).font(.system(size: StudyRocketTheme.bodySize)).lineLimit(2).multilineTextAlignment(.leading) }.frame(maxWidth: .infinity, alignment: .leading).padding(8).background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                    }.buttonStyle(.plain)
+                }.frame(minHeight: 44)
+            }
+        } }
+    }
 }
 
 struct DailyCheckinView: View {
@@ -441,8 +558,9 @@ private struct ChatTranscript: View {
             let viewportWidth = geometry.size.width
             let canvasWidth = max(1, viewportWidth - StudyRocketTheme.pageInset * 2)
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 18) {
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 18) {
                         if chat.turns.isEmpty {
                             ContentUnavailableView("开始你的学业对话", systemImage: "bubble.left.and.bubble.right", description: Text("可以问课程、保研、科研，也可以让助理生成计划修改草案。"))
                                 .frame(width: canvasWidth).frame(minHeight: 260)
@@ -454,20 +572,51 @@ private struct ChatTranscript: View {
                             ChatTurnView(turn: turn, canvasWidth: canvasWidth)
                                 .frame(width: canvasWidth, alignment: .leading).id(turn.id)
                         }
+                            Color.clear
+                                .frame(height: 1)
+                                .id("chat-bottom")
+                                .background(GeometryReader { marker in
+                                    Color.clear.preference(key: ChatBottomPreferenceKey.self, value: marker.frame(in: .named("studyrocket-chat")).maxY)
+                                })
+                        }
+                        .frame(width: canvasWidth, alignment: .leading)
+                        .padding(.vertical, 20)
+                        .padding(.horizontal, StudyRocketTheme.pageInset)
+                        .frame(width: viewportWidth, alignment: .leading)
                     }
-                    .frame(width: canvasWidth, alignment: .leading)
-                    .padding(.vertical, 20)
-                    .padding(.horizontal, StudyRocketTheme.pageInset)
-                    .frame(width: viewportWidth, alignment: .leading)
-                }
-                .onChange(of: chat.scrollTargetID) { _, target in
-                    guard let target else { return }
-                    if reduceMotion { proxy.scrollTo(target, anchor: .bottom) }
-                    else { withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(target, anchor: .bottom) } }
+                    .coordinateSpace(name: "studyrocket-chat")
+                    .onPreferenceChange(ChatBottomPreferenceKey.self) { bottomY in
+                        chat.updateScrollPosition(isNearBottom: bottomY <= geometry.size.height + 72)
+                    }
+                    .onChange(of: chat.scrollRequest?.id) { _, _ in
+                        guard let request = chat.scrollRequest else { return }
+                        if reduceMotion { proxy.scrollTo(request.target, anchor: .bottom) }
+                        else { withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(request.target, anchor: .bottom) } }
+                    }
+                    .onChange(of: chat.historyRevision) { _, _ in
+                        DispatchQueue.main.async { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                    }
+                    .onAppear {
+                        DispatchQueue.main.async { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                    }
+                    if !chat.isNearBottom && !chat.turns.isEmpty {
+                        StudyIconButton(systemImage: "arrow.down", label: "回到最新消息") {
+                            chat.requestScrollToBottom()
+                        }
+                        .background(.regularMaterial, in: Circle())
+                        .padding(.trailing, StudyRocketTheme.pageInset)
+                        .padding(.bottom, 14)
+                        .transition(.opacity)
+                    }
                 }
             }
         }
     }
+}
+
+private struct ChatBottomPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = .infinity
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 private struct ChatInlineError: View {

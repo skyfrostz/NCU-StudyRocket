@@ -13,10 +13,24 @@ struct WeeklyDelivery: Identifiable, Hashable {
     var isCompleted: Bool
 }
 
+enum WeeklyPlanFormat: Equatable {
+    case timeGrid
+    case datedRows
+}
+
+struct WeeklyDatedRow: Identifiable, Hashable {
+    let id = UUID()
+    var dateLabel: String
+    var text: String
+    var isCompleted: Bool
+}
+
 struct WeeklyPlan {
     static let days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     static let periods = ["上午", "下午", "晚上"]
+    var format: WeeklyPlanFormat = .timeGrid
     var cells: [[String]] = Array(repeating: Array(repeating: "", count: 7), count: 3)
+    var datedRows: [WeeklyDatedRow] = []
     var deliveries: [WeeklyDelivery] = []
     var buffer: String = "每天 17:00-18:30 弹性\n若全崩：只保最重要的一件事"
 }
@@ -47,7 +61,19 @@ final class DashboardModel: ObservableObject {
     }
 
     var todayCells: [(period: String, task: String)] {
-        WeeklyPlan.periods.enumerated().map { ($0.element, plan.cells[$0.offset][weekdayIndex]) }
+        if plan.format == .datedRows {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "zh_CN")
+            formatter.dateFormat = "M 月 d 日"
+            let label = formatter.string(from: .now)
+            let matching = plan.datedRows.filter { normalizedDateLabel($0.dateLabel) == normalizedDateLabel(label) }
+            return matching.isEmpty ? [("今天", "")] : matching.map { ($0.dateLabel, $0.text) }
+        }
+        return WeeklyPlan.periods.enumerated().map { ($0.element, plan.cells[$0.offset][weekdayIndex]) }
+    }
+
+    private func normalizedDateLabel(_ value: String) -> String {
+        value.replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "日", with: "")
     }
 
     var completedDeliveries: Int { plan.deliveries.filter(\.isCompleted).count }
@@ -313,34 +339,122 @@ final class MarkdownDocumentModel: ObservableObject {
 
 enum MarkdownParser {
     static func weekly(_ text: String) -> WeeklyPlan {
-        var plan = WeeklyPlan(); let lines = text.components(separatedBy: .newlines)
-        if let start = lines.firstIndex(where: { $0.contains("| 时段 |") }) { for row in 0..<3 { let index = start + 2 + row; guard index < lines.count else { continue }; let raw: [String] = lines[index].split(separator: "|", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }; let parts = Array(raw.dropFirst().dropLast()); if parts.count >= 8 { plan.cells[row] = Array(parts[1...7]) } } }
-        if let start = lines.firstIndex(where: { $0.contains("## 交付物") }) {
-            for line in lines[(start + 1)..<lines.count] {
-                if line.hasPrefix("## ") { break }
-                if line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") {
-                    plan.deliveries.append(WeeklyDelivery(text: String(line.dropFirst(6)), isCompleted: true))
-                } else if line.hasPrefix("- [ ] ") {
-                    plan.deliveries.append(WeeklyDelivery(text: String(line.dropFirst(6)), isCompleted: false))
-                }
+        var plan = WeeklyPlan()
+        let lines = text.components(separatedBy: .newlines)
+        if let start = lines.firstIndex(where: { $0.contains("| 日期 |") && $0.contains("| 计划 |") }) {
+            plan.format = .datedRows
+            var index = start + 2
+            while index < lines.count, !lines[index].hasPrefix("## ") {
+                guard let parts = splitTableRow(lines[index]), parts.count >= 2 else { index += 1; continue }
+                let parsed = parseCompletion(parts[1])
+                plan.datedRows.append(WeeklyDatedRow(dateLabel: parts[0], text: parsed.text, isCompleted: parsed.completed))
+                index += 1
+            }
+        } else if let start = lines.firstIndex(where: { $0.contains("| 时段 |") }) {
+            plan.format = .timeGrid
+            for row in 0..<3 {
+                let index = start + 2 + row
+                guard index < lines.count, let parts = splitTableRow(lines[index]), parts.count >= 8 else { continue }
+                plan.cells[row] = parts.dropFirst().map(decodeTableText)
             }
         }
-        if let start = lines.firstIndex(where: { $0.contains("## 缓冲") }) { var values: [String] = []; for line in lines[(start + 1)..<lines.count] { if line.hasPrefix("## ") { break }; values.append(line.hasPrefix("- ") ? String(line.dropFirst(2)) : line) }; if !values.isEmpty { plan.buffer = values.joined(separator: "\n") } }
+        if let start = lines.firstIndex(where: { $0.contains("## 交付物") }) {
+            let range = managedSectionContent(lines, headingIndex: start)
+            var current: (text: String, completed: Bool)?
+            for line in lines[range] {
+                if line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") || line.hasPrefix("- [ ] ") {
+                    if let current { plan.deliveries.append(WeeklyDelivery(text: current.text, isCompleted: current.completed)) }
+                    let completed = line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ")
+                    current = (String(line.dropFirst(6)), completed)
+                } else if line.hasPrefix("  "), current != nil {
+                    current!.text += "\n" + line.drop(while: { $0 == " " })
+                }
+            }
+            if let current { plan.deliveries.append(WeeklyDelivery(text: current.text, isCompleted: current.completed)) }
+        }
+        if let start = lines.firstIndex(where: { $0.contains("## 缓冲") }) {
+            var values: [String] = []
+            for line in lines[(start + 1)..<lines.count] {
+                if line.hasPrefix("## ") { break }
+                values.append(line.hasPrefix("- ") ? String(line.dropFirst(2)) : line)
+            }
+            if !values.isEmpty { plan.buffer = values.joined(separator: "\n") }
+        }
         return plan
     }
+
     static func replaceWeekly(_ old: String, with plan: WeeklyPlan) -> String {
-        var lines = old.components(separatedBy: .newlines); guard let start = lines.firstIndex(where: { $0.contains("| 时段 |") }) else { return old }
-        for row in 0..<3 { let index = start + 2 + row; guard index < lines.count else { continue }; lines[index] = "| " + ([WeeklyPlan.periods[row]] + plan.cells[row]).joined(separator: " | ") + " |" }
-        if let start = lines.firstIndex(where: { $0.contains("## 交付物") }) {
-            var end = start + 1
-            while end < lines.count && !lines[end].hasPrefix("## ") { end += 1 }
-            let deliveryLines = plan.deliveries.isEmpty ? ["- [ ] 待生成"] : plan.deliveries.map { delivery in
-                "- [\(delivery.isCompleted ? "x" : " ")] \(delivery.text)"
+        var lines = old.components(separatedBy: .newlines)
+        if plan.format == .datedRows, let start = lines.firstIndex(where: { $0.contains("| 日期 |") && $0.contains("| 计划 |") }) {
+            let bodyStart = start + 2
+            var bodyEnd = bodyStart
+            while bodyEnd < lines.count && !lines[bodyEnd].hasPrefix("## ") { bodyEnd += 1 }
+            if let marker = lines[bodyStart..<bodyEnd].firstIndex(where: { $0.contains("studyrocket:weekly:end") }) {
+                bodyEnd = marker
             }
-            lines.replaceSubrange((start + 1)..<end, with: deliveryLines)
+            let rows = plan.datedRows.map { row in
+                let marker = row.isCompleted ? "[x] " : "[ ] "
+                let value = encodeTableText(marker + row.text)
+                return "| \(encodeTableText(row.dateLabel)) | \(value) |"
+            }
+            lines.replaceSubrange(bodyStart..<bodyEnd, with: rows)
+        } else if let start = lines.firstIndex(where: { $0.contains("| 时段 |") }) {
+            for row in 0..<3 {
+                let index = start + 2 + row
+                guard index < lines.count else { continue }
+                let values = plan.cells.indices.contains(row) ? plan.cells[row].map(encodeTableText) : Array(repeating: "", count: 7)
+                lines[index] = "| " + ([WeeklyPlan.periods[row]] + values).joined(separator: " | ") + " |"
+            }
+        }
+        if let start = lines.firstIndex(where: { $0.contains("## 交付物") }) {
+            let section = managedSectionContent(lines, headingIndex: start)
+            let deliveryLines = plan.deliveries.isEmpty ? ["- [ ] 待生成"] : plan.deliveries.flatMap { delivery -> [String] in
+                let pieces = delivery.text.components(separatedBy: .newlines)
+                guard let first = pieces.first else { return ["- [\(delivery.isCompleted ? "x" : " ")] "] }
+                return ["- [\(delivery.isCompleted ? "x" : " ")] \(first)"] + pieces.dropFirst().map { "  \($0)" }
+            }
+            lines.replaceSubrange(section, with: deliveryLines)
         }
         if let start = lines.firstIndex(where: { $0.contains("## 缓冲") }) { var end = start + 1; while end < lines.count && !lines[end].hasPrefix("## ") { end += 1 }; let bufferLines = plan.buffer.split(separator: "\n", omittingEmptySubsequences: false).map { "- " + $0 }; lines.replaceSubrange((start + 1)..<end, with: bufferLines) }
         return lines.joined(separator: "\n")
+    }
+
+    private static func managedSectionContent(_ lines: [String], headingIndex: Int) -> Range<Int> {
+        var start = headingIndex + 1
+        var end = start
+        while end < lines.count && !lines[end].hasPrefix("## ") { end += 1 }
+        if start < end, lines[start].contains("studyrocket:deliveries:start") { start += 1 }
+        if start < end, lines[end - 1].contains("studyrocket:deliveries:end") { end -= 1 }
+        return start..<end
+    }
+
+    private static func splitTableRow(_ line: String) -> [String]? {
+        guard line.trimmingCharacters(in: .whitespaces).hasPrefix("|") else { return nil }
+        var fields: [String] = [], current = "", escaped = false
+        for character in line {
+            if character == "|" && !escaped { fields.append(current.trimmingCharacters(in: .whitespaces)); current = "" }
+            else { current.append(character) }
+            if character == "\\" { escaped.toggle() } else { escaped = false }
+        }
+        fields.append(current.trimmingCharacters(in: .whitespaces))
+        if fields.first?.isEmpty == true { fields.removeFirst() }
+        if fields.last?.isEmpty == true { fields.removeLast() }
+        return fields
+    }
+
+    private static func parseCompletion(_ value: String) -> (text: String, completed: Bool) {
+        let decoded = decodeTableText(value)
+        if decoded.hasPrefix("[x] ") || decoded.hasPrefix("[X] ") { return (String(decoded.dropFirst(4)), true) }
+        if decoded.hasPrefix("[ ] ") { return (String(decoded.dropFirst(4)), false) }
+        return (decoded, false)
+    }
+
+    private static func decodeTableText(_ value: String) -> String {
+        value.replacingOccurrences(of: "<br>", with: "\n").replacingOccurrences(of: "\\|", with: "|")
+    }
+
+    private static func encodeTableText(_ value: String) -> String {
+        value.replacingOccurrences(of: "|", with: "\\|").replacingOccurrences(of: "\n", with: "<br>")
     }
     static func daily(_ text: String, date: String) -> DailyEntry {
         let section = text.components(separatedBy: "### ").first { $0.hasPrefix(date) } ?? "\(date)\n- [ ] 今日完成的具体交付物：\n- 净学习时长：待补\n- 入睡/起床：待补\n- 运动：待补\n- 明日第一任务："

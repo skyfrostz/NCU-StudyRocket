@@ -69,6 +69,12 @@ struct ChatTurnResult {
     let completedAt: Date?
 }
 
+struct ChatScrollRequest: Identifiable, Equatable {
+    let id = UUID()
+    let target: String
+    let force: Bool
+}
+
 enum StudyChatError: LocalizedError {
     case unavailable(String)
     case protocolError(String)
@@ -467,7 +473,9 @@ final class StudyChatStore: ObservableObject {
     @Published var errorMessage: String?
     @Published var isBusy = false
     @Published var lastSubmitted: String?
-    @Published var scrollTargetID: String?
+    @Published var scrollRequest: ChatScrollRequest?
+    @Published private(set) var isNearBottom = true
+    @Published private(set) var historyRevision = 0
     @Published private(set) var threadID: String?
     private let client = CodexAppServerClient()
     private var root: URL?
@@ -475,6 +483,7 @@ final class StudyChatStore: ObservableObject {
     private var pendingUnknownMessages: [String: [ChatMessage]] = [:]
     private var pendingSubmissionID: String?
     private var pendingMigration: (root: URL, newThreadID: String, legacyThreadID: String)?
+    private var scrollPolicy = ChatScrollPolicy()
 
     private func threadKey(for root: URL) -> String {
         let digest = SHA256.hash(data: Data(root.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -531,6 +540,8 @@ final class StudyChatStore: ObservableObject {
         client.onHistory = { [weak self] history in
             guard let self else { return }
             self.turns = Self.present(history)
+            self.historyRevision += 1
+            self.requestScrollToBottom(force: true)
         }
         client.onToolCall = { [weak self] params in self?.receiveToolCall(params) ?? ["success": false, "contentItems": []] }
     }
@@ -585,7 +596,7 @@ final class StudyChatStore: ObservableObject {
         var turn = turns[index]
         turn.finalMessages.removeAll { $0.id == message.id || $0.id == "streaming-\(message.id)" }
         turn.finalMessages.append(message); turns[index] = turn
-        scrollTargetID = turnID
+        requestScroll(to: turnID, force: false)
     }
 
     private func completeTurn(_ result: ChatTurnResult) {
@@ -596,7 +607,7 @@ final class StudyChatStore: ObservableObject {
             turn.userMessage = ChatMessage(id: user.id, role: user.role, text: user.text, date: user.date, turnID: result.turnID, phase: user.phase, turnState: result.status)
         }
         turns[index] = turn
-        if result.status == .failed { scrollTargetID = result.turnID }
+        if result.status == .failed { requestScroll(to: result.turnID, force: false) }
     }
 
     private func markLatestTurn(_ status: ChatTurnState, errorMessage: String? = nil) {
@@ -604,7 +615,7 @@ final class StudyChatStore: ObservableObject {
         var turn = turns[index]; turn.status = status; turn.errorMessage = errorMessage; turn.completedAt = .now
         if let user = turn.userMessage { turn.userMessage = ChatMessage(id: user.id, role: user.role, text: user.text, date: user.date, turnID: user.turnID, phase: user.phase, turnState: status) }
         turns[index] = turn
-        if status == .failed { scrollTargetID = turn.id }
+        if status == .failed { requestScroll(to: turn.id, force: false) }
     }
 
     static func present(_ history: [ChatMessage]) -> [ChatTurnPresentation] {
@@ -691,6 +702,21 @@ final class StudyChatStore: ObservableObject {
         else { expandedProposalTurnIDs.insert(turnID) }
     }
 
+    func updateScrollPosition(isNearBottom: Bool) {
+        scrollPolicy.update(isNearBottom: isNearBottom)
+        self.isNearBottom = scrollPolicy.isNearBottom
+    }
+
+    func requestScrollToBottom(force: Bool = true) {
+        scrollPolicy.forceToBottom()
+        isNearBottom = scrollPolicy.isNearBottom
+        scrollRequest = ChatScrollRequest(target: "chat-bottom", force: force)
+    }
+
+    private func requestScroll(to target: String, force: Bool) {
+        if force || scrollPolicy.shouldFollowIncrementalChanges() { scrollRequest = ChatScrollRequest(target: target, force: force) }
+    }
+
     func setProposal(_ id: UUID, selected: Bool) {
         guard let index = proposals.firstIndex(where: { $0.id == id }) else { return }
         proposals[index].isSelected = selected
@@ -706,7 +732,7 @@ final class StudyChatStore: ObservableObject {
             let localID = "local-\(UUID().uuidString)"
             pendingSubmissionID = localID
             turns.append(ChatTurnPresentation(id: localID, userMessage: ChatMessage(id: UUID().uuidString, role: .user, text: text, date: .now, turnID: localID, turnState: .inProgress), status: .inProgress, startedAt: .now))
-            scrollTargetID = localID
+            requestScroll(to: localID, force: true)
         }
         draft = ""; errorMessage = nil; isBusy = true; setState(.thinking); pendingUnknownMessages.removeAll()
         Task {

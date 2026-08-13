@@ -16,6 +16,16 @@ struct MarkdownChecks {
         check(updated.contains("每天留白"), "weekly buffer")
         check(updated.contains("Python"), "weekly cell")
         check(updated.contains("- [x] 完成小测"), "weekly delivery completion preserved")
+        let dated = "# 计划\n\n<!-- studyrocket:weekly:start -->\n\n| 日期 | 计划 |\n|------|------|\n| 8 月 13 日 | [ ] 第一行<br>第二行 \\| 细节 |\n| 8 月 14 日 | [x] 已完成 |\n<!-- studyrocket:weekly:end -->\n\n## 交付物清单\n- [ ] 主任务\n  补充说明\n- [x] 第二任务\n\n## 缓冲\n- 每天留白\n\n## 外部说明\n原样保留"
+        let datedPlan = MarkdownParser.weekly(dated)
+        check(datedPlan.format == .datedRows && datedPlan.datedRows.count == 2, "dated rows parser")
+        check(datedPlan.datedRows[0].text == "第一行\n第二行 | 细节" && datedPlan.datedRows[1].isCompleted, "dated row completion and escaping")
+        check(datedPlan.deliveries.count == 2 && datedPlan.deliveries[0].text == "主任务\n补充说明", "multiline delivery parser")
+        let datedUpdated = MarkdownParser.replaceWeekly(dated, with: datedPlan)
+        check(datedUpdated.contains("第二行<br>第二行") == false, "dated rows do not duplicate")
+        check(datedUpdated.contains("第一行<br>第二行 \\| 细节"), "dated rows round trip")
+        check(datedUpdated.contains("studyrocket:weekly:start") && datedUpdated.contains("studyrocket:weekly:end"), "weekly boundaries preserved")
+        check(datedUpdated.contains("- [ ] 主任务\n  补充说明") && datedUpdated.contains("## 外部说明\n原样保留"), "multiline delivery round trip and outside content")
         let daily = "# 每日\n\n### 2026-08-12\n- [ ] 今日完成的具体交付物：旧交付物\n- 净学习时长：1h\n- 入睡/起床：23:00 / 07:00\n- 运动：散步\n- 明日第一任务：旧任务\n\n### 2026-08-13\n- [ ] 今日完成的具体交付物："
         var entry = MarkdownParser.daily(daily, date: "2026-08-12"); entry.deliverables = "新交付物"
         let dailyUpdated = MarkdownParser.replaceDaily(daily, entry: entry)
