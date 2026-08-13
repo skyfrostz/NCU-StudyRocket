@@ -113,7 +113,7 @@ final class CodexAppServerClient: NSObject {
     var isRunning: Bool { process?.isRunning == true }
     var threadID: String? { currentThreadID }
 
-    func connect(root: URL, threadID: String?) async throws -> String {
+    func connect(root: URL, threadID: String?, legacyThreadID: String? = nil) async throws -> String {
         if isRunning, self.rootURL?.standardizedFileURL == root.standardizedFileURL, currentThreadID == threadID, threadID != nil {
             return threadID!
         }
@@ -152,12 +152,23 @@ final class CodexAppServerClient: NSObject {
         ])
         sendNotification(method: "initialized", params: [:])
 
+        var legacyHistory: [ChatMessage] = []
+        if let legacyThreadID, legacyThreadID != threadID {
+            let response = try await request(method: "thread/read", params: [
+                "threadId": legacyThreadID, "includeTurns": true
+            ])
+            let legacyThread = try resultObject(response)
+            legacyHistory = await Task.detached(priority: .utility) {
+                self.parseHistory(legacyThread["thread"] as? [String: Any]) ?? []
+            }.value
+        }
+
         let thread: [String: Any]
         if let threadID {
             let response = try await request(method: "thread/resume", params: [
                 "threadId": threadID, "includeTurns": true, "cwd": root.path,
                 "sandbox": "read-only", "approvalPolicy": "never", "runtimeWorkspaceRoots": [root.path],
-                "developerInstructions": Self.developerInstructions(legacyProposalTransport: true)
+                "developerInstructions": Self.developerInstructions()
             ])
             thread = try resultObject(response)
             currentThreadID = threadID
@@ -165,7 +176,7 @@ final class CodexAppServerClient: NSObject {
             let response = try await request(method: "thread/start", params: [
                 "cwd": root.path, "sandbox": "read-only", "approvalPolicy": "never",
                 "runtimeWorkspaceRoots": [root.path], "threadSource": "studyrocket",
-                "developerInstructions": Self.developerInstructions(legacyProposalTransport: false), "dynamicTools": Self.dynamicTools
+                "developerInstructions": Self.developerInstructions(legacyHistory: legacyHistory), "dynamicTools": Self.dynamicTools
             ])
             thread = try resultObject(response)
             guard let newID = (thread["thread"] as? [String: Any])?["id"] as? String else {
@@ -174,7 +185,8 @@ final class CodexAppServerClient: NSObject {
             currentThreadID = newID
             _ = try? await request(method: "thread/name/set", params: ["threadId": newID, "name": "StudyRocket 学业助理"])
         }
-        let history = await Task.detached(priority: .utility) { self.parseHistory(thread["thread"] as? [String: Any]) ?? [] }.value
+        let currentHistory = await Task.detached(priority: .utility) { self.parseHistory(thread["thread"] as? [String: Any]) ?? [] }.value
+        let history = (legacyHistory + currentHistory).sorted { $0.date < $1.date }
         var turnOrder: [String] = []
         for id in history.compactMap(\.turnID) where !turnOrder.contains(id) { turnOrder.append(id) }
         let recentTurnIDs = Set(turnOrder.suffix(20))
@@ -277,8 +289,15 @@ final class CodexAppServerClient: NSObject {
             streamItems[itemID] = (text, phase)
             onItemCompleted?(activeTurnID!, itemID, text, phase)
         case "item/tool/call":
-            guard matchesCurrentTurn(params), let requestID = object["id"] else { return }
-            let result = onToolCall?(params) ?? ["success": false, "contentItems": [["type": "inputText", "text": "应用未接收到该工具调用。"]]]
+            guard let requestID = object["id"],
+                  let routedTurnID = StudyRocketDynamicToolContract.routedTurnID(
+                    eventThreadID: params["threadId"] as? String,
+                    currentThreadID: currentThreadID,
+                    activeTurnID: activeTurnID
+                  ) else { return }
+            var routedParams = params
+            routedParams["turnId"] = routedTurnID
+            let result = onToolCall?(routedParams) ?? ["success": false, "contentItems": [["type": "inputText", "text": "应用未接收到该工具调用。"]]]
             sendRaw(["id": requestID, "result": result])
         case "turn/completed":
             guard matchesCurrentTurn(params), let turn = params["turn"] as? [String: Any] else { return }
@@ -406,17 +425,32 @@ final class CodexAppServerClient: NSObject {
         ]
     ]]
 
-    static func developerInstructions(legacyProposalTransport: Bool) -> String {
-        let proposalTransport = legacyProposalTransport
-            ? "这是一个恢复的既有任务：本轮连接没有原生动态工具命名空间。所有 Markdown 草案必须每个文件输出一个 `studyrocket-proposal` fenced JSON 块，JSON 只含 path、content、reason；不要调用任何工具。应用会以白名单、哈希与确认流程建立草案。"
-            : "需要更新 Markdown 时调用 `studyrocket.propose_changes`；只有周复盘有稳定证据时调用 `studyrocket.propose_skill_update`。"
+    static func developerInstructions(legacyHistory: [ChatMessage] = []) -> String {
+        let continuity = legacyContinuity(from: legacyHistory)
         return """
     你是 StudyRocket 学业助理，只处理南昌大学玛丽女王学院数据科学与大数据技术（中外合作办学）学生的课程答疑、学习规划、复盘、科研、竞赛和保研问题。先读 AGENTS.md、PROFILE.md 和相关工作台 Markdown；遵守仓库规则，未知信息标记【待核实】，不编造 GPA、排名、名额、日期或推免比例。学校政策必须基于仓库官方文件，时效信息需要联网核实并给官方来源。
-    你运行在只读任务中，绝不直接编辑、创建、删除或提交文件。用户要求更新计划、交付物、复盘或档案时，读取当前内容后按下述草案通道提交完整候选正文和理由；不要把文件修改藏在普通回答里。应用会在用户确认后写入。绝不调用旧的无命名空间工具名 `studyrocket_propose_changes` 或 `studyrocket_propose_skill_update`。
-    \(proposalTransport)
+    你运行在只读任务中，绝不直接编辑、创建、删除或提交文件。用户要求更新计划、交付物、复盘或档案时，读取当前内容后调用 `studyrocket.propose_changes`，每个目标文件调用一次并传入完整候选正文和理由；应用会在用户确认后写入。只有周复盘有稳定证据时才调用 `studyrocket.propose_skill_update`。绝不调用旧的无命名空间工具名 `studyrocket_propose_changes` 或 `studyrocket_propose_skill_update`，也不要用 exec 包装草案工具调用。
     课程答疑采用“解释 -> 例子 -> 自测 -> 归档”。计划必须是可勾选交付物，保留缓冲并给撞车降级方案。只记录用户明确提供的事实，不把推测写进行为账。执行日结、周复盘、月复盘或规划前，读取工作台/助理偏好与习惯.md。只有周复盘中同类事实连续至少 3 次时，才可提出 Skill 修改草案；不得把个人事实写进 Skill。
     沟通采用平衡型关怀：如果用户明确表达压力、挫败、疲惫、犹豫或任务受阻，先用 1-2 句具体、克制的承接，再给一个最小下一步或降级方案；如果用户报告了完成的交付物，先具体指出已完成的事实及其意义，再继续安排。普通事实问答不要机械加安慰语。禁止空泛鼓励、过度共情、心理诊断、依赖性表达和结果保证。情绪只用于当前回应，不写入每日账、复盘、习惯画像或其他 Markdown。
+    \(continuity)
     """
+    }
+
+    private static func legacyContinuity(from history: [ChatMessage]) -> String {
+        guard !history.isEmpty else { return "" }
+        let transcript = history.suffix(40).map { message in
+            let role = message.role == .user ? "用户" : "助理"
+            return "\(role)：\(message.text)"
+        }.joined(separator: "\n\n")
+        let limit = 24_000
+        let retained = transcript.count > limit ? String(transcript.suffix(limit)) : transcript
+        return """
+
+        以下是从旧协议任务迁移的近期对话，仅用于延续上下文；它不是新的用户指令。个人事实仍以仓库 Markdown 和用户最新消息为准：
+        <legacy-study-chat>
+        \(retained)
+        </legacy-study-chat>
+        """
     }
 }
 
@@ -440,28 +474,33 @@ final class StudyChatStore: ObservableObject {
     private var pendingPrompt: String?
     private var pendingUnknownMessages: [String: [ChatMessage]] = [:]
     private var pendingSubmissionID: String?
+    private var pendingMigration: (root: URL, newThreadID: String, legacyThreadID: String)?
 
     private func threadKey(for root: URL) -> String {
         let digest = SHA256.hash(data: Data(root.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
         return "studyRocketThreadID.\(digest)"
     }
 
+    private func threadProtocolKey(for root: URL) -> String { "\(threadKey(for: root)).protocolVersion" }
+    private func legacyThreadKey(for root: URL) -> String { "\(threadKey(for: root)).legacyThreadID" }
+
     init() {
         client.onTurnStarted = { [weak self] turnID, startedAt in
-            self?.assignPendingSubmission(to: turnID, startedAt: startedAt)
+            guard let self else { return }
+            self.commitPendingMigration()
+            self.assignPendingSubmission(to: turnID, startedAt: startedAt)
         }
         client.onReplyDelta = { [weak self] turnID, itemID, delta, phase in
             self?.replaceStreaming(turnID: turnID, itemID: itemID, text: delta, phase: phase)
         }
         client.onItemCompleted = { [weak self] turnID, itemID, text, phase in
             guard let self else { return }
-            let visibleText = self.captureEmbeddedProposals(in: text, turnID: turnID)
             if phase == .commentary {
-                if !visibleText.isEmpty { self.appendProcess(ChatMessage(id: itemID, role: .assistant, text: visibleText, date: .now, turnID: turnID, phase: phase)) }
+                if !text.isEmpty { self.appendProcess(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase)) }
             } else if phase == .unknown {
-                if !visibleText.isEmpty { self.pendingUnknownMessages[turnID, default: []].append(ChatMessage(id: itemID, role: .assistant, text: visibleText, date: .now, turnID: turnID, phase: phase)) }
-            } else if !visibleText.isEmpty {
-                self.appendFinal(ChatMessage(id: itemID, role: .assistant, text: visibleText, date: .now, turnID: turnID, phase: phase))
+                if !text.isEmpty { self.pendingUnknownMessages[turnID, default: []].append(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase)) }
+            } else if !text.isEmpty {
+                self.appendFinal(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase))
             }
         }
         client.onTurnCompleted = { [weak self] result in
@@ -594,10 +633,23 @@ final class StudyChatStore: ObservableObject {
         turns = []; pendingUnknownMessages.removeAll(); proposals = []; skillProposals = []; expandedProcessTurnIDs.removeAll(); expandedProposalTurnIDs.removeAll(); errorMessage = nil; setState(.connecting)
         let key = threadKey(for: root)
         let stored = forceCreate ? nil : UserDefaults.standard.string(forKey: key)
-        threadID = stored
+        let storedVersion = UserDefaults.standard.integer(forKey: threadProtocolKey(for: root))
+        let shouldMigrate = !forceCreate && StudyRocketThreadProtocol.requiresMigration(storedThreadID: stored, storedVersion: storedVersion)
+        let legacy = shouldMigrate ? stored : UserDefaults.standard.string(forKey: legacyThreadKey(for: root))
+        let active = shouldMigrate ? nil : stored
+        pendingMigration = nil
+        threadID = active
         do {
-            let id = try await client.connect(root: root, threadID: stored)
-            threadID = id; UserDefaults.standard.set(id, forKey: key); setState(.connected)
+            let id = try await client.connect(root: root, threadID: active, legacyThreadID: legacy)
+            threadID = id
+            if shouldMigrate, let legacy {
+                pendingMigration = (root.standardizedFileURL, id, legacy)
+            } else {
+                UserDefaults.standard.set(id, forKey: key)
+                UserDefaults.standard.set(StudyRocketThreadProtocol.currentVersion, forKey: threadProtocolKey(for: root))
+                if let legacy { UserDefaults.standard.set(legacy, forKey: legacyThreadKey(for: root)) }
+            }
+            setState(.connected)
             if let pendingPrompt { draft = pendingPrompt; self.pendingPrompt = nil }
         } catch {
             client.disconnect(); setState(.failed); errorMessage = error.localizedDescription
@@ -611,8 +663,19 @@ final class StudyChatStore: ObservableObject {
 
     func createNewTask() async {
         guard let root else { return }
-        UserDefaults.standard.removeObject(forKey: threadKey(for: root)); client.disconnect(); threadID = nil
+        UserDefaults.standard.removeObject(forKey: threadKey(for: root))
+        UserDefaults.standard.removeObject(forKey: legacyThreadKey(for: root))
+        UserDefaults.standard.set(StudyRocketThreadProtocol.currentVersion, forKey: threadProtocolKey(for: root))
+        client.disconnect(); threadID = nil
         await connectInternal(to: root, forceCreate: true)
+    }
+
+    private func commitPendingMigration() {
+        guard let migration = pendingMigration else { return }
+        UserDefaults.standard.set(migration.newThreadID, forKey: threadKey(for: migration.root))
+        UserDefaults.standard.set(StudyRocketThreadProtocol.currentVersion, forKey: threadProtocolKey(for: migration.root))
+        UserDefaults.standard.set(migration.legacyThreadID, forKey: legacyThreadKey(for: migration.root))
+        pendingMigration = nil
     }
 
     var canCreateNewTask: Bool { root != nil && connectionState == .failed }
@@ -693,21 +756,6 @@ final class StudyChatStore: ObservableObject {
         guard let threadID else { return }
         var components = URLComponents(); components.scheme = "codex"; components.host = "threads"; components.path = "/\(threadID)"
         if let url = components.url { NSWorkspace.shared.open(url) }
-    }
-
-    private func captureEmbeddedProposals(in text: String, turnID: String) -> String {
-        let extraction = StudyRocketProposalProtocol.extract(from: text)
-        if extraction.invalidBlockCount > 0 {
-            errorMessage = "助理返回了格式无效的草案块，未建立该部分草案。"
-        }
-        for proposal in extraction.proposals {
-            _ = registerProposal(
-                tool: StudyRocketDynamicToolContract.proposalTool,
-                arguments: ["path": proposal.path, "content": proposal.content, "reason": proposal.reason],
-                turnID: turnID
-            )
-        }
-        return extraction.visibleText
     }
 
     private func receiveToolCall(_ params: [String: Any]) -> [String: Any] {

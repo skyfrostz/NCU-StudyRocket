@@ -11,8 +11,9 @@ struct ChatTurnReducerTests {
         testFailedTurnUsesNestedTurnError()
         testNonRetryableErrorTerminatesImmediately()
         testNamespacedProposalContract()
-        testEmbeddedProposalExtraction()
-        print("ChatTurnReducerTests: 9 passed")
+        testNestedProposalRoutesToVisibleTurn()
+        testLegacyThreadRequiresOneTimeMigration()
+        print("ChatTurnReducerTests: 10 passed")
     }
 
     private static func expect<T: Equatable>(_ actual: T, _ expected: T, _ message: String) {
@@ -159,11 +160,27 @@ struct ChatTurnReducerTests {
         )
     }
 
-    private static func testEmbeddedProposalExtraction() {
-        let text = "已生成草案。\n\n```studyrocket-proposal\n{\"path\":\"PROFILE.md\",\"content\":\"# Profile\",\"reason\":\"同步档案\"}\n```\n\n请确认差异。"
-        let extraction = StudyRocketProposalProtocol.extract(from: text)
-        expect(extraction.visibleText, "已生成草案。\n\n请确认差异。", "proposal envelope should not leak into the visible reply")
-        expect(extraction.proposals, [StudyRocketProposalPayload(path: "PROFILE.md", content: "# Profile", reason: "同步档案")], "proposal payload must preserve path, content and reason")
-        expect(extraction.invalidBlockCount, 0, "valid proposal envelope should parse cleanly")
+    private static func testLegacyThreadRequiresOneTimeMigration() {
+        expect(StudyRocketThreadProtocol.requiresMigration(storedThreadID: "legacy", storedVersion: 0), true, "legacy persisted threads must migrate")
+        expect(StudyRocketThreadProtocol.requiresMigration(storedThreadID: "current", storedVersion: StudyRocketThreadProtocol.currentVersion), false, "current protocol threads must resume in place")
+        expect(StudyRocketThreadProtocol.requiresMigration(storedThreadID: nil, storedVersion: 0), false, "a missing thread should be created without migration")
+    }
+
+    private static func testNestedProposalRoutesToVisibleTurn() {
+        expect(
+            StudyRocketDynamicToolContract.routedTurnID(eventThreadID: "thread", currentThreadID: "thread", activeTurnID: "visible-turn"),
+            "visible-turn",
+            "nested dynamic tools must attach to the visible active turn"
+        )
+        expect(
+            StudyRocketDynamicToolContract.routedTurnID(eventThreadID: "other", currentThreadID: "thread", activeTurnID: "visible-turn"),
+            nil,
+            "dynamic tools from another thread must be rejected"
+        )
+        expect(
+            StudyRocketDynamicToolContract.routedTurnID(eventThreadID: "thread", currentThreadID: "thread", activeTurnID: nil),
+            nil,
+            "late dynamic tools must be rejected after the active turn ends"
+        )
     }
 }
