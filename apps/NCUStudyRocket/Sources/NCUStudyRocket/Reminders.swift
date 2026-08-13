@@ -9,9 +9,9 @@ enum ReminderRoute: String, CaseIterable, Identifiable {
     }
     var prompt: String {
         switch self {
-        case .daily: return "今天复盘：请先询问我今日完成的具体交付物、净学习时长、入睡/起床、运动和明日第一任务。只记录我确认提供的事实。"
-        case .weekly: return "本周总结并排下周：请先询问本周完成交付物、净学习时长、未完成原因和下周硬节点，确认后再给出可勾选计划。"
-        case .monthly: return "月度复盘：请先询问本月可证交付物、净学习时长、课程/英语/科研/保研变化和下月硬节点，确认后再更新相关 Markdown。"
+        case .daily: return "今天复盘：先用一句简短的话承接我今天的状态，再询问今日完成的具体交付物、净学习时长、入睡/起床、运动和明日第一任务。只记录我确认提供的事实，不记录情绪。"
+        case .weekly: return "本周总结并排下周：先具体承接本周完成或受阻的部分，再询问本周完成交付物、净学习时长、未完成原因和下周硬节点；最后给出保什么、砍什么和可勾选计划。"
+        case .monthly: return "月度复盘：先简短承接本月的进展或偏差，再询问本月可证交付物、净学习时长、课程/英语/科研/保研变化和下月硬节点，确认后再更新相关 Markdown。"
         }
     }
     var identifier: String { "studyrocket.reminder.\(rawValue)" }

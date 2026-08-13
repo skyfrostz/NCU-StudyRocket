@@ -92,7 +92,7 @@ enum HabitProfileUpdater {
 
     static func update(after entry: DailyEntry, in root: URL) throws {
         let repository = MarkdownRepository(root: root)
-        let existing = (try? repository.read(file)) ?? "# 助理偏好与习惯\n\n> 仅记录可证据的学习规律与用户明确表达的规划偏好；不记录情绪、页面点击、账号或隐私信息。\n\n## 已确认偏好\n\n- [待补]\n\n## 近 14 日行为摘要\n\n<!-- studyrocket:habits:start -->\n<!-- studyrocket:habits:end -->\n\n## 候选习惯\n\n- 证据不足：连续至少 3 次可证记录后，才可在周复盘中建议调整工作流程。\n\n## 最后更新\n\n- 待补\n"
+        let existing = (try? repository.read(file)) ?? "# 助理偏好与习惯\n\n> 仅记录可证据的学习规律与用户明确表达的规划偏好；不记录情绪、页面点击、账号或隐私信息。\n\n## 已确认偏好\n\n- [待补]\n\n## 近 14 日行为摘要\n\n<!-- studyrocket:habits:start -->\n<!-- studyrocket:habits:end -->\n\n## 计划阻力规律\n\n<!-- studyrocket:friction:start -->\n- 证据不足：尚未有 3 次以上同类可证记录，不调整默认计划规则。\n<!-- studyrocket:friction:end -->\n\n## 候选习惯\n\n- 证据不足：连续至少 3 次可证记录后，才可在周复盘中建议调整工作流程。\n\n## 最后更新\n\n- 待补\n"
         let observation = "- \(entry.date)｜交付物：\(clean(entry.deliverables))｜净学习：\(clean(entry.studyTime))｜睡眠：\(clean(entry.sleep))｜运动：\(clean(entry.exercise))｜明日第一任务：\(clean(entry.firstTask))"
         let updated = replaceObservation(in: existing, date: entry.date, with: observation)
         let hash = repository.hash(existing)

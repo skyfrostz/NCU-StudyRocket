@@ -728,5 +728,5 @@ struct ChatComposer: View {
 
 struct ChatHelpView: View {
     @Environment(\.dismiss) private var dismiss
-    var body: some View { VStack(alignment: .leading, spacing: 12) { Text("学业对话帮助").font(.title2.weight(.semibold)); Text("这里连接的是独立的 StudyRocket 学业助理任务，当前应用开发对话不会被带入。你可以直接输入事实或问题，也可以使用快捷报告。涉及文件修改时，助理只生成草案；点击应用按钮后才写入 Markdown。"); Text("学校规则、推免名额、截止日期等未知信息会标记为【待核实】，不会用猜测填充。").foregroundStyle(.secondary); Spacer(); Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction) }.padding(24).frame(width: 440, height: 240) }
+    var body: some View { VStack(alignment: .leading, spacing: 12) { Text("学业对话帮助").font(.title2.weight(.semibold)); Text("这里连接的是独立的 StudyRocket 学业助理任务，当前应用开发对话不会被带入。你可以直接输入事实或问题，也可以使用快捷报告。遇到进度受阻时，助理会先用一句简短的话承接，再落到一个可执行的下一步或降级方案。"); Text("涉及文件修改时，助理只生成草案；点击应用按钮后才写入 Markdown。学校规则、推免名额、截止日期等未知信息会标记为【待核实】，不会用猜测填充。情绪只用于当轮沟通，不会写入每日账或习惯画像。").foregroundStyle(.secondary); Spacer(); Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction) }.padding(24).frame(width: 440, height: 280) }
 }
