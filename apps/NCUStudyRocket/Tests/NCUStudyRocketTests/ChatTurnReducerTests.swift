@@ -10,7 +10,9 @@ struct ChatTurnReducerTests {
         testInterruptedTurnIsNotReportedAsFailure()
         testFailedTurnUsesNestedTurnError()
         testNonRetryableErrorTerminatesImmediately()
-        print("ChatTurnReducerTests: 7 passed")
+        testNamespacedProposalContract()
+        testEmbeddedProposalExtraction()
+        print("ChatTurnReducerTests: 9 passed")
     }
 
     private static func expect<T: Equatable>(_ actual: T, _ expected: T, _ message: String) {
@@ -142,5 +144,26 @@ struct ChatTurnReducerTests {
             "non-retryable errors should fail immediately"
         )
         expect(reducer.isTerminal, true, "non-retryable errors should be terminal")
+    }
+
+    private static func testNamespacedProposalContract() {
+        expect(
+            StudyRocketDynamicToolContract.accepts(namespace: "studyrocket", tool: "propose_changes"),
+            true,
+            "proposal tools must use the studyrocket namespace"
+        )
+        expect(
+            StudyRocketDynamicToolContract.accepts(namespace: nil, tool: "propose_changes"),
+            false,
+            "legacy unnamespaced tool calls must not be accepted"
+        )
+    }
+
+    private static func testEmbeddedProposalExtraction() {
+        let text = "已生成草案。\n\n```studyrocket-proposal\n{\"path\":\"PROFILE.md\",\"content\":\"# Profile\",\"reason\":\"同步档案\"}\n```\n\n请确认差异。"
+        let extraction = StudyRocketProposalProtocol.extract(from: text)
+        expect(extraction.visibleText, "已生成草案。\n\n请确认差异。", "proposal envelope should not leak into the visible reply")
+        expect(extraction.proposals, [StudyRocketProposalPayload(path: "PROFILE.md", content: "# Profile", reason: "同步档案")], "proposal payload must preserve path, content and reason")
+        expect(extraction.invalidBlockCount, 0, "valid proposal envelope should parse cleanly")
     }
 }

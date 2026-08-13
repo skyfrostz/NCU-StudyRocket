@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import AppKit
 import CryptoKit
+import StudyRocketChatCore
 
 enum ChatConnectionState: String {
     case disconnected = "未连接"
@@ -156,7 +157,7 @@ final class CodexAppServerClient: NSObject {
             let response = try await request(method: "thread/resume", params: [
                 "threadId": threadID, "includeTurns": true, "cwd": root.path,
                 "sandbox": "read-only", "approvalPolicy": "never", "runtimeWorkspaceRoots": [root.path],
-                "developerInstructions": Self.developerInstructions
+                "developerInstructions": Self.developerInstructions(legacyProposalTransport: true)
             ])
             thread = try resultObject(response)
             currentThreadID = threadID
@@ -164,7 +165,7 @@ final class CodexAppServerClient: NSObject {
             let response = try await request(method: "thread/start", params: [
                 "cwd": root.path, "sandbox": "read-only", "approvalPolicy": "never",
                 "runtimeWorkspaceRoots": [root.path], "threadSource": "studyrocket",
-                "developerInstructions": Self.developerInstructions, "dynamicTools": [Self.proposalTool, Self.skillProposalTool]
+                "developerInstructions": Self.developerInstructions(legacyProposalTransport: false), "dynamicTools": Self.dynamicTools
             ])
             thread = try resultObject(response)
             guard let newID = (thread["thread"] as? [String: Any])?["id"] as? String else {
@@ -385,22 +386,38 @@ final class CodexAppServerClient: NSObject {
         return result.isEmpty ? nil : result
     }
 
-    static let proposalTool: [String: Any] = [
-        "name": "studyrocket_propose_changes", "description": "提出对学业 Markdown 的修改草案。绝不直接写文件；应用会展示差异并等待用户确认。", "type": "function",
-        "inputSchema": ["type": "object", "properties": ["path": ["type": "string", "description": "仓库内 Markdown 相对路径"], "content": ["type": "string", "description": "完整候选文件正文"], "reason": ["type": "string", "description": "修改理由"]], "required": ["path", "content", "reason"]]
-    ]
+    static let dynamicTools: [[String: Any]] = [[
+        "type": "namespace",
+        "name": StudyRocketDynamicToolContract.namespace,
+        "description": "StudyRocket 应用的只读草案工具。调用只会建立待确认的差异，绝不直接写文件。",
+        "tools": [
+            [
+                "type": "function",
+                "name": StudyRocketDynamicToolContract.proposalTool,
+                "description": "提出对学业 Markdown 的修改草案。应用会展示差异并等待用户确认。",
+                "inputSchema": ["type": "object", "properties": ["path": ["type": "string", "description": "仓库内 Markdown 相对路径"], "content": ["type": "string", "description": "完整候选文件正文"], "reason": ["type": "string", "description": "修改理由"]], "required": ["path", "content", "reason"]]
+            ],
+            [
+                "type": "function",
+                "name": StudyRocketDynamicToolContract.skillProposalTool,
+                "description": "仅在周复盘有稳定证据时提出现有 Skill 的修改草案；用户必须确认。",
+                "inputSchema": ["type": "object", "properties": ["path": ["type": "string"], "content": ["type": "string"], "reason": ["type": "string"]], "required": ["path", "content", "reason"]]
+            ]
+        ]
+    ]]
 
-    static let skillProposalTool: [String: Any] = [
-        "name": "studyrocket_propose_skill_update", "description": "仅在周复盘发现连续、可证据的稳定规律时，提出仓库 Skill 的修改草案。绝不直接写文件，用户必须确认。", "type": "function",
-        "inputSchema": ["type": "object", "properties": ["path": ["type": "string"], "content": ["type": "string"], "reason": ["type": "string"]], "required": ["path", "content", "reason"]]
-    ]
-
-    static let developerInstructions = """
+    static func developerInstructions(legacyProposalTransport: Bool) -> String {
+        let proposalTransport = legacyProposalTransport
+            ? "这是一个恢复的既有任务：本轮连接没有原生动态工具命名空间。所有 Markdown 草案必须每个文件输出一个 `studyrocket-proposal` fenced JSON 块，JSON 只含 path、content、reason；不要调用任何工具。应用会以白名单、哈希与确认流程建立草案。"
+            : "需要更新 Markdown 时调用 `studyrocket.propose_changes`；只有周复盘有稳定证据时调用 `studyrocket.propose_skill_update`。"
+        return """
     你是 StudyRocket 学业助理，只处理南昌大学玛丽女王学院数据科学与大数据技术（中外合作办学）学生的课程答疑、学习规划、复盘、科研、竞赛和保研问题。先读 AGENTS.md、PROFILE.md 和相关工作台 Markdown；遵守仓库规则，未知信息标记【待核实】，不编造 GPA、排名、名额、日期或推免比例。学校政策必须基于仓库官方文件，时效信息需要联网核实并给官方来源。
-    你运行在只读任务中，绝不直接编辑、创建、删除或提交文件。用户要求更新计划、交付物、复盘或档案时，读取当前内容后调用 studyrocket_propose_changes，传入完整候选正文和理由；不要把文件修改藏在普通回答里。应用会在用户确认后写入。
-    课程答疑采用“解释 -> 例子 -> 自测 -> 归档”。计划必须是可勾选交付物，保留缓冲并给撞车降级方案。只记录用户明确提供的事实，不把推测写进行为账。执行日结、周复盘、月复盘或规划前，读取工作台/助理偏好与习惯.md。只有周复盘中同类事实连续至少 3 次时，才可调用 studyrocket_propose_skill_update；不得把个人事实写进 Skill。
+    你运行在只读任务中，绝不直接编辑、创建、删除或提交文件。用户要求更新计划、交付物、复盘或档案时，读取当前内容后按下述草案通道提交完整候选正文和理由；不要把文件修改藏在普通回答里。应用会在用户确认后写入。绝不调用旧的无命名空间工具名 `studyrocket_propose_changes` 或 `studyrocket_propose_skill_update`。
+    \(proposalTransport)
+    课程答疑采用“解释 -> 例子 -> 自测 -> 归档”。计划必须是可勾选交付物，保留缓冲并给撞车降级方案。只记录用户明确提供的事实，不把推测写进行为账。执行日结、周复盘、月复盘或规划前，读取工作台/助理偏好与习惯.md。只有周复盘中同类事实连续至少 3 次时，才可提出 Skill 修改草案；不得把个人事实写进 Skill。
     沟通采用平衡型关怀：如果用户明确表达压力、挫败、疲惫、犹豫或任务受阻，先用 1-2 句具体、克制的承接，再给一个最小下一步或降级方案；如果用户报告了完成的交付物，先具体指出已完成的事实及其意义，再继续安排。普通事实问答不要机械加安慰语。禁止空泛鼓励、过度共情、心理诊断、依赖性表达和结果保证。情绪只用于当前回应，不写入每日账、复盘、习惯画像或其他 Markdown。
     """
+    }
 }
 
 @MainActor
@@ -438,12 +455,13 @@ final class StudyChatStore: ObservableObject {
         }
         client.onItemCompleted = { [weak self] turnID, itemID, text, phase in
             guard let self else { return }
+            let visibleText = self.captureEmbeddedProposals(in: text, turnID: turnID)
             if phase == .commentary {
-                self.appendProcess(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase))
+                if !visibleText.isEmpty { self.appendProcess(ChatMessage(id: itemID, role: .assistant, text: visibleText, date: .now, turnID: turnID, phase: phase)) }
             } else if phase == .unknown {
-                self.pendingUnknownMessages[turnID, default: []].append(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase))
-            } else if !text.isEmpty {
-                self.appendFinal(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase))
+                if !visibleText.isEmpty { self.pendingUnknownMessages[turnID, default: []].append(ChatMessage(id: itemID, role: .assistant, text: visibleText, date: .now, turnID: turnID, phase: phase)) }
+            } else if !visibleText.isEmpty {
+                self.appendFinal(ChatMessage(id: itemID, role: .assistant, text: visibleText, date: .now, turnID: turnID, phase: phase))
             }
         }
         client.onTurnCompleted = { [weak self] result in
@@ -677,19 +695,55 @@ final class StudyChatStore: ObservableObject {
         if let url = components.url { NSWorkspace.shared.open(url) }
     }
 
+    private func captureEmbeddedProposals(in text: String, turnID: String) -> String {
+        let extraction = StudyRocketProposalProtocol.extract(from: text)
+        if extraction.invalidBlockCount > 0 {
+            errorMessage = "助理返回了格式无效的草案块，未建立该部分草案。"
+        }
+        for proposal in extraction.proposals {
+            _ = registerProposal(
+                tool: StudyRocketDynamicToolContract.proposalTool,
+                arguments: ["path": proposal.path, "content": proposal.content, "reason": proposal.reason],
+                turnID: turnID
+            )
+        }
+        return extraction.visibleText
+    }
+
     private func receiveToolCall(_ params: [String: Any]) -> [String: Any] {
-        guard let tool = params["tool"] as? String, let root else {
+        guard let namespace = params["namespace"] as? String,
+              let tool = params["tool"] as? String,
+              StudyRocketDynamicToolContract.accepts(namespace: namespace, tool: tool),
+              let root else {
+            return ["success": false, "contentItems": [["type": "inputText", "text": "草案工具必须使用 studyrocket 命名空间；旧接口不可用。"]]]
+        }
+        guard root.standardizedFileURL == self.root?.standardizedFileURL else {
             return ["success": false, "contentItems": [["type": "inputText", "text": "工具参数无效，未建立草案。"]]]
         }
         let args: [String: Any]
         if let object = params["arguments"] as? [String: Any] { args = object }
         else if let string = params["arguments"] as? String, let data = string.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { args = object }
         else { return ["success": false, "contentItems": [["type": "inputText", "text": "工具参数无效，未建立草案。"]]] }
-        guard let path = args["path"] as? String, let content = args["content"] as? String, let reason = args["reason"] as? String else { return ["success": false, "contentItems": [["type": "inputText", "text": "草案缺少路径、正文或理由。"]]] }
+        guard let turnID = params["turnId"] as? String else {
+            return ["success": false, "contentItems": [["type": "inputText", "text": "草案缺少回合 ID。"]]]
+        }
+        return registerProposal(tool: tool, arguments: args, turnID: turnID)
+    }
+
+    @discardableResult
+    private func registerProposal(tool: String, arguments: [String: Any], turnID: String) -> [String: Any] {
+        guard let root else {
+            return ["success": false, "contentItems": [["type": "inputText", "text": "仓库未绑定，未建立草案。"]]]
+        }
+        guard let path = arguments["path"] as? String,
+              let content = arguments["content"] as? String,
+              let reason = arguments["reason"] as? String else {
+            return ["success": false, "contentItems": [["type": "inputText", "text": "草案缺少路径、正文或理由。"]]]
+        }
         let repository = MarkdownRepository(root: root)
         do {
-            if tool == "studyrocket_propose_skill_update" {
-                guard let turnID = params["turnId"] as? String, SkillRepository.isAllowed(relative: path) else { throw MarkdownError.outsideWorkspace }
+            if tool == StudyRocketDynamicToolContract.skillProposalTool {
+                guard SkillRepository.isAllowed(relative: path) else { throw MarkdownError.outsideWorkspace }
                 let url = root.appendingPathComponent(path)
                 let original = try String(contentsOf: url, encoding: .utf8)
                 try SkillRepository.validate(content)
@@ -698,10 +752,9 @@ final class StudyChatStore: ObservableObject {
                 skillProposals.append(proposal)
                 return ["success": true, "contentItems": [["type": "inputText", "text": "已建立 Skill 修改草案，等待用户确认。"]]]
             }
-            guard tool == "studyrocket_propose_changes" else { throw StudyChatError.protocolError("不支持的工具。") }
+            guard tool == StudyRocketDynamicToolContract.proposalTool else { throw StudyChatError.protocolError("不支持的工具。") }
             guard repository.isAllowedStudyPath(path) else { throw MarkdownError.outsideWorkspace }
             let original = try repository.read(path)
-            guard let turnID = params["turnId"] as? String else { throw StudyChatError.protocolError("草案缺少回合 ID。") }
             let proposal = MarkdownChangeProposal(turnID: turnID, relativePath: path, originalContent: original, proposedContent: content, reason: reason, baseHash: repository.hash(original))
             proposals.removeAll { $0.turnID == turnID && $0.relativePath == path }; proposals.append(proposal)
             return ["success": true, "contentItems": [["type": "inputText", "text": "已建立修改草案：\(path)。应用将展示差异，用户确认后才会写入。"]]]
