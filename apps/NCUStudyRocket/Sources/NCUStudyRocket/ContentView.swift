@@ -73,15 +73,18 @@ struct DashboardView: View {
         PageScaffold {
             VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
                 PageTitleBar(title: "今天的学习计划", subtitle: Date.now.formatted(date: .complete, time: .omitted)) {
-                    if !dashboard.plan.deliveries.isEmpty {
-                        Text("\(dashboard.completedDeliveries) / \(dashboard.plan.deliveries.count) 已完成")
+                    if !dashboard.filteredDeliveries.isEmpty {
+                        Text("\(dashboard.completedDeliveries) / \(dashboard.filteredDeliveries.count) 已完成")
                             .font(.subheadline.weight(.semibold)).foregroundStyle(.teal)
                     }
                 }
                 ResponsiveColumns {
-                    TodayPlanList(tasks: dashboard.todayCells, firstTask: dashboard.firstOpenTask)
+                    TodayPlanList(tasks: dashboard.todayCells, firstTask: dashboard.firstOpenTask, unassigned: dashboard.todayUnassigned)
                 } second: {
-                    DeliveryChecklist(deliveries: dashboard.plan.deliveries) { id in
+                    DeliveryChecklist(
+                        deliveries: dashboard.filteredDeliveries,
+                        emptyMessage: dashboard.plan.deliveries.isEmpty ? "周计划中还没有交付物。" : "除今日安排外，本周暂无其他交付物。"
+                    ) { id in
                         dashboard.toggleDelivery(id, workspace: workspace)
                     }
                 }
@@ -125,6 +128,7 @@ private struct TodayPlanList: View {
     @EnvironmentObject private var chat: StudyChatStore
     let tasks: [(period: String, task: String)]
     let firstTask: String?
+    let unassigned: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -149,6 +153,12 @@ private struct TodayPlanList: View {
                 .frame(minHeight: 44)
                 if index < tasks.count - 1 { Divider().padding(.leading, 57) }
             }
+            if !unassigned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Label("今天有待分时安排", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.orange)
+                    .help(unassigned)
+                    .padding(.top, 8)
+            }
             if firstTask == nil {
                 Button("去周计划安排今天", systemImage: "calendar.badge.plus") {
                     chat.prepare(prompt: "请根据我的档案和本周约束，为今天安排可执行的时间块。先问缺失事实，不要编造。")
@@ -166,6 +176,7 @@ private struct TodayPlanList: View {
 
 private struct DeliveryChecklist: View {
     let deliveries: [WeeklyDelivery]
+    let emptyMessage: String
     let toggle: (UUID) -> Void
 
     var body: some View {
@@ -173,7 +184,7 @@ private struct DeliveryChecklist: View {
             Label("本周交付物", systemImage: "checkmark.circle")
                 .font(.system(size: 15, weight: .semibold)).padding(.bottom, 8)
             if deliveries.isEmpty {
-                Text("周计划中还没有交付物。")
+                Text(emptyMessage)
                     .font(.system(size: StudyRocketTheme.bodySize)).foregroundStyle(.secondary).frame(minHeight: 44, alignment: .leading)
             } else {
                 ForEach(Array(deliveries.enumerated()), id: \.element.id) { index, delivery in
@@ -242,16 +253,19 @@ struct WeeklyPlanView: View {
     @EnvironmentObject private var chat: StudyChatStore
     @State private var plan = WeeklyPlan(); @State private var original = ""; @State private var loadedHash = ""; @State private var notice: String?
     @State private var editingCell: WeeklyEditTarget?
+    @State private var migrationNoticeVisible = true
     private let file = "工作台/下周计划.md"
     var body: some View { PageScaffold { VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
-        PageTitleBar(title: "周计划", subtitle: "用时间块保护课程主线，也给临时任务留出缓冲") {
+        PageTitleBar(title: "周计划", subtitle: "每天三个时间块，点按格子编辑完整任务") {
             HStack(spacing: 8) {
                 Button("保存", systemImage: "square.and.arrow.down") { save() }.buttonStyle(.borderedProminent)
                 StudyIconButton(systemImage: "bubble.left.and.bubble.right", label: "在学业对话中排下周") { chat.prepare(prompt: ReminderRoute.weekly.prompt); NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) }
             }
         }
-        if plan.format == .datedRows { DatedPlanEditor(plan: $plan) { target in editingCell = target } }
-        else { TimeGridPlanEditor(plan: $plan) { target in editingCell = target } }
+        if migrationNoticeVisible, let migrationNotice = plan.migrationNotice {
+            MigrationNotice(text: migrationNotice) { migrationNoticeVisible = false }
+        }
+        WeeklyGridPlanEditor(plan: $plan) { target in editingCell = target }
         ResponsiveColumns {
             StudySurface { VStack(alignment: .leading, spacing: 10) {
                 Text("交付物清单").font(.system(size: 15, weight: .semibold))
@@ -269,13 +283,32 @@ struct WeeklyPlanView: View {
     } }.onAppear(perform: load).popover(item: $editingCell) { target in
         WeeklyCellEditorPopover(target: target) { value in commitCell(target, value: value); editingCell = nil }
     }.alert("保存结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? "") } }
-    private func load() { let repo = MarkdownRepository(root: workspace.rootURL); original = (try? repo.read(file)) ?? ""; loadedHash = repo.hash(original); plan = MarkdownParser.weekly(original) }
+    private func load() { let repo = MarkdownRepository(root: workspace.rootURL); original = (try? repo.read(file)) ?? ""; loadedHash = repo.hash(original); plan = MarkdownParser.weekly(original); migrationNoticeVisible = true }
     private func save() { let repo = MarkdownRepository(root: workspace.rootURL); do { try repo.save(MarkdownParser.replaceWeekly(original, with: plan), relative: file, loadedHash: loadedHash); notice = "已保存到工作台/下周计划.md"; load(); workspace.refreshGitStatus() } catch { notice = error.localizedDescription } }
     private func commitCell(_ target: WeeklyEditTarget, value: String) {
         switch target.kind {
         case .grid(let row, let column): plan.cells[row][column] = value
-        case .dated(let index): plan.datedRows[index].text = value
         }
+    }
+}
+
+private struct MigrationNotice: View {
+    let text: String
+    let dismiss: () -> Void
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("已生成旧计划迁移预览").font(.subheadline.weight(.semibold))
+                Text(text).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("预览只存在于内存；确认三个时段内容后点击保存才会更新 Markdown。").font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button("知道了", action: dismiss).buttonStyle(.bordered)
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.orange.opacity(0.25)) }
     }
 }
 
@@ -297,7 +330,7 @@ private struct DeliveryTextEditor: View {
 }
 
 private struct WeeklyEditTarget: Identifiable {
-    enum Kind { case grid(row: Int, column: Int), dated(index: Int) }
+    enum Kind { case grid(row: Int, column: Int) }
     let id: String
     let title: String
     let text: String
@@ -319,32 +352,74 @@ private struct WeeklyCellEditorPopover: View {
     }
 }
 
-private struct TimeGridPlanEditor: View {
+private struct WeeklyGridPlanEditor: View {
     @Binding var plan: WeeklyPlan
     let edit: (WeeklyEditTarget) -> Void
     var body: some View {
         StudySurface {
             ScrollView(.horizontal, showsIndicators: true) {
-                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
-                    GridRow {
-                        Text("时段").font(.caption.bold()).frame(width: 48, alignment: .leading)
-                        ForEach(WeeklyPlan.days, id: \.self) { Text($0).font(.caption.bold()).frame(width: 136) }
-                    }
-                    ForEach(WeeklyPlan.periods.indices, id: \.self) { row in
-                        GridRow {
-                            Text(WeeklyPlan.periods[row]).font(.caption).foregroundStyle(.secondary).frame(width: 48, alignment: .leading)
-                            ForEach(WeeklyPlan.days.indices, id: \.self) { col in
-                                Button {
-                                    edit(WeeklyEditTarget(id: "grid-\(row)-\(col)", title: "\(WeeklyPlan.days[col]) · \(WeeklyPlan.periods[row])", text: plan.cells[row][col], kind: .grid(row: row, column: col)))
-                                } label: {
-                                    WeeklyCellPreview(text: plan.cells[row][col])
-                                }.buttonStyle(.plain)
-                            }
+                HStack(alignment: .top, spacing: 8) {
+                    ForEach(WeeklyPlan.days.indices, id: \.self) { column in
+                        WeeklyDayColumn(
+                            title: dayTitle(for: column),
+                            isToday: plan.isToday(column: column),
+                            cells: cells(for: column),
+                            unassigned: unassigned(for: column)
+                        ) { row in
+                            edit(target(for: row, column: column))
                         }
                     }
-                }.padding(.bottom, 4)
+                }
+                .padding(.bottom, 4)
             }
         }
+    }
+    private func dayTitle(for column: Int) -> String {
+        guard plan.dayDateLabels.indices.contains(column), !plan.dayDateLabels[column].isEmpty else { return WeeklyPlan.days[column] }
+        return "\(WeeklyPlan.days[column]) · \(plan.dayDateLabels[column])"
+    }
+    private func cells(for column: Int) -> [String] {
+        WeeklyPlan.periods.indices.map { row in
+            plan.cells.indices.contains(row) && plan.cells[row].indices.contains(column) ? plan.cells[row][column] : ""
+        }
+    }
+    private func unassigned(for column: Int) -> String {
+        plan.unassignedByDay.indices.contains(column) ? plan.unassignedByDay[column] : ""
+    }
+    private func target(for row: Int, column: Int) -> WeeklyEditTarget {
+        let text = plan.cells.indices.contains(row) && plan.cells[row].indices.contains(column) ? plan.cells[row][column] : ""
+        return WeeklyEditTarget(id: "grid-\(row)-\(column)", title: "\(dayTitle(for: column)) · \(WeeklyPlan.periods[row])", text: text, kind: .grid(row: row, column: column))
+    }
+}
+
+private struct WeeklyDayColumn: View {
+    let title: String
+    let isToday: Bool
+    let cells: [String]
+    let unassigned: String
+    let edit: (Int) -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.subheadline.weight(isToday ? .bold : .semibold)).frame(maxWidth: .infinity, alignment: .leading)
+            ForEach(0..<3, id: \.self) { row in
+                Button { edit(row) } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(WeeklyPlan.periods[row]).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                        Text(cells.indices.contains(row) && !cells[row].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? cells[row] : "未安排")
+                            .font(.system(size: 13)).foregroundStyle(cells.indices.contains(row) && !cells[row].isEmpty ? .primary : .secondary)
+                            .lineLimit(2).multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
+                    .padding(9).frame(width: 142, alignment: .topLeading).frame(minHeight: 76, alignment: .topLeading)
+                    .background(isToday ? Color.accentColor.opacity(0.07) : Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay { RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(isToday ? Color.accentColor.opacity(0.20) : Color.secondary.opacity(0.12)) }
+                }.buttonStyle(.plain).accessibilityLabel("\(title)，\(WeeklyPlan.periods[row])，编辑任务")
+            }
+            if !unassigned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Label("待分时", systemImage: "exclamationmark.triangle")
+                    .font(.caption2).foregroundStyle(.orange).help(unassigned)
+            }
+        }
+        .frame(width: 142, alignment: .leading)
     }
 }
 
@@ -356,24 +431,6 @@ private struct WeeklyCellPreview: View {
             .frame(width: 124, alignment: .topLeading)
             .frame(minHeight: 44, maxHeight: 64, alignment: .topLeading).padding(6)
             .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-    }
-}
-
-private struct DatedPlanEditor: View {
-    @Binding var plan: WeeklyPlan
-    let edit: (WeeklyEditTarget) -> Void
-    var body: some View {
-        StudySurface { VStack(alignment: .leading, spacing: 8) {
-            Text("按日期安排").font(.system(size: 15, weight: .semibold))
-            ForEach(plan.datedRows.indices, id: \.self) { index in
-                HStack(alignment: .top, spacing: 10) {
-                    Toggle("", isOn: Binding(get: { plan.datedRows[index].isCompleted }, set: { plan.datedRows[index].isCompleted = $0 })).labelsHidden().padding(.top, 5)
-                    Button { edit(WeeklyEditTarget(id: "dated-\(index)", title: plan.datedRows[index].dateLabel, text: plan.datedRows[index].text, kind: .dated(index: index))) } label: {
-                        VStack(alignment: .leading, spacing: 3) { Text(plan.datedRows[index].dateLabel).font(.caption.weight(.semibold)).foregroundStyle(.secondary); Text(plan.datedRows[index].text.isEmpty ? "未安排" : plan.datedRows[index].text).font(.system(size: StudyRocketTheme.bodySize)).lineLimit(2).multilineTextAlignment(.leading) }.frame(maxWidth: .infinity, alignment: .leading).padding(8).background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-                    }.buttonStyle(.plain)
-                }.frame(minHeight: 44)
-            }
-        } }
     }
 }
 
