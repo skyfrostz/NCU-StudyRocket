@@ -258,6 +258,11 @@ struct WeeklyPlanView: View {
     @State private var originalDeliveries: [UUID: String] = [:]
     @State private var originalRules: [UUID: (BufferRuleCategory, String)] = [:]
     @State private var deletionReview: WeeklyDeletionSummary?
+    @State private var activeEditor: WeeklyRowEditorState?
+    @State private var expandedDeliveryIDs = Set<UUID>()
+    @State private var expandedBufferRuleIDs = Set<UUID>()
+    @State private var pendingCompletionIDs = Set<UUID>()
+    @State private var inlineNotice: String?
     private let file = "工作台/下周计划.md"
     var body: some View { PageScaffold { VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
         PageTitleBar(title: "周计划", subtitle: "每天三个时间块，点按格子编辑完整任务") {
@@ -270,18 +275,29 @@ struct WeeklyPlanView: View {
             MigrationNotice(text: migrationNotice) { migrationNoticeVisible = false }
         }
         WeeklyGridPlanEditor(plan: $plan) { target in editingCell = target }
+        if let inlineNotice {
+            Label(inlineNotice, systemImage: "info.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 2)
+        }
         VStack(alignment: .leading, spacing: 16) {
             DeliveryWorkspaceSection(
                 title: "未完成交付物",
                 subtitle: "每项是一份可检查的产出；换行可补充验收条件。",
                 deliveries: plan.deliveries.filter { !$0.isCompleted },
                 isCompletedSection: false,
-                text: deliveryTextBinding,
-                toggle: toggleDelivery,
+                activeEditor: $activeEditor,
+                expandedIDs: $expandedDeliveryIDs,
+                pendingCompletionIDs: pendingCompletionIDs,
+                beginEditing: beginEditing,
+                commitEditing: commitEditing,
+                cancelEditing: cancelEditing,
+                toggle: requestToggleDelivery,
                 remove: removeDelivery,
                 move: moveDelivery,
                 stepMove: moveDeliveryByStep,
-                add: { plan.deliveries.append(WeeklyDelivery(text: "", isCompleted: false)) }
+                add: addDelivery
             )
             DeliveryWorkspaceSection(
                 title: "已完成交付物",
@@ -289,8 +305,13 @@ struct WeeklyPlanView: View {
                 deliveries: plan.deliveries.filter(\.isCompleted),
                 isCompletedSection: true,
                 isExpanded: $completedDeliveriesExpanded,
-                text: deliveryTextBinding,
-                toggle: toggleDelivery,
+                activeEditor: $activeEditor,
+                expandedIDs: $expandedDeliveryIDs,
+                pendingCompletionIDs: pendingCompletionIDs,
+                beginEditing: beginEditing,
+                commitEditing: commitEditing,
+                cancelEditing: cancelEditing,
+                toggle: requestToggleDelivery,
                 remove: removeDelivery,
                 move: moveDelivery,
                 stepMove: moveDeliveryByStep,
@@ -298,11 +319,15 @@ struct WeeklyPlanView: View {
             )
             BufferWorkspaceSection(
                 rules: plan.bufferRules,
-                text: bufferRuleTextBinding,
+                activeEditor: $activeEditor,
+                expandedIDs: $expandedBufferRuleIDs,
+                beginEditing: beginEditing,
+                commitEditing: commitEditing,
+                cancelEditing: cancelEditing,
                 remove: removeBufferRule,
                 move: moveBufferRule,
                 stepMove: moveBufferRuleByStep,
-                add: { category in plan.bufferRules.append(BufferRule(category: category, text: "")) }
+                add: addBufferRule
             )
         }
     } }.onAppear(perform: load).popover(item: $editingCell) { target in
@@ -339,22 +364,63 @@ struct WeeklyPlanView: View {
         case .grid(let row, let column): plan.cells[row][column] = value
         }
     }
-    private func deliveryTextBinding(_ id: UUID) -> Binding<String> {
-        Binding(get: { plan.deliveries.first(where: { $0.id == id })?.text ?? "" }, set: { value in
-            guard let index = plan.deliveries.firstIndex(where: { $0.id == id }) else { return }
-            plan.deliveries[index].text = value
-        })
+    private func beginEditing(_ state: WeeklyRowEditorState) {
+        guard activeEditor == nil || activeEditor?.id == state.id else {
+            inlineNotice = "请先完成或取消当前编辑"
+            return
+        }
+        inlineNotice = nil
+        activeEditor = state
     }
-    private func bufferRuleTextBinding(_ id: UUID) -> Binding<String> {
-        Binding(get: { plan.bufferRules.first(where: { $0.id == id })?.text ?? "" }, set: { value in
-            guard let index = plan.bufferRules.firstIndex(where: { $0.id == id }) else { return }
-            plan.bufferRules[index].text = value
-        })
+    private func commitEditing() {
+        guard let activeEditor else { return }
+        switch activeEditor.kind {
+        case .delivery(let id):
+            guard let index = plan.deliveries.firstIndex(where: { $0.id == id }) else { break }
+            plan.deliveries[index].text = activeEditor.draftText
+        case .bufferRule(let id):
+            guard let index = plan.bufferRules.firstIndex(where: { $0.id == id }) else { break }
+            plan.bufferRules[index].text = activeEditor.draftText
+        }
+        self.activeEditor = nil
+    }
+    private func cancelEditing() {
+        guard let activeEditor else { return }
+        if activeEditor.isNew, activeEditor.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            switch activeEditor.kind {
+            case .delivery(let id): plan.deliveries.removeAll { $0.id == id }
+            case .bufferRule(let id): plan.bufferRules.removeAll { $0.id == id }
+            }
+        }
+        self.activeEditor = nil
+    }
+    private func addDelivery() {
+        let delivery = WeeklyDelivery(text: "", isCompleted: false)
+        plan.deliveries.append(delivery)
+        beginEditing(WeeklyRowEditorState(kind: .delivery(delivery.id), originalText: "", draftText: "", isNew: true))
+    }
+    private func addBufferRule(_ category: BufferRuleCategory) {
+        let rule = BufferRule(category: category, text: "")
+        plan.bufferRules.append(rule)
+        beginEditing(WeeklyRowEditorState(kind: .bufferRule(rule.id), originalText: "", draftText: "", isNew: true))
     }
     private func toggleDelivery(_ id: UUID) {
         guard let index = plan.deliveries.firstIndex(where: { $0.id == id }) else { return }
         plan.deliveries[index].isCompleted.toggle()
         plan.deliveries.sort { !$0.isCompleted && $1.isCompleted }
+    }
+    private func requestToggleDelivery(_ id: UUID) {
+        guard let delivery = plan.deliveries.first(where: { $0.id == id }) else { return }
+        if delivery.isCompleted {
+            toggleDelivery(id)
+            return
+        }
+        pendingCompletionIDs.insert(id)
+        let delay = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.0 : 0.16
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            guard self.pendingCompletionIDs.remove(id) != nil else { return }
+            self.toggleDelivery(id)
+        }
     }
     private func removeDelivery(_ id: UUID) { plan.deliveries.removeAll { $0.id == id } }
     private func moveDelivery(_ source: UUID, _ destination: UUID) {
@@ -409,20 +475,62 @@ private struct MigrationNotice: View {
     }
 }
 
-private struct DeliveryTextEditor: View {
-    @Binding var text: String
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private var editorHeight: CGFloat {
-        let lines = max(1, text.split(separator: "\n", omittingEmptySubsequences: false).count)
-        return min(118, max(36, CGFloat(lines) * 20 + 12))
+private struct WeeklyRowEditorState: Identifiable, Equatable {
+    enum Kind: Equatable {
+        case delivery(UUID)
+        case bufferRule(UUID)
     }
+
+    let kind: Kind
+    let originalText: String
+    var draftText: String
+    let isNew: Bool
+
+    init(kind: Kind, originalText: String, draftText: String? = nil, isNew: Bool = false) {
+        self.kind = kind
+        self.originalText = originalText
+        self.draftText = draftText ?? originalText
+        self.isNew = isNew
+    }
+
+    var id: String {
+        switch kind {
+        case .delivery(let id): "delivery-\(id.uuidString)"
+        case .bufferRule(let id): "buffer-\(id.uuidString)"
+        }
+    }
+}
+
+private struct StudyGroupedSection<Content: View>: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+    let tint: Color
+    @ViewBuilder let content: Content
+
     var body: some View {
-        TextEditor(text: $text)
-            .font(.system(size: StudyRocketTheme.bodySize))
-            .scrollContentBackground(.hidden)
-            .frame(height: editorHeight)
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: editorHeight)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 18, height: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.system(size: 15, weight: .semibold))
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            content
+        }
+        .padding(16)
+        .background(.background, in: RoundedRectangle(cornerRadius: StudyRocketTheme.cornerRadius, style: .continuous))
+        .overlay(alignment: .leading) {
+            Capsule().fill(tint.opacity(0.82)).frame(width: 2).padding(.vertical, 16)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: StudyRocketTheme.cornerRadius, style: .continuous)
+                .strokeBorder(.quaternary)
+        }
     }
 }
 
@@ -432,7 +540,12 @@ private struct DeliveryWorkspaceSection: View {
     let deliveries: [WeeklyDelivery]
     let isCompletedSection: Bool
     var isExpanded: Binding<Bool>? = nil
-    let text: (UUID) -> Binding<String>
+    @Binding var activeEditor: WeeklyRowEditorState?
+    @Binding var expandedIDs: Set<UUID>
+    let pendingCompletionIDs: Set<UUID>
+    let beginEditing: (WeeklyRowEditorState) -> Void
+    let commitEditing: () -> Void
+    let cancelEditing: () -> Void
     let toggle: (UUID) -> Void
     let remove: (UUID) -> Void
     let move: (UUID, UUID) -> Void
@@ -441,7 +554,7 @@ private struct DeliveryWorkspaceSection: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        StudySurface {
+        StudyGroupedSection(title: title, subtitle: subtitle, icon: isCompletedSection ? "checkmark.circle" : "checklist", tint: isCompletedSection ? .teal : .accentColor) {
             VStack(alignment: .leading, spacing: 12) {
                 if let isExpanded {
                     Button { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) { isExpanded.wrappedValue.toggle() } } label: {
@@ -463,10 +576,6 @@ private struct DeliveryWorkspaceSection: View {
                     .accessibilityHint("点按显示或收起已完成交付物")
                     if isExpanded.wrappedValue { rows }
                 } else {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(title).font(.system(size: 15, weight: .semibold))
-                        Text(subtitle).font(.caption).foregroundStyle(.secondary)
-                    }
                     rows
                     if let add {
                         Button("添加交付物", systemImage: "plus", action: add)
@@ -486,79 +595,60 @@ private struct DeliveryWorkspaceSection: View {
         } else {
             VStack(spacing: 8) {
                 ForEach(Array(deliveries.enumerated()), id: \.element.id) { index, delivery in
-                    DeliveryWorkspaceRow(
-                        delivery: delivery,
+                    PlanReadingRow(
+                        id: delivery.id,
+                        text: delivery.text,
+                        metadata: .delivery(WeeklyDeliveryPresentation(text: delivery.text)),
+                        isCompleted: delivery.isCompleted,
+                        isPendingCompletion: pendingCompletionIDs.contains(delivery.id),
+                        isExpanded: expandedIDs.contains(delivery.id),
+                        activeEditor: $activeEditor,
+                        editorKind: .delivery(delivery.id),
                         position: index,
                         total: deliveries.count,
-                        text: text(delivery.id),
+                        beginEditing: beginEditing,
+                        commitEditing: commitEditing,
+                        cancelEditing: cancelEditing,
                         toggle: { toggle(delivery.id) },
                         remove: { remove(delivery.id) },
                         move: { move(delivery.id, $0) },
-                        stepMove: { stepMove(delivery.id, $0) }
+                        stepMove: { stepMove(delivery.id, $0) },
+                        toggleExpanded: { toggleExpanded(delivery.id) }
                     )
                 }
             }
         }
     }
-}
 
-private struct DeliveryWorkspaceRow: View {
-    let delivery: WeeklyDelivery
-    let position: Int
-    let total: Int
-    @Binding var text: String
-    let toggle: () -> Void
-    let remove: () -> Void
-    let move: (UUID) -> Void
-    let stepMove: (Int) -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Button(action: toggle) {
-                Image(systemName: delivery.isCompleted ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(delivery.isCompleted ? .teal : .secondary)
-                    .font(.system(size: 17))
-                    .frame(width: 28, height: 36)
-            }
-            .buttonStyle(.plain)
-            .help(delivery.isCompleted ? "取消完成" : "标记完成")
-            .accessibilityLabel(delivery.isCompleted ? "取消完成" : "标记完成")
-            DeliveryTextEditor(text: $text)
-            WorkspaceRowControls(position: position, total: total, hovering: hovering, up: { stepMove(-1) }, down: { stepMove(1) }, remove: remove)
-                .draggable(delivery.id.uuidString)
-                .dropDestination(for: String.self) { items, _ in
-                    guard let raw = items.first, let source = UUID(uuidString: raw), source != delivery.id else { return false }
-                    move(source)
-                    return true
-                }
-        }
-        .padding(.vertical, 2)
-        .onHover { hovering = $0 }
+    private func toggleExpanded(_ id: UUID) {
+        if expandedIDs.contains(id) { expandedIDs.remove(id) } else { expandedIDs.insert(id) }
     }
 }
 
 private struct BufferWorkspaceSection: View {
     let rules: [BufferRule]
-    let text: (UUID) -> Binding<String>
+    @Binding var activeEditor: WeeklyRowEditorState?
+    @Binding var expandedIDs: Set<UUID>
+    let beginEditing: (WeeklyRowEditorState) -> Void
+    let commitEditing: () -> Void
+    let cancelEditing: () -> Void
     let remove: (UUID) -> Void
     let move: (UUID, UUID) -> Void
     let stepMove: (UUID, Int) -> Void
     let add: (BufferRuleCategory) -> Void
 
     var body: some View {
-        StudySurface {
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("缓冲与降级").font(.system(size: 15, weight: .semibold))
-                    Text("按日常留白、撞车取舍和最低底线分别维护，计划受阻时先按这里降级。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+        StudyGroupedSection(title: "缓冲与降级", subtitle: "计划受阻时，按日常留白、撞车取舍和最低底线依次降级。", icon: "shield.lefthalf.filled", tint: .secondary) {
+            VStack(alignment: .leading, spacing: 18) {
                 ForEach(BufferRuleCategory.allCases) { category in
                     BufferRuleGroup(
                         category: category,
                         rules: rules.filter { $0.category == category },
-                        text: text,
+                        activeEditor: $activeEditor,
+                        expandedIDs: $expandedIDs,
+                        beginEditing: beginEditing,
+                        commitEditing: commitEditing,
+                        cancelEditing: cancelEditing,
                         remove: remove,
                         move: move,
                         stepMove: stepMove,
@@ -574,89 +664,227 @@ private struct BufferWorkspaceSection: View {
 private struct BufferRuleGroup: View {
     let category: BufferRuleCategory
     let rules: [BufferRule]
-    let text: (UUID) -> Binding<String>
+    @Binding var activeEditor: WeeklyRowEditorState?
+    @Binding var expandedIDs: Set<UUID>
+    let beginEditing: (WeeklyRowEditorState) -> Void
+    let commitEditing: () -> Void
+    let cancelEditing: () -> Void
     let remove: (UUID) -> Void
     let move: (UUID, UUID) -> Void
     let stepMove: (UUID, Int) -> Void
     let add: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(category.title).font(.subheadline.weight(.semibold))
-            if !rules.isEmpty {
-                ForEach(Array(rules.enumerated()), id: \.element.id) { index, rule in
-                    BufferRuleWorkspaceRow(
-                        rule: rule,
-                        position: index,
-                        total: rules.count,
-                        text: text(rule.id),
-                        remove: { remove(rule.id) },
-                        move: { move(rule.id, $0) },
-                        stepMove: { stepMove(rule.id, $0) }
-                    )
-                }
+        VStack(alignment: .leading, spacing: 7) {
+            BufferCategoryHeader(category: category)
+            ForEach(Array(rules.enumerated()), id: \.element.id) { index, rule in
+                PlanReadingRow(
+                    id: rule.id,
+                    text: rule.text,
+                    metadata: .plain,
+                    isCompleted: false,
+                    isPendingCompletion: false,
+                    isExpanded: expandedIDs.contains(rule.id),
+                    activeEditor: $activeEditor,
+                    editorKind: .bufferRule(rule.id),
+                    position: index,
+                    total: rules.count,
+                    beginEditing: beginEditing,
+                    commitEditing: commitEditing,
+                    cancelEditing: cancelEditing,
+                    toggle: nil,
+                    remove: { remove(rule.id) },
+                    move: { move(rule.id, $0) },
+                    stepMove: { stepMove(rule.id, $0) },
+                    toggleExpanded: { toggleExpanded(rule.id) }
+                )
             }
             Button("添加规则", systemImage: "plus", action: add)
                 .buttonStyle(.link)
                 .frame(minHeight: 30, alignment: .leading)
         }
-        .padding(.top, category == .daily ? 0 : 2)
+    }
+
+    private func toggleExpanded(_ id: UUID) {
+        if expandedIDs.contains(id) { expandedIDs.remove(id) } else { expandedIDs.insert(id) }
     }
 }
 
-private struct BufferRuleWorkspaceRow: View {
-    let rule: BufferRule
+private struct BufferCategoryHeader: View {
+    let category: BufferRuleCategory
+    private var icon: String {
+        switch category {
+        case .daily: "circle.dotted"
+        case .collision: "arrow.triangle.branch"
+        case .minimum: "flag.fill"
+        }
+    }
+    private var tint: Color {
+        switch category {
+        case .daily: .secondary
+        case .collision: .orange
+        case .minimum: .red
+        }
+    }
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).foregroundStyle(tint).frame(width: 16)
+            Text(category.title).font(.subheadline.weight(.semibold))
+        }
+        .padding(.top, category == .daily ? 0 : 4)
+    }
+}
+
+private enum PlanRowMetadata {
+    case delivery(WeeklyDeliveryPresentation)
+    case plain
+}
+
+private struct PlanReadingRow: View {
+    let id: UUID
+    let text: String
+    let metadata: PlanRowMetadata
+    let isCompleted: Bool
+    let isPendingCompletion: Bool
+    let isExpanded: Bool
+    @Binding var activeEditor: WeeklyRowEditorState?
+    let editorKind: WeeklyRowEditorState.Kind
     let position: Int
     let total: Int
-    @Binding var text: String
+    let beginEditing: (WeeklyRowEditorState) -> Void
+    let commitEditing: () -> Void
+    let cancelEditing: () -> Void
+    let toggle: (() -> Void)?
     let remove: () -> Void
     let move: (UUID) -> Void
     let stepMove: (Int) -> Void
+    let toggleExpanded: () -> Void
     @State private var hovering = false
+
+    private var isEditing: Bool { activeEditor?.id == editorID }
+    private var editorID: String { WeeklyRowEditorState(kind: editorKind, originalText: text).id }
+    private var visibleText: String {
+        if case .delivery(let presentation) = metadata { return presentation.body }
+        return text
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            DeliveryTextEditor(text: $text)
-            WorkspaceRowControls(position: position, total: total, hovering: hovering, up: { stepMove(-1) }, down: { stepMove(1) }, remove: remove)
-                .draggable(rule.id.uuidString)
+            if let toggle {
+                Button(action: toggle) {
+                    Image(systemName: isCompleted || isPendingCompletion ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(isCompleted || isPendingCompletion ? .teal : .secondary)
+                        .font(.system(size: 17))
+                        .frame(width: 28, height: 36)
+                }
+                .buttonStyle(.plain)
+                .help(isCompleted ? "取消完成" : "标记完成")
+                .accessibilityLabel(isCompleted ? "取消完成" : "标记完成")
+            } else {
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 5))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 28, height: 28)
+            }
+            Group {
+                if isEditing, let editor = activeEditor {
+                    InlinePlanEditor(text: Binding(get: { editor.draftText }, set: { activeEditor?.draftText = $0 }), commit: commitEditing, cancel: cancelEditing)
+                } else {
+                    Button(action: toggleExpanded) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if case .delivery(let presentation) = metadata, let label = presentation.dateLabel {
+                                Text(label).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                            }
+                            Text(visibleText.isEmpty ? "未命名项目" : visibleText)
+                                .font(.system(size: StudyRocketTheme.bodySize))
+                                .foregroundStyle(isCompleted ? .secondary : .primary)
+                                .strikethrough(isCompleted || isPendingCompletion, color: .secondary)
+                                .lineLimit(isExpanded ? nil : 3)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onTapGesture(count: 2) { beginEditing(WeeklyRowEditorState(kind: editorKind, originalText: text)) }
+                    .accessibilityLabel(visibleText)
+                    .accessibilityHint(isExpanded ? "点按收起全文，双击编辑" : "点按展开全文，双击编辑")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            HoverActionStrip(position: position, total: total, visible: hovering || isEditing, edit: { beginEditing(WeeklyRowEditorState(kind: editorKind, originalText: text)) }, up: { stepMove(-1) }, down: { stepMove(1) }, remove: remove)
+                .draggable(id.uuidString)
                 .dropDestination(for: String.self) { items, _ in
-                    guard let raw = items.first, let source = UUID(uuidString: raw), source != rule.id else { return false }
+                    guard let raw = items.first, let source = UUID(uuidString: raw), source != id else { return false }
                     move(source)
                     return true
                 }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
+        .padding(.horizontal, 4)
+        .background(isEditing ? Color.accentColor.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(alignment: .bottom) { Divider().padding(.leading, 36) }
         .onHover { hovering = $0 }
     }
 }
 
-private struct WorkspaceRowControls: View {
+private struct InlinePlanEditor: View {
+    @Binding var text: String
+    let commit: () -> Void
+    let cancel: () -> Void
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextEditor(text: $text)
+                .font(.system(size: StudyRocketTheme.bodySize))
+                .scrollContentBackground(.hidden)
+                .focused($focused)
+                .frame(minHeight: 54, maxHeight: 132)
+                .padding(4)
+                .background(.background, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay { RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Color.accentColor.opacity(0.45)) }
+            HStack(spacing: 8) {
+                Spacer()
+                Button("取消", action: cancel).keyboardShortcut(.cancelAction)
+                Button("完成", action: commit).buttonStyle(.borderedProminent).keyboardShortcut(.return, modifiers: [.command])
+            }
+        }
+        .onAppear { focused = true }
+    }
+}
+
+private struct HoverActionStrip: View {
     let position: Int
     let total: Int
-    let hovering: Bool
+    let visible: Bool
+    let edit: () -> Void
     let up: () -> Void
     let down: () -> Void
     let remove: () -> Void
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 2) {
             Image(systemName: "line.3.horizontal")
-                .frame(width: 28, height: 44)
                 .foregroundStyle(.tertiary)
+                .frame(width: 28, height: 44)
                 .accessibilityLabel("拖拽排序")
-            Button(action: up) { Image(systemName: "arrow.up") }
-                .disabled(position == 0).help("上移").accessibilityLabel("上移")
-            Button(action: down) { Image(systemName: "arrow.down") }
-                .disabled(position == total - 1).help("下移").accessibilityLabel("下移")
-            Button(role: .destructive, action: remove) { Image(systemName: "trash") }
-                .help("删除")
-                .accessibilityLabel("删除")
+            Button(action: edit) { Image(systemName: "pencil") }.help("编辑").accessibilityLabel("编辑")
+            Menu {
+                Button("上移", action: up).disabled(position == 0)
+                Button("下移", action: down).disabled(position == total - 1)
+                Divider()
+                Button("删除", role: .destructive, action: remove)
+            } label: { Image(systemName: "ellipsis") }
+            .help("更多操作")
+            .accessibilityLabel("更多操作")
         }
         .labelStyle(.iconOnly)
         .buttonStyle(.borderless)
         .font(.caption)
-        .frame(width: 116, height: 44)
-        .opacity(hovering ? 1 : 0.16)
+        .frame(width: 84, height: 44)
+        .opacity(visible ? 1 : 0)
         .accessibilityElement(children: .contain)
     }
 }

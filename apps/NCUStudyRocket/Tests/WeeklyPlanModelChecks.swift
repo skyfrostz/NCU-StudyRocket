@@ -94,6 +94,14 @@ struct WeeklyPlanModelChecks {
         check(visible.map(\.text) == ["8 月 14 日：明日任务", "无日期任务"], "dashboard deliveries exclude only explicitly dated today items")
         check(visible.filter(\.isCompleted).count == 1, "filtered completion count uses visible deliveries")
 
+        let datedPresentation = WeeklyDeliveryPresentation(text: "8 月 13 日：完成微分代表题", reference: today)
+        check(datedPresentation.dateLabel != nil && datedPresentation.body == "完成微分代表题", "dated delivery display keeps a date label and hides only its visual prefix")
+        let plainPresentation = WeeklyDeliveryPresentation(text: "整理错题本", reference: today)
+        check(plainPresentation.dateLabel == nil && plainPresentation.body == "整理错题本", "undated delivery display preserves its text")
+        let crossYearReference = calendar.date(from: DateComponents(year: 2026, month: 12, day: 31))!
+        let crossYearPresentation = WeeklyDeliveryPresentation(text: "1 月 1 日：建立新年学习清单", reference: crossYearReference)
+        check(crossYearPresentation.dateLabel != nil && crossYearPresentation.body == "建立新年学习清单", "cross-year delivery date display is resolved safely")
+
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("StudyRocketWeeklyModel-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root.appendingPathComponent("工作台"), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }

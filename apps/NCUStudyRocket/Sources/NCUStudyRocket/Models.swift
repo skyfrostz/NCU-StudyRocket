@@ -13,6 +13,33 @@ struct WeeklyDelivery: Identifiable, Hashable {
     var isCompleted: Bool
 }
 
+struct WeeklyDeliveryPresentation: Equatable {
+    let dateLabel: String?
+    let body: String
+
+    init(text: String, reference: Date = .now) {
+        let firstLine = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? text
+        guard let date = MarkdownParser.leadingDate(in: firstLine, relativeTo: reference) else {
+            dateLabel = nil
+            body = text
+            return
+        }
+        let calendar = MarkdownParser.studyCalendar
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "M月d日 · EEE"
+        dateLabel = formatter.string(from: date)
+        let stripped = text.replacingOccurrences(
+            of: #"^\s*(?:\d{4}-)?\d{1,2}\s*月\s*\d{1,2}\s*日?\s*[：:]\s*"#,
+            with: "",
+            options: .regularExpression
+        )
+        body = stripped.isEmpty ? text : stripped
+    }
+}
+
 enum BufferRuleCategory: String, CaseIterable, Identifiable, Hashable {
     case daily
     case collision
