@@ -471,7 +471,7 @@ struct AssistantMessageView: View {
     let message: ChatMessage
     @State private var hovering = false
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
             StudyRocketAvatar(size: 26)
             VStack(alignment: .leading, spacing: 6) {
                 Markdown(message.text).markdownTheme(.gitHub).markdownTextStyle { FontSize(15); ForegroundColor(.primary) }.textSelection(.enabled).frame(maxWidth: StudyRocketTheme.readingMaxWidth, alignment: .leading)
