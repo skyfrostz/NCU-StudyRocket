@@ -13,6 +13,28 @@ struct WeeklyDelivery: Identifiable, Hashable {
     var isCompleted: Bool
 }
 
+enum BufferRuleCategory: String, CaseIterable, Identifiable, Hashable {
+    case daily
+    case collision
+    case minimum
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .daily: "日常缓冲"
+        case .collision: "撞车降级"
+        case .minimum: "最低底线"
+        }
+    }
+}
+
+struct BufferRule: Identifiable, Hashable {
+    let id = UUID()
+    var category: BufferRuleCategory
+    var text: String
+}
+
 enum WeeklyPlanFormat: Equatable {
     case timeGrid
     case datedRows
@@ -38,6 +60,7 @@ struct WeeklyPlan {
     var isMigratedPreview = false
     var deliveries: [WeeklyDelivery] = []
     var buffer: String = "每天 17:00-18:30 弹性\n若全崩：只保最重要的一件事"
+    var bufferRules: [BufferRule] = []
 
     func deliveriesExcluding(_ date: Date, calendar: Calendar = MarkdownParser.studyCalendar) -> [WeeklyDelivery] {
         deliveries.filter { delivery in
@@ -399,7 +422,7 @@ enum MarkdownParser {
             parseLegacyTimeGrid(lines: lines, headerIndex: start, range: weeklyRange, into: &plan)
         }
         if let start = lines.firstIndex(where: { $0.contains("## 交付物") }) {
-            let range = managedSectionContent(lines, headingIndex: start)
+            let range = managedSectionContent(lines, headingIndex: start).content
             var current: (text: String, completed: Bool)?
             for line in lines[range] {
                 if line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") || line.hasPrefix("- [ ] ") {
@@ -413,12 +436,10 @@ enum MarkdownParser {
             if let current { plan.deliveries.append(WeeklyDelivery(text: current.text, isCompleted: current.completed)) }
         }
         if let start = lines.firstIndex(where: { $0.contains("## 缓冲") }) {
-            var values: [String] = []
-            for line in lines[(start + 1)..<lines.count] {
-                if line.hasPrefix("## ") { break }
-                values.append(line.hasPrefix("- ") ? String(line.dropFirst(2)) : line)
+            plan.bufferRules = parseBufferRules(lines, headingIndex: start)
+            if !plan.bufferRules.isEmpty {
+                plan.buffer = plan.bufferRules.map(\.text).joined(separator: "\n")
             }
-            if !values.isEmpty { plan.buffer = values.joined(separator: "\n") }
         }
         return plan
     }
@@ -436,15 +457,30 @@ enum MarkdownParser {
             lines.replaceSubrange(header..<end, with: table.filter { !$0.isEmpty })
         }
         if let start = lines.firstIndex(where: { $0.contains("## 交付物") }) {
-            let section = managedSectionContent(lines, headingIndex: start)
+            let section = managedSectionContent(lines, headingIndex: start, markers: ("studyrocket:deliveries:start", "studyrocket:deliveries:end"))
             let deliveryLines = plan.deliveries.isEmpty ? ["- [ ] 待生成"] : plan.deliveries.flatMap { delivery -> [String] in
                 let pieces = delivery.text.components(separatedBy: .newlines)
                 guard let first = pieces.first else { return ["- [\(delivery.isCompleted ? "x" : " ")] "] }
                 return ["- [\(delivery.isCompleted ? "x" : " ")] \(first)"] + pieces.dropFirst().map { "  \($0)" }
             }
-            lines.replaceSubrange(section, with: deliveryLines)
+            if section.hasMarkers {
+                lines.replaceSubrange(section.content, with: deliveryLines)
+            } else {
+                lines.replaceSubrange(section.content, with: ["<!-- studyrocket:deliveries:start -->"] + deliveryLines + ["<!-- studyrocket:deliveries:end -->"])
+            }
         }
-        if let start = lines.firstIndex(where: { $0.contains("## 缓冲") }) { var end = start + 1; while end < lines.count && !lines[end].hasPrefix("## ") { end += 1 }; let bufferLines = plan.buffer.split(separator: "\n", omittingEmptySubsequences: false).map { "- " + $0 }; lines.replaceSubrange((start + 1)..<end, with: bufferLines) }
+        if let start = lines.firstIndex(where: { $0.contains("## 缓冲") }) {
+            let section = managedSectionContent(lines, headingIndex: start, markers: ("studyrocket:buffer:start", "studyrocket:buffer:end"))
+            let rules = plan.bufferRules.isEmpty
+                ? legacyBufferRules(from: plan.buffer)
+                : plan.bufferRules
+            let bufferLines = structuredBufferLines(for: rules)
+            if section.hasMarkers {
+                lines.replaceSubrange(section.content, with: bufferLines)
+            } else {
+                lines.replaceSubrange(section.content, with: ["<!-- studyrocket:buffer:start -->"] + bufferLines + ["<!-- studyrocket:buffer:end -->"])
+            }
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -647,13 +683,91 @@ enum MarkdownParser {
         }
     }
 
-    private static func managedSectionContent(_ lines: [String], headingIndex: Int) -> Range<Int> {
-        var start = headingIndex + 1
-        var end = start
-        while end < lines.count && !lines[end].hasPrefix("## ") { end += 1 }
-        if start < end, lines[start].contains("studyrocket:deliveries:start") { start += 1 }
-        if start < end, lines[end - 1].contains("studyrocket:deliveries:end") { end -= 1 }
-        return start..<end
+    private static func managedSectionContent(
+        _ lines: [String],
+        headingIndex: Int,
+        markers: (start: String, end: String) = ("studyrocket:deliveries:start", "studyrocket:deliveries:end")
+    ) -> (content: Range<Int>, hasMarkers: Bool) {
+        let sectionStart = headingIndex + 1
+        var sectionEnd = sectionStart
+        while sectionEnd < lines.count && !lines[sectionEnd].hasPrefix("## ") { sectionEnd += 1 }
+        guard let startMarker = lines[sectionStart..<sectionEnd].firstIndex(where: { $0.contains(markers.start) }),
+              let endMarker = lines[(startMarker + 1)..<sectionEnd].firstIndex(where: { $0.contains(markers.end) }) else {
+            return (sectionStart..<sectionEnd, false)
+        }
+        return ((startMarker + 1)..<endMarker, true)
+    }
+
+    private static func parseBufferRules(_ lines: [String], headingIndex: Int) -> [BufferRule] {
+        let section = managedSectionContent(lines, headingIndex: headingIndex, markers: ("studyrocket:buffer:start", "studyrocket:buffer:end"))
+        let content = Array(lines[section.content])
+        var category: BufferRuleCategory?
+        var parsed: [(category: BufferRuleCategory, text: String)] = []
+        var current: (category: BufferRuleCategory, text: String)?
+        var sawStructuredHeading = false
+
+        func commit() {
+            guard let current, !current.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            parsed.append(current)
+        }
+
+        for line in content {
+            if let heading = bufferCategory(forHeading: line) {
+                commit()
+                current = nil
+                category = heading
+                sawStructuredHeading = true
+            } else if line.hasPrefix("- ") || line.hasPrefix("- [ ] ") || line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") {
+                commit()
+                current = (category ?? .daily, bufferBulletText(line))
+            } else if line.hasPrefix("  "), var value = current {
+                value.text += "\n" + line.drop(while: { $0 == " " })
+                current = value
+            }
+        }
+        commit()
+        if sawStructuredHeading { return parsed.map { BufferRule(category: $0.category, text: $0.text) } }
+        return legacyBufferRules(from: parsed.map(\.text).joined(separator: "\n"))
+    }
+
+    private static func bufferCategory(forHeading line: String) -> BufferRuleCategory? {
+        let label = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        return switch label {
+        case "### 日常缓冲": .daily
+        case "### 撞车降级": .collision
+        case "### 最低底线": .minimum
+        default: nil
+        }
+    }
+
+    private static func bufferBulletText(_ line: String) -> String {
+        if line.hasPrefix("- [ ] ") || line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") { return String(line.dropFirst(6)) }
+        return line.hasPrefix("- ") ? String(line.dropFirst(2)) : line
+    }
+
+    private static func legacyBufferRules(from text: String) -> [BufferRule] {
+        text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map { BufferRule(category: bufferCategory(forLegacyText: $0), text: $0) }
+    }
+
+    private static func bufferCategory(forLegacyText text: String) -> BufferRuleCategory {
+        if ["若全崩", "只保最重要", "最低"].contains(where: text.contains) { return .minimum }
+        if ["若", "撞车", "受阻", "只剩"].contains(where: text.contains) { return .collision }
+        return .daily
+    }
+
+    private static func structuredBufferLines(for rules: [BufferRule]) -> [String] {
+        BufferRuleCategory.allCases.flatMap { category -> [String] in
+            let categoryRules = rules.filter { $0.category == category }
+            let items = categoryRules.flatMap { rule -> [String] in
+                let pieces = rule.text.components(separatedBy: .newlines)
+                guard let first = pieces.first else { return ["- "] }
+                return ["- \(first)"] + pieces.dropFirst().map { "  \($0)" }
+            }
+            return ["### \(category.title)"] + items + [""]
+        }
     }
 
     private static func splitTableRow(_ line: String) -> [String]? {

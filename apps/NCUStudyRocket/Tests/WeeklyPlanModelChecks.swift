@@ -55,6 +55,25 @@ struct WeeklyPlanModelChecks {
         check(reparsed.unassignedByDay == migrated.unassignedByDay, "unassigned rows round trip")
         check(reparsed.dayCompletion == migrated.dayCompletion, "day completion round trip")
 
+        let legacyBuffer = """
+        ## 缓冲
+        - 每天保留 90 分钟弹性
+        - 若课程撞车，只保课堂与当日唯一交付物
+        - 若全崩，只保最重要的一件事
+
+        ## 外部说明
+        不参与缓冲迁移
+        """
+        var bufferPlan = MarkdownParser.weekly(legacyBuffer)
+        check(bufferPlan.bufferRules.map(\.category) == [.daily, .collision, .minimum], "flat buffer rules are classified in memory")
+        bufferPlan.bufferRules[0].text = "每天保留 90 分钟弹性\n不占用固定课程"
+        let structuredBuffer = MarkdownParser.replaceWeekly(legacyBuffer, with: bufferPlan)
+        check(structuredBuffer.contains("<!-- studyrocket:buffer:start -->") && structuredBuffer.contains("### 日常缓冲") && structuredBuffer.contains("### 撞车降级") && structuredBuffer.contains("### 最低底线"), "buffer gets managed category boundaries on save")
+        check(structuredBuffer.contains("- 每天保留 90 分钟弹性\n  不占用固定课程"), "multiline buffer rule round trips")
+        check(structuredBuffer.contains("## 外部说明\n不参与缓冲迁移"), "buffer migration preserves later unmanaged content")
+        let reparsedBuffer = MarkdownParser.weekly(structuredBuffer)
+        check(reparsedBuffer.bufferRules.count == 3 && reparsedBuffer.bufferRules[0].text.contains("不占用固定课程"), "structured buffer rules reparse")
+
         let legacyGrid = """
         <!-- studyrocket:weekly:start -->
         | 时段 | 周一 | 周二 | 周三 | 周四 | 周五 | 周六 | 周日 |

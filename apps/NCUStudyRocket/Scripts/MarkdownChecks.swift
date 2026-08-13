@@ -14,6 +14,7 @@ struct MarkdownChecks {
         let updated = MarkdownParser.replaceWeekly(source, with: plan)
         check(updated.hasPrefix("# 计划"), "weekly header preserved")
         check(updated.contains("每天留白"), "weekly buffer")
+        check(updated.contains("studyrocket:deliveries:start") && updated.contains("studyrocket:buffer:start"), "weekly editor adds managed delivery and buffer boundaries")
         check(updated.contains("Python"), "weekly cell")
         check(updated.contains("- [x] 完成小测"), "weekly delivery completion preserved")
         let dated = "# 计划\n\n<!-- studyrocket:weekly:start -->\n\n| 日期 | 计划 |\n|------|------|\n| 8 月 13 日 | [ ] 第一行<br>第二行 \\| 细节 |\n| 8 月 14 日 | [x] 已完成 |\n<!-- studyrocket:weekly:end -->\n\n## 交付物清单\n- [ ] 主任务\n  补充说明\n- [x] 第二任务\n\n## 缓冲\n- 每天留白\n\n## 外部说明\n原样保留"
