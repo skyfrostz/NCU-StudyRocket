@@ -796,10 +796,11 @@ private struct PlanReadingRow: View {
                                 Text(label).font(.caption.weight(.medium)).foregroundStyle(.secondary)
                             }
                             Text(visibleText.isEmpty ? "未命名项目" : visibleText)
-                                .font(.system(size: StudyRocketTheme.bodySize))
+                                .font(.body)
                                 .foregroundStyle(isCompleted ? .secondary : .primary)
                                 .strikethrough(isCompleted || isPendingCompletion, color: .secondary)
                                 .lineLimit(isExpanded ? nil : 3)
+                                .lineSpacing(5)
                                 .multilineTextAlignment(.leading)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -838,7 +839,8 @@ private struct InlinePlanEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             TextEditor(text: $text)
-                .font(.system(size: StudyRocketTheme.bodySize))
+                .font(.body)
+                .lineSpacing(5)
                 .scrollContentBackground(.hidden)
                 .focused($focused)
                 .frame(minHeight: 54, maxHeight: 132)
