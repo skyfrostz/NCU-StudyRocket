@@ -17,14 +17,14 @@ struct PageScaffold<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        ScrollView {
-            ViewThatFits(in: .horizontal) {
-                content.padding(StudyRocketTheme.pageInset)
-                content.padding(StudyRocketTheme.compactInset)
+        GeometryReader { geometry in
+            ScrollView {
+                content
+                    .padding(geometry.size.width < 760 ? StudyRocketTheme.compactInset : StudyRocketTheme.pageInset)
+                    .frame(maxWidth: StudyRocketTheme.pageMaxWidth, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.bottom, StudyRocketTheme.sectionGap)
             }
-            .frame(maxWidth: StudyRocketTheme.pageMaxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.bottom, StudyRocketTheme.sectionGap)
         }
     }
 }
@@ -73,8 +73,8 @@ struct ResponsiveColumns<First: View, Second: View>: View {
     var body: some View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .top, spacing: 16) {
-                first.frame(maxWidth: .infinity, alignment: .leading)
-                second.frame(maxWidth: .infinity, alignment: .leading)
+                first.frame(minWidth: 320, maxWidth: .infinity, alignment: .leading)
+                second.frame(minWidth: 320, maxWidth: .infinity, alignment: .leading)
             }
             VStack(alignment: .leading, spacing: 16) {
                 first
