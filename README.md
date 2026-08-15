@@ -104,6 +104,17 @@ cd apps/NCUStudyRocket
 
 手机端源码位于 `apps/NCUStudyRocketMobile/`，共享 DTO 位于 `apps/NCUStudyRocketShared/`。手机不运行 Codex、不保存 Markdown 事实，也不携带模型令牌；Mac 仍是唯一 Host、唯一 Markdown 写入端和 Codex 运行端。手机只缓存最近一次只读快照与未发送草稿，离线时不能写入仓库。
 
+手机端代码边界如下，GitHub 中以 `apps/NCUStudyRocketMobile/` 为独立 iPhone 工程目录：
+
+| 目录 | 归属 | 说明 |
+| --- | --- | --- |
+| `apps/NCUStudyRocketMobile/` | iPhone 手机端 | SwiftUI 客户端、Xcode 工程、资源和本地通知 |
+| `apps/NCUStudyRocket/Sources/StudyRocketHost/` | Mac 手机 Host | 手机连接、配对、只读快照和草案写入桥接 |
+| `apps/NCUStudyRocketShared/` | Mac/iPhone 共享 | Host 与手机共用的 DTO、签名和协议检查 |
+| `apps/NCUStudyRocket/Sources/NCUStudyRocket/` | Mac 桌面端 | 原生桌面应用，不属于 iPhone 客户端 |
+
+手机端的单独构建、连接和真机验收说明见 [`apps/NCUStudyRocketMobile/README.md`](apps/NCUStudyRocketMobile/README.md)。
+
 Mac 端的手机 Host 是独立的菜单栏应用，手动启动后才监听 `127.0.0.1:43817`；它不创建 LaunchAgent、登录项或常驻后台服务。Host 启动时先恢复固定学业任务并校验 `studyrocket` 动态工具声明，协议自检成功前聊天和草案接口保持不可用。Host 随后在 `~/Library/Application Support/NCU StudyRocket/` 写入权限为 600 的短期本地会话令牌和 Codex 单实例租约，停止时删除。主应用检测到令牌后优先复用 Host 的固定学业任务；Host 自检期间会短暂等待，不会抢占第二个 app-server；Host 未启动时仍使用原有本机 stdio 路径，不影响原应用单独运行。需要完整 Xcode 26 才能签名运行 iPhone target，CommandLineTools 仅能验证 SwiftPM 代码：
 
 ```bash

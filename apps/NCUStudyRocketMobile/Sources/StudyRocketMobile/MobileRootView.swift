@@ -191,7 +191,11 @@ private struct MobileHomeConnectionCard: View {
     var body: some View {
         MobileSurface {
             VStack(alignment: .leading, spacing: 14) {
-                MobileBrandMark(size: 54)
+                Image(systemName: "desktopcomputer.and.arrow.down")
+                    .font(.system(size: 46, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .symbolRenderingMode(.hierarchical)
+                    .accessibilityHidden(true)
                 Text("连接你的 Mac Host")
                     .font(.system(.title3, design: .rounded, weight: .bold))
                 Text("从 Mac 的 StudyRocket Host 复制私有 HTTPS 地址和一次性配对码，即可在手机继续查看计划、复盘和对话。")
