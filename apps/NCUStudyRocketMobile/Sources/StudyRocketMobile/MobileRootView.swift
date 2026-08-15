@@ -159,8 +159,6 @@ private struct MobileHomeView: View {
                     } else {
                         if session.savedEndpoint == nil {
                             MobileHomeConnectionCard { onNavigate(4) }
-                                .frame(maxWidth: 330)
-                                .frame(maxWidth: .infinity, alignment: .center)
                         } else {
                             MobileSurface {
                                 VStack(alignment: .leading, spacing: 14) {
