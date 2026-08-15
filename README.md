@@ -100,4 +100,21 @@ cd apps/NCUStudyRocket
 
 关闭应用会终止本次 app-server 子进程，不创建 LaunchAgent、登录项、菜单栏常驻程序或网络监听端口。系统通知由 macOS 独立投递，点击后重新打开应用并进入学业对话。
 
+## iPhone 伴随端（iOS 26）
+
+手机端源码位于 `apps/NCUStudyRocketMobile/`，共享 DTO 位于 `apps/NCUStudyRocketShared/`。手机不运行 Codex、不保存 Markdown 事实，也不携带模型令牌；Mac 仍是唯一 Host、唯一 Markdown 写入端和 Codex 运行端。手机只缓存最近一次只读快照与未发送草稿，离线时不能写入仓库。
+
+Mac 端的手机 Host 是独立的菜单栏应用，手动启动后才监听 `127.0.0.1:43817`；它不创建 LaunchAgent、登录项或常驻后台服务。Host 启动时先恢复固定学业任务并校验 `studyrocket` 动态工具声明，协议自检成功前聊天和草案接口保持不可用。Host 随后在 `~/Library/Application Support/NCU StudyRocket/` 写入权限为 600 的短期本地会话令牌和 Codex 单实例租约，停止时删除。主应用检测到令牌后优先复用 Host 的固定学业任务；Host 自检期间会短暂等待，不会抢占第二个 app-server；Host 未启动时仍使用原有本机 stdio 路径，不影响原应用单独运行。需要完整 Xcode 26 才能签名运行 iPhone target，CommandLineTools 仅能验证 SwiftPM 代码：
+
+```bash
+cd apps/NCUStudyRocket
+./Scripts/build_host_app.sh
+# 需要安装到 /Applications 时再执行
+./Scripts/install_host_app.sh
+```
+
+手机与 Mac 可通过同一 Tailscale tailnet 的 Serve HTTPS 地址连接。首次连接使用 Host 菜单栏显示的 5 分钟一次性配对码；之后每个请求由 iPhone Secure Enclave 密钥签名，Host 在 Keychain 中保存公钥。学业对话仍续接固定的 `StudyRocket 学业助理` 任务，普通聊天只读；Markdown 或 Skill 修改先变成草案，手机 Face ID 确认后还要签署 Host 发出的短时一次性挑战，Host 再做哈希、白名单和原子写入检查。手机端拒绝明文 HTTP 地址，Host 只绑定 `127.0.0.1`，菜单栏会显示 Tailscale Serve 检测结果并提供复制地址操作。移动端对话使用与 Mac 相同的 `swift-markdown-ui 2.4.1` GFM 渲染，后台时会断开 SSE，回到前台再刷新。
+
+手机通知的每日、每周、月末提醒独立登记，点击后进入“对话”并预填对应报告问题。Mac 原生提醒在没有明确保存过设置的新安装中默认关闭，已有设置不被覆盖。迁移验收期间保留现有 Codex Scheduled Tasks；不要因为安装手机端而停用原提醒。
+
 原始 PDF 继续由 `.gitignore` 排除并使用私有云盘单独备份；不要把账号、令牌、身份证号或医疗隐私写入仓库。

@@ -74,6 +74,13 @@ struct WeeklyDatedRow: Identifiable, Hashable {
     var isCompleted: Bool
 }
 
+struct WeeklyScheduledRow: Hashable {
+    var dateLabel: String
+    var slots: [String]
+    var unassigned: String
+    var isCompleted: Bool
+}
+
 struct WeeklyPlan {
     static let days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     static let periods = ["上午", "中午", "晚上"]
@@ -83,6 +90,8 @@ struct WeeklyPlan {
     var dayDateLabels: [String] = Array(repeating: "", count: 7)
     var unassignedByDay: [String] = Array(repeating: "", count: 7)
     var dayCompletion: [Bool] = Array(repeating: false, count: 7)
+    var historicalRows: [WeeklyScheduledRow] = []
+    var futureRows: [WeeklyScheduledRow] = []
     var migrationNotice: String?
     var isMigratedPreview = false
     var deliveries: [WeeklyDelivery] = []
@@ -173,14 +182,14 @@ final class DashboardModel: ObservableObject {
         return dated.isEmpty ? Self.weekdayIndex(for: date) : nil
     }
 
-    func load(from root: URL) {
+    func load(from root: URL, referenceDate: Date = .now) {
         self.root = root
         let repository = MarkdownRepository(root: root)
         do {
             let text = try repository.read(file)
             original = text
             loadedHash = repository.hash(text)
-            plan = MarkdownParser.weekly(text)
+            plan = MarkdownParser.weekly(text, referenceDate: referenceDate)
             errorMessage = nil
         } catch { errorMessage = "无法读取周计划：\(error.localizedDescription)" }
     }
@@ -437,16 +446,16 @@ enum MarkdownParser {
         return calendar
     }
 
-    static func weekly(_ text: String) -> WeeklyPlan {
+    static func weekly(_ text: String, referenceDate: Date = .now) -> WeeklyPlan {
         var plan = WeeklyPlan()
         let lines = text.components(separatedBy: .newlines)
         let weeklyRange = managedWeeklyRange(in: lines) ?? lines.indices
         if let start = weeklyRange.first(where: { isStructuredWeekHeader(lines[$0]) }) {
-            parseStructuredWeek(lines: lines, headerIndex: start, range: weeklyRange, into: &plan)
+            parseStructuredWeek(lines: lines, headerIndex: start, range: weeklyRange, referenceDate: referenceDate, into: &plan)
         } else if let start = weeklyRange.first(where: { isLegacyDatedHeader(lines[$0]) }) {
-            parseLegacyDatedWeek(lines: lines, headerIndex: start, range: weeklyRange, into: &plan)
+            parseLegacyDatedWeek(lines: lines, headerIndex: start, range: weeklyRange, referenceDate: referenceDate, into: &plan)
         } else if let start = weeklyRange.first(where: { isTimeGridHeader(lines[$0]) }) {
-            parseLegacyTimeGrid(lines: lines, headerIndex: start, range: weeklyRange, into: &plan)
+            parseLegacyTimeGrid(lines: lines, headerIndex: start, range: weeklyRange, referenceDate: referenceDate, into: &plan)
         }
         if let start = lines.firstIndex(where: { $0.contains("## 交付物") }) {
             let range = managedSectionContent(lines, headingIndex: start).content
@@ -474,6 +483,8 @@ enum MarkdownParser {
     static func replaceWeekly(_ old: String, with plan: WeeklyPlan) -> String {
         var lines = old.components(separatedBy: .newlines)
         let table = structuredWeekTable(for: plan)
+            + hiddenRowsTable(plan.historicalRows, markers: ("studyrocket:weekly:history:start", "studyrocket:weekly:history:end"))
+            + hiddenRowsTable(plan.futureRows, markers: ("studyrocket:weekly:future:start", "studyrocket:weekly:future:end"))
         if let managed = managedWeeklyRange(in: lines) {
             lines.replaceSubrange(managed, with: table)
         } else if let header = lines.indices.first(where: {
@@ -529,11 +540,18 @@ enum MarkdownParser {
         }.min { abs($0.timeIntervalSince(reference)) < abs($1.timeIntervalSince(reference)) }
     }
 
-    private static func parseStructuredWeek(lines: [String], headerIndex: Int, range: Range<Int>, into plan: inout WeeklyPlan) {
+    private static func parseStructuredWeek(lines: [String], headerIndex: Int, range: Range<Int>, referenceDate: Date, into plan: inout WeeklyPlan) {
         plan.format = .timeGrid
         var rows: [(label: String, slots: [String], unassigned: String, completed: Bool)] = []
         var index = headerIndex + 2
-        while index < range.upperBound, let parts = splitTableRow(lines[index]), parts.count >= 4 {
+        while index < range.upperBound {
+            if lines[index].contains("studyrocket:weekly:history:start") || lines[index].contains("studyrocket:weekly:future:start") {
+                let marker = lines[index].contains("history") ? "studyrocket:weekly:history:end" : "studyrocket:weekly:future:end"
+                while index < range.upperBound && !lines[index].contains(marker) { index += 1 }
+                index += 1
+                continue
+            }
+            guard let parts = splitTableRow(lines[index]), parts.count >= 4 else { index += 1; continue }
             if parts.first?.contains("---") == true { index += 1; continue }
             let slots = (1...3).map { parts.indices.contains($0) ? decodeTableText(parts[$0]) : "" }
             let unassigned = parts.indices.contains(4) ? decodeTableText(parts[4]) : ""
@@ -541,10 +559,12 @@ enum MarkdownParser {
             rows.append((decodeTableText(parts[0]), slots, unassigned, completed))
             index += 1
         }
-        populateWeek(rows: rows, relativeTo: .now, into: &plan)
+        rows += scheduledRows(in: lines, markers: ("studyrocket:weekly:history:start", "studyrocket:weekly:history:end"))
+        rows += scheduledRows(in: lines, markers: ("studyrocket:weekly:future:start", "studyrocket:weekly:future:end"))
+        populateWeek(rows: rows, relativeTo: referenceDate, into: &plan)
     }
 
-    private static func parseLegacyDatedWeek(lines: [String], headerIndex: Int, range: Range<Int>, into plan: inout WeeklyPlan) {
+    private static func parseLegacyDatedWeek(lines: [String], headerIndex: Int, range: Range<Int>, referenceDate: Date, into plan: inout WeeklyPlan) {
         plan.format = .timeGrid
         plan.isMigratedPreview = true
         var rows: [(label: String, slots: [String], unassigned: String, completed: Bool)] = []
@@ -557,16 +577,16 @@ enum MarkdownParser {
             rows.append((row.dateLabel, split.slots, split.unassigned, row.isCompleted))
             index += 1
         }
-        populateWeek(rows: rows, relativeTo: .now, into: &plan)
+        populateWeek(rows: rows, relativeTo: referenceDate, into: &plan)
         let unresolved = plan.unassignedByDay.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
         plan.migrationNotice = unresolved == 0
             ? "已将旧版按日期计划拆分为上午、中午、晚上预览；保存前请核对时段。"
             : "已生成三时段预览；其中 \(unresolved) 天无法安全拆分，原文保留在待分配区域。"
     }
 
-    private static func parseLegacyTimeGrid(lines: [String], headerIndex: Int, range: Range<Int>, into plan: inout WeeklyPlan) {
+    private static func parseLegacyTimeGrid(lines: [String], headerIndex: Int, range: Range<Int>, referenceDate: Date, into plan: inout WeeklyPlan) {
         plan.format = .timeGrid
-        fillDateLabels(relativeTo: .now, into: &plan)
+        var source = Array(repeating: Array(repeating: "", count: 7), count: 3)
         var index = headerIndex + 2
         while index < range.upperBound, let parts = splitTableRow(lines[index]), parts.count >= 8 {
             let label = parts[0].replacingOccurrences(of: " ", with: "")
@@ -577,9 +597,18 @@ enum MarkdownParser {
             case "晚上": row = 2
             default: row = nil
             }
-            if let row { plan.cells[row] = Array(parts.dropFirst().prefix(7)).map(decodeTableText) }
+            if let row { source[row] = Array(parts.dropFirst().prefix(7)).map(decodeTableText) }
             index += 1
         }
+        let calendar = studyCalendar
+        let today = calendar.startOfDay(for: referenceDate)
+        let weekday = calendar.component(.weekday, from: today)
+        let monday = calendar.date(byAdding: .day, value: -((weekday + 5) % 7), to: today) ?? today
+        let rows = (0..<7).map { column -> (label: String, slots: [String], unassigned: String, completed: Bool) in
+            let date = calendar.date(byAdding: .day, value: column, to: monday) ?? monday
+            return (dateLabel(for: date), source.map { $0[column] }, "", false)
+        }
+        populateWeek(rows: rows, relativeTo: referenceDate, into: &plan)
     }
 
     private static func splitLegacyDayText(_ text: String) -> (slots: [String], unassigned: String) {
@@ -611,34 +640,39 @@ enum MarkdownParser {
         relativeTo reference: Date,
         into plan: inout WeeklyPlan
     ) {
-        let parsed = rows.compactMap { row -> (Date, (String, [String], String, Bool))? in
-            guard let date = leadingDate(in: row.label, relativeTo: reference) else { return nil }
-            return (date, (row.label, row.slots, row.unassigned, row.completed))
-        }
-        let anchor = parsed.first?.0 ?? reference
-        fillDateLabels(relativeTo: anchor, into: &plan)
-        var occupied = Set<Int>()
-        for (position, row) in rows.enumerated() {
-            let date = leadingDate(in: row.label, relativeTo: anchor)
-            let preferred = date.map { weekdayIndex(for: $0) }
-            let index = preferred.flatMap { occupied.contains($0) ? nil : $0 }
-                ?? (0..<7).first(where: { !occupied.contains($0) })
-                ?? min(position, 6)
-            occupied.insert(index)
-            plan.dayDateLabels[index] = row.label
-            for period in 0..<3 where row.slots.indices.contains(period) {
-                plan.cells[period][index] = row.slots[period]
+        fillDateLabels(relativeTo: reference, into: &plan)
+        let calendar = studyCalendar
+        let start = calendar.startOfDay(for: reference)
+        let end = calendar.date(byAdding: .day, value: 7, to: start) ?? start
+        plan.historicalRows.removeAll()
+        plan.futureRows.removeAll()
+        for row in rows {
+            guard let date = leadingDate(in: row.label, relativeTo: reference) else {
+                plan.futureRows.append(WeeklyScheduledRow(dateLabel: row.label, slots: row.slots, unassigned: row.unassigned, isCompleted: row.completed))
+                continue
             }
-            plan.unassignedByDay[index] = row.unassigned
-            plan.dayCompletion[index] = row.completed
+            if date < start {
+                plan.historicalRows.append(WeeklyScheduledRow(dateLabel: row.label, slots: row.slots, unassigned: row.unassigned, isCompleted: row.completed))
+                continue
+            }
+            if date >= end {
+                plan.futureRows.append(WeeklyScheduledRow(dateLabel: row.label, slots: row.slots, unassigned: row.unassigned, isCompleted: row.completed))
+                continue
+            }
+            let offset = calendar.dateComponents([.day], from: start, to: date).day ?? 0
+            guard (0..<7).contains(offset) else { continue }
+            plan.dayDateLabels[offset] = row.label
+            for period in 0..<3 where row.slots.indices.contains(period) { plan.cells[period][offset] = row.slots[period] }
+            plan.unassignedByDay[offset] = row.unassigned
+            plan.dayCompletion[offset] = row.completed
         }
+        plan.historicalRows.sort { leadingDate(in: $0.dateLabel, relativeTo: reference) ?? .distantPast < leadingDate(in: $1.dateLabel, relativeTo: reference) ?? .distantPast }
+        plan.futureRows.sort { leadingDate(in: $0.dateLabel, relativeTo: reference) ?? .distantFuture < leadingDate(in: $1.dateLabel, relativeTo: reference) ?? .distantFuture }
     }
 
     private static func fillDateLabels(relativeTo date: Date, into plan: inout WeeklyPlan) {
         let calendar = studyCalendar
-        let weekday = calendar.component(.weekday, from: date)
-        let daysFromMonday = (weekday + 5) % 7
-        let start = calendar.date(byAdding: .day, value: -daysFromMonday, to: calendar.startOfDay(for: date)) ?? date
+        let start = calendar.startOfDay(for: date)
         let formatter = DateFormatter()
         formatter.calendar = calendar
         formatter.locale = Locale(identifier: "zh_CN")
@@ -647,6 +681,15 @@ enum MarkdownParser {
         plan.dayDateLabels = (0..<7).map { offset in
             formatter.string(from: calendar.date(byAdding: .day, value: offset, to: start) ?? start)
         }
+    }
+
+    private static func dateLabel(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = studyCalendar
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = studyCalendar.timeZone
+        formatter.dateFormat = "M 月 d 日"
+        return formatter.string(from: date)
     }
 
     private static func structuredWeekTable(for plan: WeeklyPlan) -> [String] {
@@ -668,6 +711,27 @@ enum MarkdownParser {
         }
         result.append("")
         return result
+    }
+
+    private static func hiddenRowsTable(_ rows: [WeeklyScheduledRow], markers: (start: String, end: String)) -> [String] {
+        guard !rows.isEmpty else { return [] }
+        var result = ["<!-- \(markers.start) -->", "", "| 日期 | 上午 | 中午 | 晚上 | 待分配 | 完成 |", "|------|------|------|------|----------|------|"]
+        for row in rows {
+            let values = [row.dateLabel] + Array(row.slots.prefix(3)) + [row.unassigned, row.isCompleted ? "[x]" : "[ ]"]
+            result.append("| " + values.map(encodeTableText).joined(separator: " | ") + " |")
+        }
+        result += ["<!-- \(markers.end) -->", ""]
+        return result
+    }
+
+    private static func scheduledRows(in lines: [String], markers: (start: String, end: String)) -> [(label: String, slots: [String], unassigned: String, completed: Bool)] {
+        guard let start = lines.firstIndex(where: { $0.contains(markers.start) }),
+              let end = lines[(start + 1)..<lines.count].firstIndex(where: { $0.contains(markers.end) }) else { return [] }
+        return lines[(start + 1)..<end].compactMap { line in
+            guard let parts = splitTableRow(line), parts.count >= 4, parts.first?.contains("---") != true else { return nil }
+            let slots = (1...3).map { parts.indices.contains($0) ? decodeTableText(parts[$0]) : "" }
+            return (decodeTableText(parts[0]), slots, parts.indices.contains(4) ? decodeTableText(parts[4]) : "", parts.indices.contains(5) && parseBoolean(parts[5]))
+        }
     }
 
     private static func managedWeeklyRange(in lines: [String]) -> Range<Int>? {

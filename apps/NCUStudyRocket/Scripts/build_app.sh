@@ -2,16 +2,21 @@
 set -euo pipefail
 ROOT="${0:A:h:h}"
 cd "$ROOT"
+CONFIGURATION="${1:-release}"
+if [[ "$CONFIGURATION" != "debug" && "$CONFIGURATION" != "release" ]]; then
+  print -u2 "usage: $0 [debug|release]"
+  exit 2
+fi
 swiftc Scripts/make_icon.swift -o .build/make-icon
 ICONSET="$ROOT/.build/NCUStudyRocket.iconset"
 rm -rf "$ICONSET"
 .build/make-icon "$ROOT/.build" >/dev/null
 iconutil -c icns "$ICONSET" -o "$ROOT/.build/NCUStudyRocket.icns"
-swift build -c release
+swift build -c "$CONFIGURATION"
 APP="$ROOT/.build/NCU StudyRocket.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp .build/arm64-apple-macosx/release/NCUStudyRocket "$APP/Contents/MacOS/NCUStudyRocket"
+cp ".build/arm64-apple-macosx/$CONFIGURATION/NCUStudyRocket" "$APP/Contents/MacOS/NCUStudyRocket"
 cp .build/NCUStudyRocket.icns "$APP/Contents/Resources/NCUStudyRocket.icns"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

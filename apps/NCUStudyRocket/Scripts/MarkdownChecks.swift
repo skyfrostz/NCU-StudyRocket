@@ -9,7 +9,7 @@ struct MarkdownChecks {
     static func main() {
         let source = "# 计划\n\n| 时段 | 周一 | 周二 | 周三 | 周四 | 周五 | 周六 | 周日 |\n|------|------|------|------|------|------|------|------|\n| 上午 | 数学 | | | | | | 复盘+重排 |\n| 下午 | | | | | | | |\n| 晚上 | | | | | | | |\n\n## 交付物清单\n- [ ] 读完第一章\n\n## 缓冲\n- 每天留白"
         var plan = MarkdownParser.weekly(source)
-        check(plan.cells[0][0] == "数学", "weekly parser")
+        check(plan.historicalRows.first?.slots[0] == "数学", "weekly parser preserves past rows")
         plan.cells[1][1] = "Python"; plan.deliveries = [WeeklyDelivery(text: "完成小测", isCompleted: true)]
         let updated = MarkdownParser.replaceWeekly(source, with: plan)
         check(updated.hasPrefix("# 计划"), "weekly header preserved")
@@ -30,8 +30,8 @@ struct MarkdownChecks {
         check(datedUpdated.contains("- [ ] 主任务\n  补充说明") && datedUpdated.contains("## 外部说明\n原样保留"), "multiline delivery round trip and outside content")
         let structured = "# 计划\n\n<!-- studyrocket:weekly:start -->\n| 日期 | 上午 | 中午 | 晚上 | 待分配 | 完成 |\n|------|------|------|------|------|------|\n| 2026-08-10 | 数学 | 英语 | 复盘 | | [ ] |\n| 2026-08-11 | | Python | | | [x] |\n<!-- studyrocket:weekly:end -->\n\n## 外部说明\n保持原样"
         let structuredPlan = MarkdownParser.weekly(structured)
-        check(structuredPlan.cells[0][0] == "数学" && structuredPlan.cells[1][0] == "英语", "structured weekly parser")
-        check(structuredPlan.dayCompletion[1], "structured completion parser")
+        check(structuredPlan.historicalRows.first?.slots == ["数学", "英语", "复盘"], "structured weekly parser")
+        check(structuredPlan.historicalRows.count == 2 && structuredPlan.historicalRows[1].isCompleted, "structured completion parser")
         let structuredUpdated = MarkdownParser.replaceWeekly(structured, with: structuredPlan)
         check(structuredUpdated.contains("## 外部说明\n保持原样"), "structured outside content preserved")
         let filterPlan = WeeklyPlan(deliveries: [

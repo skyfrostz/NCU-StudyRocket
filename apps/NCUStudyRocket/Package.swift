@@ -4,17 +4,30 @@ import PackageDescription
 let package = Package(
     name: "NCUStudyRocket",
     platforms: [.macOS(.v14)],
-    products: [.executable(name: "NCUStudyRocket", targets: ["NCUStudyRocket"])],
+    products: [
+        .executable(name: "NCUStudyRocket", targets: ["NCUStudyRocket"]),
+        .executable(name: "StudyRocketHost", targets: ["StudyRocketHost"])
+    ],
     dependencies: [
-        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui.git", exact: "2.4.1")
+        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui.git", exact: "2.4.1"),
+        .package(path: "../NCUStudyRocketShared")
     ],
     targets: [
         .executableTarget(
             name: "NCUStudyRocket",
             dependencies: [
                 "StudyRocketChatCore",
+                .product(name: "StudyRocketShared", package: "NCUStudyRocketShared"),
                 .product(name: "MarkdownUI", package: "swift-markdown-ui")
             ]
+        ),
+        .executableTarget(
+            name: "StudyRocketHost",
+            dependencies: [
+                "StudyRocketChatCore",
+                .product(name: "StudyRocketShared", package: "NCUStudyRocketShared")
+            ],
+            path: "Sources/StudyRocketHost"
         ),
         .target(
             name: "StudyRocketChatCore"

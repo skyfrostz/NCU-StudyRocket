@@ -71,6 +71,8 @@
 ## 本地应用协作
 
 - `/Applications/NCU StudyRocket.app` 是本仓库 Markdown 的轻量查看/编辑器，不是第二套数据库；所有事实仍以仓库文件为准。
+- `apps/NCUStudyRocket/Sources/StudyRocketHost/` 是可选的 iPhone 伴随端 Host；只有用户手动启动独立 Host 后才监听本机端口。Host 启动先恢复固定学业任务并自检 `studyrocket` 动态工具，成功前不开放聊天/草案接口。Host 运行时主应用优先通过用户目录 Application Support 中的短期本地会话令牌复用同一个固定学业任务，Host 停止后令牌删除；Host 与主应用直连共用同一个 Codex 单实例租约，不能同时启动两个 app-server。主应用在 Host 自检期间短暂等待，在 Host 不可用时自动回退原有 stdio 路径。它不创建 LaunchAgent、登录项或常驻服务，不能替代主应用的 Markdown 编辑流程。
+- `apps/NCUStudyRocketMobile/` 是 iOS 26 SwiftUI 客户端源码；手机不运行 Codex、不保存 Markdown 事实，离线只读缓存。完整 Xcode 26、签名和 Tailscale Serve 由用户在真机阶段配置，CommandLineTools 不足以完成 iOS 安装验收。
 - 应用编辑周计划、每日行为账或 Markdown 时，先保存到内存，点击“保存”后才写文件；Codex 修改文件后重新打开应用即可刷新。
 - Skill 负责生成规划、复盘和知识结论；先展示拟写入草案，用户确认后再修改 Markdown。应用出现“文件已被其他程序修改”时，先重新加载并比较差异，不直接覆盖。
 - 应用只读显示 Git 状态，不自动提交或推送；构建/安装使用 `apps/NCUStudyRocket/Scripts/install_app.sh`，不创建后台服务。
@@ -79,7 +81,7 @@
 - 每日行为账保存后，应用会幂等更新 `工作台/助理偏好与习惯.md` 的当天事实摘要；不采集页面点击、功能使用次数、情绪或高敏信息。规划、复盘与答疑前应读取该文件，只能用它调整任务粒度、时间块和表达方式。
 - 只有周复盘发现同类可证据规律至少 3 次且确实能改善工作流程时，才可通过 `studyrocket.propose_skill_update` 提出 Skill 差异草案。用户确认后仅允许改仓库八个既有 `SKILL.md`；不得写入 YAML、脚本、全局 Skill 或个人事实。
 - 学业对话采用平衡型关怀：明确表达压力、挫败、疲惫、犹豫或任务受阻时，先用 1-2 句具体承接，再给最小下一步或降级方案；完成进展先指出已完成事实及其意义。禁止空泛鼓励、过度共情、心理诊断、依赖性表达和结果保证。
-- 日、周、月提醒由应用 macOS 原生通知管理，三者独立执行；迁移验收前保留 Codex Scheduled Tasks，用户确认稳定后再停用旧任务。
+- 日、周、月提醒由应用 macOS 原生通知管理，三者独立执行；没有保存过设置的新安装默认关闭，已有开关不被覆盖。迁移验收前保留 Codex Scheduled Tasks，用户确认稳定后再停用旧任务。iPhone 端使用独立本地通知，后台不保持 SSE。
 - 计划文件中的 `studyrocket` HTML 注释是应用管理边界，不能删除或移动；边界外的说明必须原样保留。
 
 ## 配套技能

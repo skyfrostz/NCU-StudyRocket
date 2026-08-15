@@ -20,7 +20,7 @@ enum ReminderRoute: String, CaseIterable, Identifiable {
 @MainActor
 final class ReminderScheduler: NSObject, ObservableObject {
     @Published var authorization = "未请求"
-    @Published var enabled: [ReminderRoute: Bool] = [.daily: true, .weekly: true, .monthly: true]
+    @Published var enabled: [ReminderRoute: Bool] = [.daily: false, .weekly: false, .monthly: false]
     @Published var nextDates: [ReminderRoute: Date?] = [:]
     @Published private(set) var pendingRoute: ReminderRoute?
     private var permissionRequestInFlight = false
@@ -40,7 +40,14 @@ final class ReminderScheduler: NSObject, ObservableObject {
                 UNNotificationAction(identifier: "OPEN_CHAT", title: "打开学业对话", options: [.foreground])
             ], intentIdentifiers: [], options: [])
         ])
-        for route in ReminderRoute.allCases { enabled[route] = UserDefaults.standard.object(forKey: "reminder.\(route.rawValue)") as? Bool ?? true }
+        for route in ReminderRoute.allCases {
+            if let stored = UserDefaults.standard.object(forKey: "reminder.\(route.rawValue)") as? Bool {
+                enabled[route] = stored
+            } else {
+                enabled[route] = false
+                center.removePendingNotificationRequests(withIdentifiers: [route.identifier, "\(route.identifier).monthly"])
+            }
+        }
         observers.append(NotificationCenter.default.addObserver(forName: .NSSystemTimeZoneDidChange, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in await self?.refreshAuthorization() } })
         observers.append(NotificationCenter.default.addObserver(forName: .NSCalendarDayChanged, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in await self?.refreshAuthorization() } })
         Task { await refreshAuthorization() }

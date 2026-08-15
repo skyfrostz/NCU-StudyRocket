@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleDisplayName</key><string>NCU StudyRocket</string>
+<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+<key>CFBundleIdentifier</key><string>com.skyfrost.ncustudyrocket.mobile</string>
+<key>CFBundleName</key><string>NCU StudyRocket</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>1.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>NSFaceIDUsageDescription</key><string>使用 Face ID 确认将已选择的学业草案写入 Mac 仓库。</string>
+<key>UILaunchScreen</key><dict/>
+</dict></plist>

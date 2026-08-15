@@ -5,12 +5,18 @@ public struct ChatScrollPolicy: Equatable {
         self.isNearBottom = isNearBottom
     }
 
-    public mutating func update(isNearBottom: Bool) {
+    @discardableResult
+    public mutating func update(isNearBottom: Bool) -> Bool {
+        guard self.isNearBottom != isNearBottom else { return false }
         self.isNearBottom = isNearBottom
+        return true
     }
 
-    public mutating func forceToBottom() {
+    @discardableResult
+    public mutating func forceToBottom() -> Bool {
+        guard !isNearBottom else { return false }
         isNearBottom = true
+        return true
     }
 
     public func shouldFollowIncrementalChanges() -> Bool {

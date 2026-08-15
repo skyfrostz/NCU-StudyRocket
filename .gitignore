@@ -23,3 +23,22 @@ __pycache__/
 # Native app build output
 apps/NCUStudyRocket/.build/
 apps/NCUStudyRocket/.swiftpm/
+apps/NCUStudyRocketShared/.build/
+apps/NCUStudyRocketShared/.swiftpm/
+apps/NCUStudyRocketMobile/.build/
+apps/NCUStudyRocketMobile/.swiftpm/
+
+# Temporary Xcode build and package-resolution state used during iOS validation.
+.xcode-home/
+.xcode-derived/
+.xcode-derived-device/
+.xcode-packages/
+.xcode-package-cache/
+.swift-module-cache/
+.cache/
+
+# Per-user Xcode workspace state
+**/xcuserdata/
+
+# Companion Host build output
+apps/NCUStudyRocket/.build/StudyRocket Host.app

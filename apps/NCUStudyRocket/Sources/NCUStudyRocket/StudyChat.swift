@@ -3,6 +3,7 @@ import SwiftUI
 import AppKit
 import CryptoKit
 import StudyRocketChatCore
+import StudyRocketShared
 
 enum ChatConnectionState: String {
     case disconnected = "未连接"
@@ -36,10 +37,11 @@ struct ChatMessage: Identifiable, Hashable {
     let turnID: String?
     let phase: ChatMessagePhase
     let turnState: ChatTurnState?
+    let isStreaming: Bool
 
-    init(id: String, role: Role, text: String, date: Date, turnID: String? = nil, phase: ChatMessagePhase = .unknown, turnState: ChatTurnState? = nil) {
+    init(id: String, role: Role, text: String, date: Date, turnID: String? = nil, phase: ChatMessagePhase = .unknown, turnState: ChatTurnState? = nil, isStreaming: Bool = false) {
         self.id = id; self.role = role; self.text = text; self.date = date
-        self.turnID = turnID; self.phase = phase; self.turnState = turnState
+        self.turnID = turnID; self.phase = phase; self.turnState = turnState; self.isStreaming = isStreaming
     }
 }
 
@@ -75,6 +77,59 @@ struct ChatScrollRequest: Identifiable, Equatable {
     let force: Bool
 }
 
+@MainActor
+final class ChatTranscriptState: ObservableObject {
+    @Published var turns: [ChatTurnPresentation] = []
+    @Published var proposals: [MarkdownChangeProposal] = []
+    @Published var skillProposals: [SkillChangeProposal] = []
+    @Published var expandedProcessTurnIDs = Set<String>()
+    @Published var expandedProposalTurnIDs = Set<String>()
+    @Published var scrollRequest: ChatScrollRequest?
+    @Published private(set) var isNearBottom = true
+    @Published private(set) var revision = 0
+    @Published private(set) var loadState: ChatHistoryLoadState = .loading
+    private var scrollCoordinator = ChatScrollCoordinator()
+
+    func replaceHistory(_ turns: [ChatTurnPresentation], state: ChatHistoryLoadState = .loaded) {
+        guard self.turns != turns || loadState != state else { return }
+        self.turns = turns
+        loadState = state
+        revision &+= 1
+    }
+
+    func setLoadState(_ state: ChatHistoryLoadState) {
+        guard loadState != state else { return }
+        loadState = state
+    }
+
+    func updateNearBottom(_ value: Bool) {
+        guard isNearBottom != value else { return }
+        isNearBottom = value
+        if !value { scrollCoordinator.reset() }
+    }
+
+    func requestScroll(_ request: ChatScrollRequest) {
+        guard scrollCoordinator.enqueue(target: request.target, force: request.force) else { return }
+        scrollRequest = request
+    }
+
+    func markChanged() {
+        revision &+= 1
+    }
+
+    func clearForNewRepository() {
+        turns.removeAll()
+        proposals.removeAll()
+        skillProposals.removeAll()
+        expandedProcessTurnIDs.removeAll()
+        expandedProposalTurnIDs.removeAll()
+        scrollRequest = nil
+        scrollCoordinator.reset()
+        loadState = .loading
+        revision &+= 1
+    }
+}
+
 enum StudyChatError: LocalizedError {
     case unavailable(String)
     case protocolError(String)
@@ -97,6 +152,7 @@ final class CodexAppServerClient: NSObject {
     private var turnContinuation: CheckedContinuation<ChatTurnResult, Error>?
     private var currentThreadID: String?
     private var activeTurnID: String?
+    private var codexLease: CodexLease?
     private var rootURL: URL?
     private var isDisconnecting = false
     private var completedItems = Set<String>()
@@ -136,10 +192,17 @@ final class CodexAppServerClient: NSObject {
         process.arguments = ["app-server", "--stdio"]
         let stdin = Pipe(); let stdout = Pipe(); let stderr = Pipe()
         process.standardInput = stdin; process.standardOutput = stdout; process.standardError = stderr
+        let lease = try CodexLeaseStore().acquire(owner: "NCU StudyRocket")
         process.terminationHandler = { [weak self] process in
             Task { @MainActor in self?.processEnded(process, generation: generation, message: process.terminationReason == .uncaughtSignal ? "Codex 子进程异常退出。" : "Codex 子进程已退出。") }
         }
-        try process.run()
+        do {
+            try process.run()
+        } catch {
+            lease.release()
+            throw error
+        }
+        codexLease = lease
         self.process = process; input = stdin.fileHandleForWriting; output = stdout.fileHandleForReading
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
@@ -174,7 +237,11 @@ final class CodexAppServerClient: NSObject {
             let response = try await request(method: "thread/resume", params: [
                 "threadId": threadID, "includeTurns": true, "cwd": root.path,
                 "sandbox": "read-only", "approvalPolicy": "never", "runtimeWorkspaceRoots": [root.path],
-                "developerInstructions": Self.developerInstructions()
+                "developerInstructions": Self.developerInstructions(),
+                // Re-register the same namespace when resuming the fixed task.
+                // Without this, an older task can resolve a proposal call with a
+                // null dynamic-tool namespace even though thread/start is valid.
+                "dynamicTools": Self.dynamicTools
             ])
             thread = try resultObject(response)
             currentThreadID = threadID
@@ -182,7 +249,7 @@ final class CodexAppServerClient: NSObject {
             let response = try await request(method: "thread/start", params: [
                 "cwd": root.path, "sandbox": "read-only", "approvalPolicy": "never",
                 "runtimeWorkspaceRoots": [root.path], "threadSource": "studyrocket",
-                "developerInstructions": Self.developerInstructions(legacyHistory: legacyHistory), "dynamicTools": Self.dynamicTools
+                "developerInstructions": Self.developerInstructions(legacyHistory: legacyHistory), "dynamicTools": StudyRocketDynamicToolContract.declaration
             ])
             thread = try resultObject(response)
             guard let newID = (thread["thread"] as? [String: Any])?["id"] as? String else {
@@ -233,6 +300,8 @@ final class CodexAppServerClient: NSObject {
         output?.readabilityHandler = nil
         if let process, process.isRunning { process.terminate() }
         self.process = nil; input = nil; output = nil; currentThreadID = nil; activeTurnID = nil; deltaFlushTask?.cancel(); bufferedDeltas.removeAll()
+        codexLease?.release()
+        codexLease = nil
         let error = StudyChatError.unavailable("学业对话已断开。")
         finishPending(with: error)
         finishTurn(.failure(error))
@@ -241,6 +310,8 @@ final class CodexAppServerClient: NSObject {
     private func processEnded(_ process: Process, generation: Int, message: String) {
         guard generation == connectionGeneration, self.process === process, !isDisconnecting else { return }
         self.process = nil; input = nil; output = nil; currentThreadID = nil; activeTurnID = nil
+        codexLease?.release()
+        codexLease = nil
         finishPending(with: StudyChatError.unavailable(message))
         finishTurn(.failure(StudyChatError.unavailable(message)))
         onProcessEnded?(message)
@@ -462,28 +533,32 @@ final class CodexAppServerClient: NSObject {
 
 @MainActor
 final class StudyChatStore: ObservableObject {
-    @Published var turns: [ChatTurnPresentation] = []
-    @Published var proposals: [MarkdownChangeProposal] = []
-    @Published var skillProposals: [SkillChangeProposal] = []
-    @Published var expandedProcessTurnIDs = Set<String>()
-    @Published var expandedProposalTurnIDs = Set<String>()
+    let transcript = ChatTranscriptState()
     @Published var draft = ""
     @Published var status = ChatConnectionState.disconnected.rawValue
     @Published var connectionState: ChatConnectionState = .disconnected
     @Published var errorMessage: String?
     @Published var isBusy = false
     @Published var lastSubmitted: String?
-    @Published var scrollRequest: ChatScrollRequest?
-    @Published private(set) var isNearBottom = true
-    @Published private(set) var historyRevision = 0
     @Published private(set) var threadID: String?
     private let client = CodexAppServerClient()
+    private let hostClient = StudyRocketHostClient()
+    private let hostThreadID = "019ff539-bc1a-7b73-9a29-6340b47690e0"
     private var root: URL?
+    private var usingHost = false
+    private var hostProposalIDs: [UUID: String] = [:]
+    private var hostSkillProposalIDs: [UUID: String] = [:]
+    private var hostEventsTask: Task<Void, Never>?
+    private var hostTurnTask: Task<Void, Never>?
     private var pendingPrompt: String?
     private var pendingUnknownMessages: [String: [ChatMessage]] = [:]
     private var pendingSubmissionID: String?
     private var pendingMigration: (root: URL, newThreadID: String, legacyThreadID: String)?
     private var scrollPolicy = ChatScrollPolicy()
+    private var connectionGeneration = 0
+#if DEBUG
+    private var stressFixtureTask: Task<Void, Never>?
+#endif
 
     private func threadKey(for root: URL) -> String {
         let digest = SHA256.hash(data: Data(root.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -539,92 +614,111 @@ final class StudyChatStore: ObservableObject {
         }
         client.onHistory = { [weak self] history in
             guard let self else { return }
-            self.turns = Self.present(history)
-            self.historyRevision += 1
-            self.requestScrollToBottom(force: true)
+            self.publishHistory(history)
         }
         client.onToolCall = { [weak self] params in self?.receiveToolCall(params) ?? ["success": false, "contentItems": []] }
     }
 
     private func setState(_ state: ChatConnectionState) { connectionState = state; status = state.rawValue }
 
-    private func turnIndex(_ id: String) -> Int? { turns.firstIndex(where: { $0.id == id }) }
+    private func publishHistory(_ history: [ChatMessage]) {
+        let presented = Self.present(history)
+        transcript.replaceHistory(presented)
+        transcript.setLoadState(.loaded)
+    }
+
+    private static func messages(from response: ChatHistoryResponse) -> [ChatMessage] {
+        response.messages.compactMap { item in
+            let role = ChatMessage.Role(rawValue: item.role) ?? .system
+            guard role != .system else { return nil }
+            let phase = ChatMessagePhase(rawValue: item.phase ?? "") ?? .unknown
+            let state = ChatTurnState(rawValue: item.status ?? "")
+            return ChatMessage(id: item.id, role: role, text: item.text, date: item.date, turnID: item.turnID, phase: phase, turnState: state)
+        }
+    }
+
+    private func turnIndex(_ id: String) -> Int? { transcript.turns.firstIndex(where: { $0.id == id }) }
 
     private func ensureTurn(_ id: String, date: Date? = nil) -> Int {
         if let index = turnIndex(id) { return index }
-        turns.append(ChatTurnPresentation(id: id, startedAt: date))
-        return turns.count - 1
+        transcript.turns.append(ChatTurnPresentation(id: id, startedAt: date))
+        transcript.markChanged()
+        return transcript.turns.count - 1
     }
 
     private func assignPendingSubmission(to turnID: String, startedAt: Date?) {
         guard let pendingSubmissionID, let index = turnIndex(pendingSubmissionID) else { return }
-        var turn = turns.remove(at: index)
+        var turn = transcript.turns.remove(at: index)
         turn = ChatTurnPresentation(id: turnID, userMessage: turn.userMessage.map { ChatMessage(id: $0.id, role: $0.role, text: $0.text, date: startedAt ?? $0.date, turnID: turnID, phase: $0.phase, turnState: .inProgress) }, finalMessages: turn.finalMessages, processMessages: turn.processMessages, status: .inProgress, startedAt: startedAt ?? turn.startedAt, completedAt: nil)
-        turns.insert(turn, at: index)
+        transcript.turns.insert(turn, at: index)
+        transcript.markChanged()
         self.pendingSubmissionID = nil
     }
 
     private func replaceStreaming(turnID: String, itemID: String, text: String, phase: ChatMessagePhase) {
         let index = ensureTurn(turnID)
-        var turn = turns[index]
-        let partial = ChatMessage(id: "streaming-\(itemID)", role: .assistant, text: text, date: .now, turnID: turnID, phase: phase)
+        var turn = transcript.turns[index]
+        let partial = ChatMessage(id: itemID, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase, isStreaming: true)
         if phase == .commentary {
             if let existing = turn.processMessages.firstIndex(where: { $0.id == partial.id }) {
                 let previous = turn.processMessages[existing]
-                turn.processMessages[existing] = ChatMessage(id: previous.id, role: .assistant, text: text, date: previous.date, turnID: turnID, phase: phase)
+                turn.processMessages[existing] = ChatMessage(id: previous.id, role: .assistant, text: text, date: previous.date, turnID: turnID, phase: phase, isStreaming: true)
             } else { turn.processMessages.append(partial) }
         } else {
             if let existing = turn.finalMessages.firstIndex(where: { $0.id == partial.id }) {
                 let previous = turn.finalMessages[existing]
-                turn.finalMessages[existing] = ChatMessage(id: previous.id, role: .assistant, text: text, date: previous.date, turnID: turnID, phase: phase)
+                turn.finalMessages[existing] = ChatMessage(id: previous.id, role: .assistant, text: text, date: previous.date, turnID: turnID, phase: phase, isStreaming: true)
             } else { turn.finalMessages.append(partial) }
         }
-        turns[index] = turn
+        transcript.turns[index] = turn
     }
 
     private func appendProcess(_ message: ChatMessage) {
         guard let turnID = message.turnID else { return }
         let index = ensureTurn(turnID)
-        var turn = turns[index]
+        var turn = transcript.turns[index]
         turn.processMessages.removeAll { $0.id == message.id || $0.id == "streaming-\(message.id)" }
-        turn.processMessages.append(message); turns[index] = turn
+        turn.processMessages.append(message); transcript.turns[index] = turn
     }
 
     private func appendFinal(_ message: ChatMessage) {
         guard let turnID = message.turnID else { return }
         let index = ensureTurn(turnID)
-        var turn = turns[index]
+        var turn = transcript.turns[index]
         turn.finalMessages.removeAll { $0.id == message.id || $0.id == "streaming-\(message.id)" }
-        turn.finalMessages.append(message); turns[index] = turn
+        turn.finalMessages.append(message); transcript.turns[index] = turn
         requestScroll(to: turnID, force: false)
     }
 
     private func completeTurn(_ result: ChatTurnResult) {
         let index = ensureTurn(result.turnID)
-        var turn = turns[index]
+        var turn = transcript.turns[index]
         turn.status = result.status; turn.completedAt = result.completedAt ?? .now; turn.errorMessage = result.errorMessage
         if let user = turn.userMessage {
             turn.userMessage = ChatMessage(id: user.id, role: user.role, text: user.text, date: user.date, turnID: result.turnID, phase: user.phase, turnState: result.status)
         }
-        turns[index] = turn
+        transcript.turns[index] = turn
         if result.status == .failed { requestScroll(to: result.turnID, force: false) }
     }
 
     private func markLatestTurn(_ status: ChatTurnState, errorMessage: String? = nil) {
-        guard let index = turns.indices.last else { return }
-        var turn = turns[index]; turn.status = status; turn.errorMessage = errorMessage; turn.completedAt = .now
+        guard let index = transcript.turns.indices.last else { return }
+        var turn = transcript.turns[index]; turn.status = status; turn.errorMessage = errorMessage; turn.completedAt = .now
         if let user = turn.userMessage { turn.userMessage = ChatMessage(id: user.id, role: user.role, text: user.text, date: user.date, turnID: user.turnID, phase: user.phase, turnState: status) }
-        turns[index] = turn
+        transcript.turns[index] = turn
         if status == .failed { requestScroll(to: turn.id, force: false) }
     }
 
     static func present(_ history: [ChatMessage]) -> [ChatTurnPresentation] {
         var output: [ChatTurnPresentation] = []
+        var indexes: [String: Int] = [:]
         for message in history {
             guard let turnID = message.turnID else { continue }
-            let index = output.firstIndex(where: { $0.id == turnID }) ?? {
+            let index = indexes[turnID] ?? {
                 output.append(ChatTurnPresentation(id: turnID, status: message.turnState ?? .completed, startedAt: message.date, completedAt: message.turnState == .inProgress ? nil : message.date))
-                return output.count - 1
+                let index = output.count - 1
+                indexes[turnID] = index
+                return index
             }()
             var turn = output[index]
             if message.role == .user { turn.userMessage = message; turn.startedAt = message.date }
@@ -639,9 +733,30 @@ final class StudyChatStore: ObservableObject {
     func connect(to root: URL) async { await connectInternal(to: root, forceCreate: false) }
 
     private func connectInternal(to root: URL, forceCreate: Bool) async {
-        if !forceCreate, self.root?.standardizedFileURL == root.standardizedFileURL, client.isRunning { return }
+        if !forceCreate, self.root?.standardizedFileURL == root.standardizedFileURL, usingHost { return }
+        if !forceCreate, self.root?.standardizedFileURL == root.standardizedFileURL, client.isRunning {
+            // A Host that became available takes ownership of the fixed task;
+            // otherwise keep the already-running legacy client untouched.
+            let hostAvailable = await hostClient.waitUntilAvailable(for: root)
+            if !hostAvailable { return }
+            client.disconnect()
+        }
+        connectionGeneration &+= 1
+        let generation = connectionGeneration
+        hostEventsTask?.cancel()
+        hostEventsTask = nil
+        hostTurnTask?.cancel()
+        hostTurnTask = nil
+        usingHost = false
+#if DEBUG
+        stressFixtureTask?.cancel()
+        stressFixtureTask = nil
+#endif
+        let rootChanged = self.root?.standardizedFileURL != root.standardizedFileURL
         self.root = root.standardizedFileURL
-        turns = []; pendingUnknownMessages.removeAll(); proposals = []; skillProposals = []; expandedProcessTurnIDs.removeAll(); expandedProposalTurnIDs.removeAll(); errorMessage = nil; setState(.connecting)
+        if rootChanged || forceCreate { transcript.clearForNewRepository() }
+        transcript.setLoadState(.loading)
+        pendingUnknownMessages.removeAll(); errorMessage = nil; setState(.connecting)
         let key = threadKey(for: root)
         let stored = forceCreate ? nil : UserDefaults.standard.string(forKey: key)
         let storedVersion = UserDefaults.standard.integer(forKey: threadProtocolKey(for: root))
@@ -650,8 +765,36 @@ final class StudyChatStore: ObservableObject {
         let active = shouldMigrate ? nil : stored
         pendingMigration = nil
         threadID = active
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--chat-stress-fixture") {
+            startStressFixture(generation: generation)
+            return
+        }
+#endif
+
+        // When the optional Host is running, make it the single Codex owner.
+        // If it is absent or cannot resume the fixed task, retain the original
+        // stdio path below so the desktop app remains usable by itself.
+        if !forceCreate, await hostClient.waitUntilAvailable(for: root) {
+            do {
+                let history = try await hostClient.history()
+                guard generation == connectionGeneration else { return }
+                usingHost = true
+                threadID = hostThreadID
+                publishHistory(Self.messages(from: history))
+                startHostEvents(generation: generation)
+                await refreshHostProposals()
+                guard generation == connectionGeneration else { return }
+                setState(.connected)
+                if let pendingPrompt { draft = pendingPrompt; self.pendingPrompt = nil }
+                return
+            } catch {
+                usingHost = false
+            }
+        }
         do {
             let id = try await client.connect(root: root, threadID: active, legacyThreadID: legacy)
+            guard generation == connectionGeneration else { return }
             threadID = id
             if shouldMigrate, let legacy {
                 pendingMigration = (root.standardizedFileURL, id, legacy)
@@ -663,17 +806,28 @@ final class StudyChatStore: ObservableObject {
             setState(.connected)
             if let pendingPrompt { draft = pendingPrompt; self.pendingPrompt = nil }
         } catch {
+            guard generation == connectionGeneration else { return }
             client.disconnect(); setState(.failed); errorMessage = error.localizedDescription
+            transcript.setLoadState(.failed(error.localizedDescription))
         }
     }
 
     func reconnect() async {
         guard let root else { return }
+        connectionGeneration &+= 1
+        hostEventsTask?.cancel(); hostEventsTask = nil
+        hostTurnTask?.cancel(); hostTurnTask = nil
+        hostStreamText.reset()
+        usingHost = false
         client.disconnect(); await connectInternal(to: root, forceCreate: false)
     }
 
     func createNewTask() async {
         guard let root else { return }
+        if usingHost {
+            errorMessage = "请先在 StudyRocket Host 中停止手机连接，再创建新的学业任务。"
+            return
+        }
         UserDefaults.standard.removeObject(forKey: threadKey(for: root))
         UserDefaults.standard.removeObject(forKey: legacyThreadKey(for: root))
         UserDefaults.standard.set(StudyRocketThreadProtocol.currentVersion, forKey: threadProtocolKey(for: root))
@@ -693,33 +847,35 @@ final class StudyChatStore: ObservableObject {
     func prepare(prompt: String) { pendingPrompt = prompt; draft = prompt }
 
     func toggleProcess(for turnID: String) {
-        if expandedProcessTurnIDs.contains(turnID) { expandedProcessTurnIDs.remove(turnID) }
-        else { expandedProcessTurnIDs.insert(turnID) }
+        if transcript.expandedProcessTurnIDs.contains(turnID) { transcript.expandedProcessTurnIDs.remove(turnID) }
+        else { transcript.expandedProcessTurnIDs.insert(turnID) }
     }
 
     func toggleProposal(for turnID: String) {
-        if expandedProposalTurnIDs.contains(turnID) { expandedProposalTurnIDs.remove(turnID) }
-        else { expandedProposalTurnIDs.insert(turnID) }
+        if transcript.expandedProposalTurnIDs.contains(turnID) { transcript.expandedProposalTurnIDs.remove(turnID) }
+        else { transcript.expandedProposalTurnIDs.insert(turnID) }
     }
 
     func updateScrollPosition(isNearBottom: Bool) {
-        scrollPolicy.update(isNearBottom: isNearBottom)
-        self.isNearBottom = scrollPolicy.isNearBottom
+        guard scrollPolicy.update(isNearBottom: isNearBottom) else { return }
+        transcript.updateNearBottom(scrollPolicy.isNearBottom)
     }
 
     func requestScrollToBottom(force: Bool = true) {
         scrollPolicy.forceToBottom()
-        isNearBottom = scrollPolicy.isNearBottom
-        scrollRequest = ChatScrollRequest(target: "chat-bottom", force: force)
+        transcript.updateNearBottom(scrollPolicy.isNearBottom)
+        transcript.requestScroll(ChatScrollRequest(target: "chat-bottom", force: force))
     }
 
     private func requestScroll(to target: String, force: Bool) {
-        if force || scrollPolicy.shouldFollowIncrementalChanges() { scrollRequest = ChatScrollRequest(target: target, force: force) }
+        if force || scrollPolicy.shouldFollowIncrementalChanges() {
+            transcript.requestScroll(ChatScrollRequest(target: target, force: force))
+        }
     }
 
     func setProposal(_ id: UUID, selected: Bool) {
-        guard let index = proposals.firstIndex(where: { $0.id == id }) else { return }
-        proposals[index].isSelected = selected
+        guard let index = transcript.proposals.firstIndex(where: { $0.id == id }) else { return }
+        transcript.proposals[index].isSelected = selected
     }
 
     func send() { send(appendUser: true) }
@@ -731,10 +887,15 @@ final class StudyChatStore: ObservableObject {
         if appendUser {
             let localID = "local-\(UUID().uuidString)"
             pendingSubmissionID = localID
-            turns.append(ChatTurnPresentation(id: localID, userMessage: ChatMessage(id: UUID().uuidString, role: .user, text: text, date: .now, turnID: localID, turnState: .inProgress), status: .inProgress, startedAt: .now))
+            transcript.turns.append(ChatTurnPresentation(id: localID, userMessage: ChatMessage(id: UUID().uuidString, role: .user, text: text, date: .now, turnID: localID, turnState: .inProgress), status: .inProgress, startedAt: .now))
+            transcript.markChanged()
             requestScroll(to: localID, force: true)
         }
         draft = ""; errorMessage = nil; isBusy = true; setState(.thinking); pendingUnknownMessages.removeAll()
+        if usingHost {
+            sendThroughHost(text)
+            return
+        }
         Task {
             do {
                 let result = try await client.send(text)
@@ -746,21 +907,264 @@ final class StudyChatStore: ObservableObject {
     }
 
     func retryLast() { guard let lastSubmitted else { return }; draft = lastSubmitted; send(appendUser: true) }
-    func stop() { client.interrupt(); markLatestTurn(.interrupted); isBusy = false; setState(.stopped) }
-    func disconnect() { client.disconnect(); isBusy = false; setState(.disconnected) }
+    func stop() {
+        if usingHost {
+            Task { try? await hostClient.interrupt() }
+        } else {
+            client.interrupt()
+        }
+        markLatestTurn(.interrupted); isBusy = false; setState(.stopped)
+    }
+    func disconnect() {
+        connectionGeneration &+= 1
+        hostEventsTask?.cancel(); hostEventsTask = nil
+        hostStreamText.reset()
+        hostTurnTask?.cancel(); hostTurnTask = nil; hostStreamText.reset(); usingHost = false
+#if DEBUG
+        stressFixtureTask?.cancel(); stressFixtureTask = nil
+#endif
+        client.disconnect(); isBusy = false; setState(.disconnected)
+    }
+
+#if DEBUG
+    private func startStressFixture(generation: Int) {
+        threadID = "debug-chat-stress"
+        usingHost = false
+        publishHistory(Self.stressFixtureHistory())
+        setState(.connected)
+        errorMessage = nil
+        stressFixtureTask?.cancel()
+        stressFixtureTask = Task { [weak self] in
+            guard let self else { return }
+            var cycle = 0
+            do {
+                while !Task.isCancelled {
+                    cycle += 1
+                    let turnID = "stress-live-\(cycle)"
+                    let user = ChatMessage(id: "\(turnID)-user", role: .user, text: "压力夹具第 \(cycle) 轮：请继续整理这份长文本。", date: .now, turnID: turnID, turnState: .inProgress)
+                    self.transcript.turns.append(ChatTurnPresentation(id: turnID, userMessage: user, status: .inProgress, startedAt: .now))
+                    if self.transcript.turns.count > 20 { self.transcript.turns.removeFirst(self.transcript.turns.count - 20) }
+                    self.transcript.markChanged()
+                    self.isBusy = true
+                    self.setState(.thinking)
+                    let answer = "流式压力夹具第 \(cycle) 轮。这里包含一段较长的回答，用于模拟持续布局：" + String(repeating: "滚动期间保持稳定消息 ID，避免整棵消息树重新计算。 ", count: 10) + "\n\n| 字段 | 值 |\n| --- | --- |\n| cycle | \(cycle) |\n| mode | debug |\n\n```swift\nlet stableID = \"stress-answer-\\(cycle)\"\n```"
+                    var accumulated = ""
+                    for chunk in Self.stressChunks(answer, size: 18) {
+                        try await Task.sleep(for: .milliseconds(70))
+                        guard generation == self.connectionGeneration else { return }
+                        accumulated += chunk
+                        self.replaceStreaming(turnID: turnID, itemID: "\(turnID)-answer", text: accumulated, phase: .finalAnswer)
+                    }
+                    self.appendFinal(ChatMessage(id: "\(turnID)-answer", role: .assistant, text: accumulated, date: .now, turnID: turnID, phase: .finalAnswer))
+                    self.completeTurn(ChatTurnResult(turnID: turnID, status: .completed, errorMessage: nil, completedAt: .now))
+                    self.isBusy = false
+                    self.setState(.connected)
+                    try await Task.sleep(for: .milliseconds(300))
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                self.isBusy = false
+                self.setState(.failed)
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private static func stressFixtureHistory() -> [ChatMessage] {
+        var messages: [ChatMessage] = []
+        for index in 1...20 {
+            let turnID = "stress-history-\(index)"
+            messages.append(ChatMessage(id: "\(turnID)-user", role: .user, text: "请分析第 \(index) 份课程材料，并给出可执行的复习步骤。", date: Date(timeIntervalSince1970: 1_750_000_000 + Double(index * 60)), turnID: turnID, turnState: .completed))
+            messages.append(ChatMessage(id: "\(turnID)-process", role: .assistant, text: "正在整理课程材料、提取术语并检查交付物边界。\n\n| 检查项 | 结果 |\n| --- | --- |\n| 课程 | 已识别 |\n| 资料 | 已加载 |", date: Date(timeIntervalSince1970: 1_750_000_030 + Double(index * 60)), turnID: turnID, phase: .commentary, turnState: .completed))
+            messages.append(ChatMessage(id: "\(turnID)-answer", role: .assistant, text: "第 \(index) 份材料的复习建议：\n\n" + String(repeating: "先完成一个可验证的小交付物，再回看错误并归档。 ", count: 14) + "\n\n```python\nsummary = build_revision_plan(materials)\nprint(summary)\n```", date: Date(timeIntervalSince1970: 1_750_000_060 + Double(index * 60)), turnID: turnID, phase: .finalAnswer, turnState: .completed))
+        }
+        return messages
+    }
+
+    private static func stressChunks(_ text: String, size: Int) -> [String] {
+        var chunks: [String] = []
+        var current = ""
+        for character in text {
+            current.append(character)
+            if current.count >= size { chunks.append(current); current.removeAll(keepingCapacity: true) }
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
+    }
+#endif
+
+    private func sendThroughHost(_ text: String) {
+        hostTurnTask?.cancel()
+        hostTurnTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await hostClient.send(text)
+            } catch is CancellationError {
+                return
+            } catch {
+                isBusy = false
+                setState(.failed)
+                errorMessage = error.localizedDescription
+                if draft.isEmpty { draft = text }
+            }
+            hostTurnTask = nil
+        }
+    }
+
+    private func startHostEvents(generation: Int) {
+        hostEventsTask?.cancel()
+        hostEventsTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                do {
+                    for try await event in await hostClient.events() {
+                        try Task.checkCancellation()
+                        guard generation == connectionGeneration else { return }
+                        consumeHostEvent(event)
+                    }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    guard generation == connectionGeneration else { return }
+                    isBusy = false
+                    setState(.failed)
+                    errorMessage = "StudyRocket Host 的实时对话连接已断开，历史记录仍保留。"
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+    }
+
+    private func consumeHostEvent(_ event: HostEventEnvelope) {
+        guard usingHost, let chatEvent = event.chat else { return }
+        switch chatEvent.kind {
+        case "delta":
+            guard let turnID = chatEvent.turnID, let itemID = chatEvent.itemID, let delta = chatEvent.text else { return }
+            if pendingSubmissionID != nil { assignPendingSubmission(to: turnID, startedAt: .now) }
+            replaceStreaming(turnID: turnID, itemID: itemID, text: accumulatedHostText(turnID: turnID, itemID: itemID, delta: delta), phase: ChatMessagePhase(rawValue: chatEvent.phase ?? "") ?? .unknown)
+        case "item_completed":
+            guard let turnID = chatEvent.turnID, let itemID = chatEvent.itemID, let text = chatEvent.text else { return }
+            let phase = ChatMessagePhase(rawValue: chatEvent.phase ?? "") ?? .unknown
+            _ = hostStreamText.complete(itemID: "\(turnID)-\(itemID)", text: text)
+            if phase == .commentary {
+                appendProcess(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase))
+            } else {
+                appendFinal(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase))
+            }
+        case "status":
+            guard let status = chatEvent.status else { return }
+            switch status {
+            case "completed":
+                Task { await reconcileHostHistory(finalState: .completed) }
+            case "interrupted":
+                Task { await reconcileHostHistory(finalState: .interrupted) }
+            case "failed":
+                isBusy = false
+                setState(.failed)
+            default:
+                break
+            }
+        default:
+            break
+        }
+    }
+
+    private var hostStreamText = ChatStreamAccumulator()
+
+    private func accumulatedHostText(turnID: String, itemID: String, delta: String) -> String {
+        let key = "\(turnID)-\(itemID)"
+        return hostStreamText.append(itemID: key, delta: delta) ?? hostStreamText.streams[key] ?? delta
+    }
+
+    private func reconcileHostHistory(finalState: ChatTurnState) async {
+        guard usingHost else { return }
+        do {
+            let response = try await hostClient.history()
+            guard usingHost else { return }
+            publishHistory(Self.messages(from: response))
+            hostStreamText.reset()
+            isBusy = false
+            switch finalState {
+            case .completed: setState(.connected)
+            case .interrupted: setState(.stopped)
+            case .failed: setState(.failed)
+            case .inProgress: break
+            }
+            await refreshHostProposals()
+        } catch {
+            isBusy = false
+            setState(.failed)
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func refreshHostProposals() async {
+        guard usingHost else { return }
+        guard let value = try? await hostClient.proposals() else { return }
+        var markdown: [MarkdownChangeProposal] = []
+        var skills: [SkillChangeProposal] = []
+        var markdownIDs: [UUID: String] = [:]
+        var skillIDs: [UUID: String] = [:]
+        for item in value.proposals {
+            if item.kind == "skill" {
+                let proposal = SkillChangeProposal(turnID: item.turnID, relativePath: item.relativePath, originalContent: item.originalContent, proposedContent: item.proposedContent, reason: item.reason, baseHash: item.baseHash)
+                skills.append(proposal); skillIDs[proposal.id] = item.id
+            } else {
+                let proposal = MarkdownChangeProposal(turnID: item.turnID, relativePath: item.relativePath, originalContent: item.originalContent, proposedContent: item.proposedContent, reason: item.reason, baseHash: item.baseHash)
+                markdown.append(proposal); markdownIDs[proposal.id] = item.id
+            }
+        }
+        transcript.proposals = markdown
+        transcript.skillProposals = skills
+        hostProposalIDs = markdownIDs
+        hostSkillProposalIDs = skillIDs
+        for item in value.proposals {
+            transcript.expandedProposalTurnIDs.insert(item.turnID)
+        }
+    }
 
     func applySelectedChanges(workspace: WorkspaceStore, for turnID: String) {
-        let selected = proposals.filter { $0.turnID == turnID && $0.isSelected }; guard !selected.isEmpty else { return }
+        let selected = transcript.proposals.filter { $0.turnID == turnID && $0.isSelected }; guard !selected.isEmpty else { return }
+        if usingHost {
+            let ids = selected.compactMap { hostProposalIDs[$0.id] }
+            Task {
+                do {
+                    let snapshot = try await hostClient.snapshot()
+                    let response = try await hostClient.applyProposals(ids: ids, baseRevision: snapshot.revision)
+                    await refreshHostProposals()
+                    if response.remaining.proposals.isEmpty { transcript.expandedProposalTurnIDs.remove(turnID) }
+                    workspace.refreshGitStatus()
+                } catch { errorMessage = error.localizedDescription }
+            }
+            return
+        }
         do {
             let changes = selected.map { MarkdownRepository.Change(relative: $0.relativePath, content: $0.proposedContent, loadedHash: $0.baseHash) }
             try MarkdownRepository(root: workspace.rootURL).saveBatch(changes)
-            proposals.removeAll { selected.contains($0) }; workspace.refreshGitStatus()
+            transcript.proposals.removeAll { selected.contains($0) }; workspace.refreshGitStatus()
+            if !transcript.proposals.contains(where: { $0.turnID == turnID }) {
+                transcript.expandedProposalTurnIDs.remove(turnID)
+            }
         } catch { errorMessage = error.localizedDescription }
     }
 
     func applySelectedSkillChanges(workspace: WorkspaceStore, for turnID: String) {
-        let selected = skillProposals.filter { $0.turnID == turnID && $0.isSelected }
+        let selected = transcript.skillProposals.filter { $0.turnID == turnID && $0.isSelected }
         guard !selected.isEmpty else { return }
+        if usingHost {
+            let ids = selected.compactMap { hostSkillProposalIDs[$0.id] }
+            Task {
+                do {
+                    let snapshot = try await hostClient.snapshot()
+                    let response = try await hostClient.applyProposals(ids: ids, baseRevision: snapshot.revision)
+                    await refreshHostProposals()
+                    if response.remaining.proposals.isEmpty { transcript.expandedProposalTurnIDs.remove(turnID) }
+                    workspace.refreshGitStatus()
+                } catch { errorMessage = error.localizedDescription }
+            }
+            return
+        }
         let repository = MarkdownRepository(root: workspace.rootURL)
         do {
             for proposal in selected {
@@ -773,7 +1177,7 @@ final class StudyChatStore: ObservableObject {
             for proposal in selected {
                 try Data(proposal.proposedContent.utf8).write(to: workspace.rootURL.appendingPathComponent(proposal.relativePath), options: .atomic)
             }
-            skillProposals.removeAll { selected.contains($0) }
+            transcript.skillProposals.removeAll { selected.contains($0) }
             workspace.refreshGitStatus()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -822,15 +1226,16 @@ final class StudyChatStore: ObservableObject {
                 let original = try String(contentsOf: url, encoding: .utf8)
                 try SkillRepository.validate(content)
                 let proposal = SkillChangeProposal(turnID: turnID, relativePath: path, originalContent: original, proposedContent: content, reason: reason, baseHash: repository.hash(original))
-                skillProposals.removeAll { $0.turnID == turnID && $0.relativePath == path }
-                skillProposals.append(proposal)
+                transcript.skillProposals.removeAll { $0.turnID == turnID && $0.relativePath == path }
+                transcript.skillProposals.append(proposal)
                 return ["success": true, "contentItems": [["type": "inputText", "text": "已建立 Skill 修改草案，等待用户确认。"]]]
             }
             guard tool == StudyRocketDynamicToolContract.proposalTool else { throw StudyChatError.protocolError("不支持的工具。") }
             guard repository.isAllowedStudyPath(path) else { throw MarkdownError.outsideWorkspace }
             let original = try repository.read(path)
             let proposal = MarkdownChangeProposal(turnID: turnID, relativePath: path, originalContent: original, proposedContent: content, reason: reason, baseHash: repository.hash(original))
-            proposals.removeAll { $0.turnID == turnID && $0.relativePath == path }; proposals.append(proposal)
+            transcript.proposals.removeAll { $0.turnID == turnID && $0.relativePath == path }; transcript.proposals.append(proposal)
+            transcript.expandedProposalTurnIDs.insert(turnID)
             return ["success": true, "contentItems": [["type": "inputText", "text": "已建立修改草案：\(path)。应用将展示差异，用户确认后才会写入。"]]]
         } catch { return ["success": false, "contentItems": [["type": "inputText", "text": "无法建立草案：\(error.localizedDescription)"]] ] }
     }

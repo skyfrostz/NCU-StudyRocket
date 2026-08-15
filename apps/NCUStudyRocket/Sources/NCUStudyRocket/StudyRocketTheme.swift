@@ -11,6 +11,8 @@ enum StudyRocketTheme {
     static let cornerRadius: CGFloat = 8
     static let bodySize: CGFloat = 15
     static let captionSize: CGFloat = 12
+    static let bodyLineSpacing: CGFloat = 5
+    static let planRowSpacing: CGFloat = 0
 }
 
 struct PageScaffold<Content: View>: View {

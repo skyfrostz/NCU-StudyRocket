@@ -1,0 +1,226 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 71;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* NCUStudyRocketMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* NCUStudyRocketMobileApp.swift */; };
+		A10000000000000000000002 /* StudyRocketMobile in Frameworks */ = {isa = PBXBuildFile; productRef = A90000000000000000000001 /* StudyRocketMobile */; };
+		A10000000000000000000003 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A20000000000000000000001 /* NCUStudyRocketMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NCUStudyRocketMobileApp.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 /* NCUStudyRocketMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NCUStudyRocketMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A20000000000000000000003 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A30000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000002 /* StudyRocketMobile in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A40000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				A40000000000000000000002 /* App */,
+				A20000000000000000000003 /* Assets.xcassets */,
+				A40000000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A40000000000000000000002 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000001 /* NCUStudyRocketMobileApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		A40000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000002 /* NCUStudyRocketMobile.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A50000000000000000000001 /* NCUStudyRocketMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A60000000000000000000002 /* Build configuration list for PBXNativeTarget "NCUStudyRocketMobile" */;
+			buildPhases = (
+				A30000000000000000000002 /* Sources */,
+				A30000000000000000000001 /* Frameworks */,
+				A30000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NCUStudyRocketMobile;
+			packageProductDependencies = (
+				A90000000000000000000001 /* StudyRocketMobile */,
+			);
+			productName = NCUStudyRocketMobile;
+			productReference = A20000000000000000000002 /* NCUStudyRocketMobile.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A70000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 2600;
+			};
+			buildConfigurationList = A60000000000000000000001 /* Build configuration list for PBXProject "NCUStudyRocketMobile" */;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A40000000000000000000001;
+			packageReferences = (
+				A90000000000000000000002 /* XCLocalSwiftPackageReference "." */,
+			);
+			productRefGroup = A40000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A50000000000000000000001 /* NCUStudyRocketMobile */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A30000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000003 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A30000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000001 /* NCUStudyRocketMobileApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A80000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = QNRY5H3QJ9;
+				INFOPLIST_FILE = App/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.skyfrost.ncustudyrocket.mobile;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		A80000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = QNRY5H3QJ9;
+				INFOPLIST_FILE = App/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.skyfrost.ncustudyrocket.mobile;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		A80000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		A80000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A60000000000000000000001 /* Build configuration list for PBXProject "NCUStudyRocketMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A80000000000000000000003 /* Debug */,
+				A80000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A60000000000000000000002 /* Build configuration list for PBXNativeTarget "NCUStudyRocketMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A80000000000000000000001 /* Debug */,
+				A80000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		A90000000000000000000002 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A90000000000000000000001 /* StudyRocketMobile */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A90000000000000000000002 /* XCLocalSwiftPackageReference "." */;
+			productName = StudyRocketMobile;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = A70000000000000000000001 /* Project object */;
+}

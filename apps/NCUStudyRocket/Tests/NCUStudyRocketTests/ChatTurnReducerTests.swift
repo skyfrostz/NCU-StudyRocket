@@ -14,7 +14,10 @@ struct ChatTurnReducerTests {
         testNestedProposalRoutesToVisibleTurn()
         testLegacyThreadRequiresOneTimeMigration()
         testChatScrollPolicy()
-        print("ChatTurnReducerTests: 11 passed")
+        testHistoryLoadCoordinator()
+        testScrollCoordinatorCoalescesRequests()
+        testStreamAccumulatorKeepsStableItemIDs()
+        print("ChatTurnReducerTests: 14 passed")
     }
 
     private static func expect<T: Equatable>(_ actual: T, _ expected: T, _ message: String) {
@@ -188,9 +191,43 @@ struct ChatTurnReducerTests {
     private static func testChatScrollPolicy() {
         var policy = ChatScrollPolicy()
         expect(policy.shouldFollowIncrementalChanges(), true, "new chat follows the latest message")
-        policy.update(isNearBottom: false)
+        expect(policy.update(isNearBottom: false), true, "moving away from the bottom changes policy")
+        expect(policy.update(isNearBottom: false), false, "repeating the same bottom state must not publish")
         expect(policy.shouldFollowIncrementalChanges(), false, "reading history disables incremental following")
-        policy.forceToBottom()
+        expect(policy.forceToBottom(), true, "manual return to bottom changes policy")
+        expect(policy.forceToBottom(), false, "repeating force-to-bottom must not publish")
         expect(policy.isNearBottom && policy.shouldFollowIncrementalChanges(), true, "returning to bottom restores following")
+    }
+
+    private static func testHistoryLoadCoordinator() {
+        var coordinator = ChatHistoryLoadCoordinator<[String]>(initialValue: [])
+        expect(coordinator.replace([]), true, "loading an empty history still completes the first load")
+        expect(coordinator.state, .loaded, "empty history must have a loaded state")
+        let firstRevision = coordinator.revision
+        expect(coordinator.replace([]), false, "duplicate history must not publish a new revision")
+        expect(coordinator.revision, firstRevision, "duplicate history must keep its revision")
+        expect(coordinator.fail("断开"), true, "a load failure must be visible")
+        expect(coordinator.value, [], "load failure must retain the last usable history")
+        expect(coordinator.beginLoading(), true, "a reconnect returns to loading")
+        expect(coordinator.replace(["turn-1"]), true, "new history publishes once")
+        expect(coordinator.value, ["turn-1"], "new history replaces the old snapshot")
+    }
+
+    private static func testScrollCoordinatorCoalescesRequests() {
+        var coordinator = ChatScrollCoordinator()
+        expect(coordinator.enqueue(target: "turn-1", force: false), true, "first scroll request is accepted")
+        expect(coordinator.enqueue(target: "turn-1", force: false), false, "duplicate incremental requests merge")
+        expect(coordinator.enqueue(target: "chat-bottom", force: true), true, "a manual request supersedes an incremental request")
+        expect(coordinator.pending, .init(target: "chat-bottom", force: true), "latest scroll target is retained")
+    }
+
+    private static func testStreamAccumulatorKeepsStableItemIDs() {
+        var accumulator = ChatStreamAccumulator()
+        expect(accumulator.append(itemID: "answer", delta: "测"), "测", "first delta is stored by item ID")
+        expect(accumulator.append(itemID: "answer", delta: "试"), "测试", "later deltas extend the same item")
+        expect(accumulator.streams["answer"], "测试", "stream identity remains stable")
+        expect(accumulator.complete(itemID: "answer", text: "测试通过"), "测试通过", "authoritative completion replaces deltas")
+        expect(accumulator.complete(itemID: "answer", text: "重复"), nil, "duplicate completion is ignored")
+        expect(accumulator.append(itemID: "answer", delta: "迟到"), nil, "late deltas are ignored")
     }
 }
