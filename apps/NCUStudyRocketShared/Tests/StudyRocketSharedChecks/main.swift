@@ -59,7 +59,7 @@ do {
 }
 lease.release()
 precondition(!FileManager.default.fileExists(atPath: leaseURL.path))
-let descriptorRoot = FileManager.default.temporaryDirectory.appendingPathComponent("studyrocket-descriptors-(UUID().uuidString)", isDirectory: true)
+let descriptorRoot = FileManager.default.temporaryDirectory.appendingPathComponent("studyrocket-descriptors-" + UUID().uuidString, isDirectory: true)
 let descriptorStore = StudyRocketTaskDescriptorStore(directory: descriptorRoot)
 let firstRoot = descriptorRoot.appendingPathComponent("repo-a", isDirectory: true)
 let secondRoot = descriptorRoot.appendingPathComponent("repo-b", isDirectory: true)

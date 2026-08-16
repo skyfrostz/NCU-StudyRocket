@@ -90,7 +90,7 @@ public final class StudyRocketTaskDescriptorStore: @unchecked Sendable {
     private func url(for root: URL) -> URL {
         let digest = SHA256.hash(data: Data(root.standardizedFileURL.path.utf8))
             .map { String(format: "%02x", $0) }.joined()
-        return directory.appendingPathComponent("(digest).json")
+        return directory.appendingPathComponent(digest + ".json")
     }
 }
 
