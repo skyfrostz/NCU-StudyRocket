@@ -1293,7 +1293,7 @@ struct StudyChatView: View {
             }
             ChatComposer()
         }
-        .task { await chat.connect(to: workspace.rootURL) }.onChange(of: workspace.rootURL) { _, root in Task { await chat.connect(to: root) } }.onDisappear { chat.disconnect() }.sheet(isPresented: $showHelp) { ChatHelpView() }
+        .task { await chat.connect(to: workspace.rootURL) }.onChange(of: workspace.rootURL) { _, root in Task { await chat.connect(to: root) } }.sheet(isPresented: $showHelp) { ChatHelpView() }
     }
     private var statusColor: Color { switch chat.connectionState { case .connected: .green; case .thinking, .reconnecting, .connecting: .orange; case .failed: .red; default: .secondary } }
 }

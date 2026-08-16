@@ -585,7 +585,7 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
             let codexReady = FileManager.default.isExecutableFile(atPath: "/Applications/ChatGPT.app/Contents/Resources/codex")
             let repositoryID = RequestSigning.bodyHash(Data(root.path.utf8))
             let toolsReady = isProtocolReady && StudyRocketDynamicToolContract.declarationIsValid
-            let health = HealthResponse(hostVersion: "0.1.0", repositoryBound: bound, codexReady: codexReady, pairedDeviceCount: pairing.deviceCount, activeThreadID: "019ff539-bc1a-7b73-9a29-6340b47690e0", repositoryID: repositoryID, dynamicToolsReady: toolsReady)
+            let health = HealthResponse(hostVersion: "0.1.0", repositoryBound: bound, codexReady: codexReady, pairedDeviceCount: pairing.deviceCount, activeThreadID: chatBridge.currentThreadID, repositoryID: repositoryID, dynamicToolsReady: toolsReady)
             payload = (try? encoder.encode(health)) ?? Data("{}".utf8)
             status = "200 OK"
         } else if method == "POST", path == "/v1/pair" {

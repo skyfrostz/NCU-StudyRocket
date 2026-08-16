@@ -526,6 +526,7 @@ final class StudyChatStore: ObservableObject {
     private var hostEventsTask: Task<Void, Never>?
     private var hostTurnTask: Task<Void, Never>?
     private var hostReconnectFailures = 0
+    private var hostActiveTurnID: String?
     private var pendingPrompt: String?
     private var pendingUnknownMessages: [String: [ChatMessage]] = [:]
     private var pendingSubmissionID: String?
@@ -760,6 +761,7 @@ final class StudyChatStore: ObservableObject {
         hostTurnTask?.cancel()
         hostTurnTask = nil
         usingHost = false
+        hostActiveTurnID = nil
 #if DEBUG
         stressFixtureTask?.cancel()
         stressFixtureTask = nil
@@ -832,6 +834,7 @@ final class StudyChatStore: ObservableObject {
         hostTurnTask?.cancel(); hostTurnTask = nil
         hostStreamText.reset()
         usingHost = false
+        hostActiveTurnID = nil
         client.disconnect(); await connectInternal(to: root, forceCreate: false)
     }
 
@@ -918,6 +921,7 @@ final class StudyChatStore: ObservableObject {
         draft = ""; errorMessage = nil; isBusy = true; setState(.thinking); pendingUnknownMessages.removeAll()
         if usingHost {
             hostStreamText.reset()
+            hostActiveTurnID = nil
             sendThroughHost(text)
             return
         }
@@ -945,6 +949,7 @@ final class StudyChatStore: ObservableObject {
         hostEventsTask?.cancel(); hostEventsTask = nil
         hostStreamText.reset()
         hostTurnTask?.cancel(); hostTurnTask = nil; hostStreamText.reset(); usingHost = false
+        hostActiveTurnID = nil
         streamFollowTask?.cancel(); streamFollowTask = nil; pendingStreamFollowTarget = nil
         scrollPolicy = ChatScrollPolicy()
 #if DEBUG
@@ -1107,16 +1112,31 @@ final class StudyChatStore: ObservableObject {
     private func consumeHostEvent(_ event: HostEventEnvelope) {
         guard usingHost else { return }
         if event.kind == "heartbeat" { return }
+        if event.kind == "chat.failed", isBusy {
+            isBusy = false
+            markLatestTurn(.failed, errorMessage: "StudyRocket Host 对话失败，请重试。")
+            setState(.failed)
+            errorMessage = "StudyRocket Host 对话失败，请重试。"
+            return
+        }
+        if event.kind == "chat.interrupted", isBusy {
+            isBusy = false
+            markLatestTurn(.interrupted)
+            setState(.stopped)
+            return
+        }
         guard let chatEvent = event.chat else { return }
         switch chatEvent.kind {
         case "delta":
             guard let turnID = chatEvent.turnID, let itemID = chatEvent.itemID, let delta = chatEvent.text else { return }
+            hostActiveTurnID = turnID
             let key = "\(turnID)-\(itemID)"
             guard !hostStreamText.completedItemIDs.contains(key) else { return }
             if pendingSubmissionID != nil { assignPendingSubmission(to: turnID, startedAt: .now) }
             replaceStreaming(turnID: turnID, itemID: itemID, text: accumulatedHostText(turnID: turnID, itemID: itemID, delta: delta), phase: ChatMessagePhase(rawValue: chatEvent.phase ?? "") ?? .unknown)
         case "item_completed":
             guard let turnID = chatEvent.turnID, let itemID = chatEvent.itemID, let text = chatEvent.text else { return }
+            hostActiveTurnID = turnID
             let phase = ChatMessagePhase(rawValue: chatEvent.phase ?? "") ?? .unknown
             guard hostStreamText.complete(itemID: "\(turnID)-\(itemID)", text: text) != nil else { return }
             if phase == .commentary {
@@ -1127,15 +1147,36 @@ final class StudyChatStore: ObservableObject {
         case "status":
             guard let status = chatEvent.status else { return }
             switch status {
+            case "inProgress":
+                if let turnID = chatEvent.turnID {
+                    hostActiveTurnID = turnID
+                    if pendingSubmissionID != nil { assignPendingSubmission(to: turnID, startedAt: .now) }
+                }
             case "completed":
+                if let turnID = chatEvent.turnID {
+                    hostActiveTurnID = turnID
+                    if pendingSubmissionID != nil { assignPendingSubmission(to: turnID, startedAt: .now) }
+                }
                 let generation = connectionGeneration
                 Task { await reconcileHostHistory(finalState: .completed, generation: generation) }
             case "interrupted":
+                if let turnID = chatEvent.turnID {
+                    hostActiveTurnID = turnID
+                    if pendingSubmissionID != nil { assignPendingSubmission(to: turnID, startedAt: .now) }
+                }
                 let generation = connectionGeneration
                 Task { await reconcileHostHistory(finalState: .interrupted, generation: generation) }
             case "failed":
+                if let turnID = chatEvent.turnID {
+                    hostActiveTurnID = turnID
+                    if pendingSubmissionID != nil { assignPendingSubmission(to: turnID, startedAt: .now) }
+                    completeTurn(ChatTurnResult(turnID: turnID, status: .failed, errorMessage: chatEvent.text, completedAt: .now))
+                } else {
+                    markLatestTurn(.failed, errorMessage: chatEvent.text)
+                }
                 isBusy = false
                 setState(.failed)
+                errorMessage = chatEvent.text ?? "StudyRocket Host 对话失败，请重试。"
             default:
                 break
             }
@@ -1156,10 +1197,18 @@ final class StudyChatStore: ObservableObject {
         do {
             let response = try await hostClient.history()
             guard usingHost, (generation == nil || generation == connectionGeneration) else { return }
-            publishHistory(Self.messages(from: response))
+            let messages = Self.messages(from: response)
+            publishHistory(messages)
+            if finalState == .inProgress, let hostActiveTurnID,
+               let authoritative = Self.present(messages).first(where: { $0.id == hostActiveTurnID }),
+               authoritative.status != .inProgress {
+                completeTurn(ChatTurnResult(turnID: hostActiveTurnID, status: authoritative.status, errorMessage: authoritative.errorMessage, completedAt: authoritative.completedAt ?? .now))
+                isBusy = false
+            }
             if finalState != .inProgress {
                 hostStreamText.clearStreams()
                 isBusy = false
+                hostActiveTurnID = nil
             }
             switch finalState {
             case .completed: setState(.connected)
