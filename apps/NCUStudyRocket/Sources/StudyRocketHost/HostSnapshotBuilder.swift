@@ -31,7 +31,7 @@ final class HostSnapshotBuilder {
             totalDeliveries: visibleDeliveries.count
         )
         let month = DateFormatter.monthFile.string(from: now)
-        let revision = revision(for: ["工作台/下周计划.md", "工作台/每日记录/\(month).md", "工作台/进度日志.md", "工作台/航线/课程.md", "工作台/航线/科研.md", "工作台/航线/保研.md", "工作台/航线/生活.md"])
+        let revision = revision(for: ["工作台/下周计划.md", "工作台/每日记录/\(month).md", "工作台/进度日志.md", "工作台/航线/课程.md", "工作台/航线/科研.md", "工作台/航线/保研.md", "工作台/航线/生活.md", "智库/学校文件/来源索引.md"])
         return SnapshotResponse(revision: revision, home: home, week: plan, daily: daily, summaries: summaries())
     }
 
@@ -242,17 +242,35 @@ final class HostSnapshotBuilder {
         return DailySnapshot(date: isoDate(now), deliverables: field(["完成交付物"]), studyTime: field(["净学习时长"]), sleep: field(["睡眠"]), exercise: field(["运动"]), firstTask: field(["明日第一任务"]))
     }
 
+    /// The mobile client only sees logical document keys.  Keeping the path
+    /// map here prevents a network caller from choosing an arbitrary file.
+    static let documentMap: [String: (title: String, path: String)] = [
+        "course": ("课程", "工作台/航线/课程.md"),
+        "research": ("科研", "工作台/航线/科研.md"),
+        "recommendation": ("保研", "工作台/航线/保研.md"),
+        "life": ("生活", "工作台/航线/生活.md"),
+        "library": ("资料库", "智库/学校文件/来源索引.md")
+    ]
+
+    func document(documentKey: String) -> DocumentDetail? {
+        guard let entry = Self.documentMap[documentKey] else { return nil }
+        let content = read(entry.path).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else { return nil }
+        let revision = SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
+        return DocumentDetail(documentKey: documentKey, title: entry.title, markdown: content, revision: revision)
+    }
+
     private func summaries() -> [SummaryCard] {
-        [
-            ("课程", "工作台/航线/课程.md"),
-            ("科研", "工作台/航线/科研.md"),
-            ("保研", "工作台/航线/保研.md"),
-            ("生活", "工作台/航线/生活.md"),
-            ("资料库", "智库/学校文件/来源索引.md")
-        ].map { title, path in
-            let content = read(path)
-            let detail = content.components(separatedBy: .newlines).first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? "暂无摘要"
-            return SummaryCard(id: path, title: title, detail: detail)
+        Self.documentMap.compactMap { key, entry in
+            guard let document = document(documentKey: key) else { return nil }
+            let detail = document.markdown
+                .components(separatedBy: .newlines)
+                .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? entry.title
+            return SummaryCard(id: key, title: entry.title, detail: detail, updatedAt: document.fetchedAt, documentKey: key)
+        }
+        .sorted { lhs, rhs in
+            let order = ["course", "research", "recommendation", "life", "library"]
+            return (order.firstIndex(of: lhs.documentKey ?? "") ?? .max) < (order.firstIndex(of: rhs.documentKey ?? "") ?? .max)
         }
     }
 

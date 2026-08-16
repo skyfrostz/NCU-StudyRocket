@@ -16,12 +16,8 @@ actor StudyRocketHostClient {
 
     func isAvailable(for root: URL? = nil) async -> Bool {
         guard readToken() != nil else { return false }
-        var request = URLRequest(url: endpoint.appendingPathComponent("v1/health"))
-        request.httpMethod = "GET"
         do {
-            let (data, response) = try await session.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return false }
-            let health = try JSONDecoder().decode(HealthResponse.self, from: data)
+            let health = try await health(for: root)
             guard health.repositoryBound, health.codexReady, health.dynamicToolsReady != false else { return false }
             if let root {
                 let expected = RequestSigning.bodyHash(Data(root.standardizedFileURL.path.utf8))
@@ -31,6 +27,15 @@ actor StudyRocketHostClient {
         } catch {
             return false
         }
+    }
+
+    func health(for root: URL? = nil) async throws -> HealthResponse {
+        let health = try await get("/v1/health", as: HealthResponse.self)
+        if let root {
+            let expected = RequestSigning.bodyHash(Data(root.standardizedFileURL.path.utf8))
+            guard health.repositoryID == expected else { throw LocalHostError.server("StudyRocket Host 绑定了其他仓库。") }
+        }
+        return health
     }
 
     func waitUntilAvailable(for root: URL? = nil) async -> Bool {
@@ -53,6 +58,7 @@ actor StudyRocketHostClient {
                 do {
                     var request = URLRequest(url: endpoint.appendingPathComponent("/v1/events"))
                     request.httpMethod = "GET"
+                    request.timeoutInterval = 90
                     guard let token = readToken() else { throw LocalHostError.unavailable }
                     request.setValue(token, forHTTPHeaderField: "X-StudyRocket-Local-Session")
                     let (bytes, response) = try await session.bytes(for: request)

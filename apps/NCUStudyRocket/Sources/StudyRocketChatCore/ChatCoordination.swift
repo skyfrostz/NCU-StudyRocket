@@ -1,3 +1,5 @@
+import Foundation
+
 public enum ChatHistoryLoadState: Equatable {
     case loading
     case loaded
@@ -8,7 +10,6 @@ public enum ChatHistoryLoadState: Equatable {
 public struct ChatHistoryLoadCoordinator<Value: Equatable>: Equatable {
     public private(set) var value: Value
     public private(set) var state: ChatHistoryLoadState = .loading
-    public private(set) var revision = 0
 
     public init(initialValue: Value) {
         value = initialValue
@@ -26,7 +27,6 @@ public struct ChatHistoryLoadCoordinator<Value: Equatable>: Equatable {
         let changed = self.value != value || state != .loaded
         self.value = value
         state = .loaded
-        if changed { revision &+= 1 }
         return changed
     }
 
@@ -41,13 +41,21 @@ public struct ChatHistoryLoadCoordinator<Value: Equatable>: Equatable {
 
 /// Coalesces scroll requests with the same target and animation mode.
 public struct ChatScrollCoordinator: Equatable {
-    public struct Request: Equatable {
+    public struct Request: Identifiable, Equatable {
+        public let id: UUID
         public let target: String
         public let force: Bool
 
-        public init(target: String, force: Bool) {
+        public init(id: UUID = UUID(), target: String, force: Bool) {
+            self.id = id
             self.target = target
             self.force = force
+        }
+
+        public static func == (lhs: Request, rhs: Request) -> Bool {
+            // Identity is consumed by the view; target/mode equality is what
+            // lets repeated layout updates coalesce.
+            lhs.target == rhs.target && lhs.force == rhs.force
         }
     }
 
@@ -56,11 +64,20 @@ public struct ChatScrollCoordinator: Equatable {
     public init() {}
 
     @discardableResult
-    public mutating func enqueue(target: String, force: Bool) -> Bool {
-        let next = Request(target: target, force: force)
+    public mutating func enqueue(target: String, force: Bool, id: UUID = UUID()) -> Bool {
+        let next = Request(id: id, target: target, force: force)
         guard pending != next else { return false }
         pending = next
         return true
+    }
+
+    /// Consume only the request currently being displayed. A stale callback
+    /// must never clear a newer request.
+    @discardableResult
+    public mutating func consume(id: UUID) -> Request? {
+        guard let pending, pending.id == id else { return nil }
+        self.pending = nil
+        return pending
     }
 
     public mutating func reset() {
@@ -92,5 +109,11 @@ public struct ChatStreamAccumulator: Equatable {
     public mutating func reset() {
         streams.removeAll()
         completedItemIDs.removeAll()
+    }
+
+    /// Drop only transient text after a terminal history reconciliation. Keep
+    /// completion tombstones long enough to reject late SSE deltas.
+    public mutating func clearStreams() {
+        streams.removeAll()
     }
 }

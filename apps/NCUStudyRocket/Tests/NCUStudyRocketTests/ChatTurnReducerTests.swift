@@ -1,8 +1,9 @@
+import Foundation
 import StudyRocketChatCore
 
 @main
 struct ChatTurnReducerTests {
-    static func main() {
+    static func main() async {
         testRetryableErrorDoesNotTerminateTurn()
         testCompletedItemUsesAuthoritativeTextAndIgnoresDuplicates()
         testCommentaryAndFinalAnswerRemainSeparateItems()
@@ -16,8 +17,11 @@ struct ChatTurnReducerTests {
         testChatScrollPolicy()
         testHistoryLoadCoordinator()
         testScrollCoordinatorCoalescesRequests()
+        testScrollCoordinatorConsumesOnlyCurrentRequest()
         testStreamAccumulatorKeepsStableItemIDs()
-        print("ChatTurnReducerTests: 14 passed")
+        testScrollHysteresis()
+        await testChatMarkdownParserAndCache()
+        print("ChatTurnReducerTests: 17 passed")
     }
 
     private static func expect<T: Equatable>(_ actual: T, _ expected: T, _ message: String) {
@@ -203,9 +207,7 @@ struct ChatTurnReducerTests {
         var coordinator = ChatHistoryLoadCoordinator<[String]>(initialValue: [])
         expect(coordinator.replace([]), true, "loading an empty history still completes the first load")
         expect(coordinator.state, .loaded, "empty history must have a loaded state")
-        let firstRevision = coordinator.revision
-        expect(coordinator.replace([]), false, "duplicate history must not publish a new revision")
-        expect(coordinator.revision, firstRevision, "duplicate history must keep its revision")
+        expect(coordinator.replace([]), false, "duplicate history must not publish a new value")
         expect(coordinator.fail("断开"), true, "a load failure must be visible")
         expect(coordinator.value, [], "load failure must retain the last usable history")
         expect(coordinator.beginLoading(), true, "a reconnect returns to loading")
@@ -229,5 +231,98 @@ struct ChatTurnReducerTests {
         expect(accumulator.complete(itemID: "answer", text: "测试通过"), "测试通过", "authoritative completion replaces deltas")
         expect(accumulator.complete(itemID: "answer", text: "重复"), nil, "duplicate completion is ignored")
         expect(accumulator.append(itemID: "answer", delta: "迟到"), nil, "late deltas are ignored")
+        accumulator.clearStreams()
+        expect(accumulator.append(itemID: "answer", delta: "更晚"), nil, "terminal tombstones survive stream cleanup")
+    }
+
+    private static func testScrollCoordinatorConsumesOnlyCurrentRequest() {
+        var coordinator = ChatScrollCoordinator()
+        _ = coordinator.enqueue(target: "turn-1", force: false)
+        let first = coordinator.pending?.id
+        _ = coordinator.enqueue(target: "chat-bottom", force: true)
+        expect(coordinator.consume(id: first ?? UUID()), nil, "stale scroll callback cannot clear the latest request")
+        let current = coordinator.pending?.id
+        expect(coordinator.consume(id: current ?? UUID())?.target, Optional("chat-bottom"), "current scroll request is consumed")
+        expect(coordinator.pending, nil, "consuming clears the request")
+    }
+
+    private static func testScrollHysteresis() {
+        var policy = ChatScrollPolicy()
+        expect(policy.update(distanceFromBottom: 119), false, "119pt remains attached")
+        expect(policy.update(distanceFromBottom: 121), true, "121pt detaches from the bottom")
+        expect(policy.isNearBottom, false, "detached state is retained")
+        expect(policy.update(distanceFromBottom: 49), false, "49pt does not reattach")
+        expect(policy.update(distanceFromBottom: 48), true, "48pt reattaches")
+    }
+
+    private static func testChatMarkdownParserAndCache() async {
+        let source = """
+        # 标题
+
+        **粗体** *斜体* ~~删~~ `code` [链接](https://x)
+
+        > 引用
+
+        - [ ] 待办
+        - [x] 完成
+
+        ```swift
+        let x = 1
+        ```
+
+        | A | B |
+        | --- | --- |
+        | 1 | |
+
+        `a | b` 非表格管道
+
+        <b>x</b>
+        """
+        let document = ChatMarkdownDocument(source)
+        expect(document.blocks.contains { if case .heading = $0 { return true }; return false }, true, "heading is parsed")
+        expect(document.blocks.contains { if case .quote = $0 { return true }; return false }, true, "quote is parsed")
+        expect(document.blocks.contains { if case .taskList = $0 { return true }; return false }, true, "task list is parsed")
+        expect(document.blocks.contains { if case .codeBlock = $0 { return true }; return false }, true, "code fence is parsed")
+        expect(document.blocks.contains { if case .table = $0 { return true }; return false }, true, "GFM table is parsed")
+        guard let table = document.blocks.first(where: { if case .table = $0 { return true }; return false }) else { fatalError("table block missing") }
+        guard case .table(let headers, let rows) = table else { fatalError("table block has the wrong shape") }
+        expect(headers.count, 2, "table keeps both header cells")
+        expect(rows.count, 1, "table keeps the data row")
+        expect(rows.first?.count, 2, "table preserves an empty trailing cell")
+        expect(inlinePlain(rows.first?.first ?? []), "1", "table keeps the first data cell")
+        guard document.blocks.contains(where: { blockContainsText(block: $0, needle: "<b>x</b>") }) else { fatalError("HTML is literal text: \(document.blocks)") }
+
+        let cache = ChatMarkdownCache()
+        for _ in 0..<1_001 { _ = await cache.document(for: "message", text: source) }
+        expect(await cache.parseCount, 1, "same message text parses once")
+        _ = await cache.document(for: "message", text: source + "\nchanged")
+        expect(await cache.parseCount, 2, "changed message text reparses")
+        for index in 0..<61 { _ = await cache.document(for: "message-\(index)", text: "# \(index)") }
+        expect(await cache.count, 60, "markdown cache keeps an LRU of 60")
+    }
+
+    private static func blockContainsText(block: ChatMarkdownBlock, needle: String) -> Bool {
+        switch block {
+        case .paragraph(let inlines), .heading(_, let inlines):
+            return inlinePlain(inlines).contains(needle)
+        case .bulletedList(let items), .numberedList(_, let items):
+            return items.contains { inlinePlain($0).contains(needle) }
+        case .taskList(let items): return items.contains { inlinePlain($0.content).contains(needle) }
+        case .quote(let blocks): return blocks.contains { blockContainsText(block: $0, needle: needle) }
+        case .table(let headers, let rows): return headers.contains { inlinePlain($0).contains(needle) } || rows.flatMap { $0 }.contains { inlinePlain($0).contains(needle) }
+        case .codeBlock(_, let code): return code.contains(needle)
+        case .divider: return false
+        }
+    }
+
+    private static func inlinePlain(_ inlines: [ChatMarkdownInline]) -> String {
+        inlines.map { inline in
+            switch inline {
+            case .text(let value), .code(let value): return value
+            case .strong(let children), .emphasis(let children), .strikethrough(let children): return inlinePlain(children)
+            case .link(let children, _, _): return inlinePlain(children)
+            case .lineBreak: return "\n"
+            }
+        }.joined()
     }
 }

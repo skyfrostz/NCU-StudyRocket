@@ -1,6 +1,7 @@
 import SwiftUI
 import MarkdownUI
 import AppKit
+import StudyRocketChatCore
 
 struct ContentView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
@@ -81,12 +82,12 @@ struct DashboardView: View {
                 ResponsiveColumns {
                     TodayPlanList(tasks: dashboard.todayCells, firstTask: dashboard.firstOpenTask, unassigned: dashboard.todayUnassigned)
                 } second: {
-                    DeliveryChecklist(
+                    DeliveryOverview(
                         deliveries: dashboard.filteredDeliveries,
-                        emptyMessage: dashboard.plan.deliveries.isEmpty ? "周计划中还没有交付物。" : "除今日安排外，本周暂无其他交付物。"
-                    ) { id in
-                        dashboard.toggleDelivery(id, workspace: workspace)
-                    }
+                        emptyMessage: dashboard.plan.deliveries.isEmpty ? "周计划中还没有交付物。" : "除今日安排外，本周暂无其他交付物。",
+                        completed: dashboard.completedDeliveries,
+                        total: dashboard.filteredDeliveries.count
+                    )
                 }
                 if let error = dashboard.errorMessage {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -121,6 +122,84 @@ struct DashboardView: View {
         }
         .onAppear { dashboard.load(from: workspace.rootURL) }
         .onChange(of: workspace.rootURL) { _, root in dashboard.load(from: root) }
+    }
+}
+
+/// The home screen is intentionally read-only for deliveries.  The weekly
+/// plan remains the single place where completion is changed and atomically
+/// written, while the dashboard gives a compact timeline-style overview.
+private struct DeliveryOverview: View {
+    let deliveries: [WeeklyDelivery]
+    let emptyMessage: String
+    let completed: Int
+    let total: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("本周交付物", systemImage: "checkmark.circle")
+                    .font(.system(size: 15, weight: .semibold))
+                Spacer()
+                if total > 0 {
+                    Text("\(completed) / \(total)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.teal)
+                }
+            }
+            .padding(.bottom, 8)
+            if deliveries.isEmpty {
+                Text(emptyMessage)
+                    .font(.system(size: StudyRocketTheme.bodySize))
+                    .foregroundStyle(.secondary)
+                    .frame(minHeight: 44, alignment: .leading)
+            } else {
+                let visibleCount = min(deliveries.count, 5)
+                ForEach(Array(deliveries.prefix(5).enumerated()), id: \.element.id) { index, delivery in
+                    DeliveryOverviewRow(delivery: delivery, isLast: index == visibleCount - 1)
+                }
+                if deliveries.count > 5 {
+                    Text("还有 \(deliveries.count - 5) 项，前往周计划查看")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                }
+            }
+        }
+        .padding(16)
+        .background(.background, in: RoundedRectangle(cornerRadius: StudyRocketTheme.cornerRadius, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: StudyRocketTheme.cornerRadius, style: .continuous).strokeBorder(.quaternary) }
+    }
+}
+
+private struct DeliveryOverviewRow: View {
+    let delivery: WeeklyDelivery
+    let isLast: Bool
+
+    private var presentation: WeeklyDeliveryPresentation {
+        WeeklyDeliveryPresentation(text: delivery.text)
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: delivery.isCompleted ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(delivery.isCompleted ? Color.teal : Color.secondary)
+                .font(.body)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 3) {
+                if let dateLabel = presentation.dateLabel, !dateLabel.isEmpty {
+                    Text(dateLabel).font(.caption).foregroundStyle(.secondary)
+                }
+                Text(presentation.body)
+                    .font(.system(size: StudyRocketTheme.bodySize))
+                    .lineSpacing(StudyRocketTheme.bodyLineSpacing)
+                    .foregroundStyle(delivery.isCompleted ? Color.secondary : Color.primary)
+                    .strikethrough(delivery.isCompleted, color: .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !isLast { Divider().padding(.top, 8) }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
     }
 }
 
@@ -1204,8 +1283,10 @@ struct StudyChatView: View {
             ChatTranscript(
                 transcript: chat.transcript,
                 status: chat.status,
-                updateScrollPosition: chat.updateScrollPosition,
-                requestScrollToBottom: { chat.requestScrollToBottom() }
+                updateScrollPosition: chat.updateScrollPosition(distanceFromBottom:),
+                requestScrollToBottom: { chat.requestScrollToBottom() },
+                consumeScrollRequest: chat.transcript.consumeScrollRequest(id:),
+                userDidScroll: chat.userDidScroll
             )
             if let error = chat.errorMessage {
                 ChatInlineError(message: error)
@@ -1240,106 +1321,106 @@ private struct ChatToolbar: View {
 private struct ChatTranscript: View {
     @ObservedObject var transcript: ChatTranscriptState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isNearBottom = true
     @State private var didInitialScroll = false
     let status: String
-    let updateScrollPosition: (Bool) -> Void
+    let updateScrollPosition: (CGFloat) -> Bool
     let requestScrollToBottom: () -> Void
+    let consumeScrollRequest: (UUID) -> ChatScrollRequest?
+    let userDidScroll: () -> Void
+
     var body: some View {
         let rows = transcriptRows()
-        GeometryReader { geometry in
-            let viewportWidth = geometry.size.width
-            let canvasWidth = max(1, viewportWidth - StudyRocketTheme.pageInset * 2)
-            ScrollViewReader { proxy in
-                ZStack(alignment: .bottomTrailing) {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 18) {
-                            if transcript.turns.isEmpty {
-                                switch transcript.loadState {
-                                case .loading:
-                                    VStack(spacing: 10) {
-                                        ProgressView()
-                                        Text("正在加载聊天记录…").font(.system(size: StudyRocketTheme.bodySize)).foregroundStyle(.secondary)
-                                    }
-                                    .frame(width: canvasWidth).frame(minHeight: 260)
-                                case .loaded:
-                                    ContentUnavailableView("开始你的学业对话", systemImage: "bubble.left.and.bubble.right", description: Text("可以问课程、保研、科研，也可以让助理生成计划修改草案。"))
-                                        .frame(width: canvasWidth).frame(minHeight: 260)
-                                case .failed(let message):
-                                    VStack(spacing: 10) {
-                                        Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
-                                        Text("聊天记录加载失败").font(.headline)
-                                        Text(message).font(.system(size: StudyRocketTheme.bodySize)).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                                    }
-                                    .frame(width: canvasWidth).frame(minHeight: 260)
-                                }
+        ScrollViewReader { proxy in
+            ZStack(alignment: .bottomTrailing) {
+                List {
+                    if transcript.turns.isEmpty {
+                        switch transcript.loadState {
+                        case .loading:
+                            ChatEmptyLoadingView()
+                        case .loaded:
+                            ContentUnavailableView("开始你的学业对话", systemImage: "bubble.left.and.bubble.right", description: Text("可以问课程、保研、科研，也可以让助理生成计划修改草案。"))
+                                .frame(maxWidth: .infinity, minHeight: 260)
+                        case .failed(let message):
+                            VStack(spacing: 10) {
+                                Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                                Text("聊天记录加载失败").font(.headline)
+                                Text(message).font(.system(size: StudyRocketTheme.bodySize)).foregroundStyle(.secondary).multilineTextAlignment(.center)
                             }
-                            ForEach(rows) { row in
-                                if row.showsDateDivider {
-                                    ChatDateDivider(date: row.turn.date).frame(width: canvasWidth)
-                                }
-                                ChatTurnView(
-                                    turn: row.turn,
-                                    canvasWidth: canvasWidth,
-                                    status: status,
-                                    processExpanded: row.processExpanded,
-                                    toggleProcess: {
-                                        if transcript.expandedProcessTurnIDs.contains(row.turn.id) { transcript.expandedProcessTurnIDs.remove(row.turn.id) }
-                                        else { transcript.expandedProcessTurnIDs.insert(row.turn.id) }
-                                    },
-                                    proposals: row.proposals,
-                                    proposalExpanded: row.proposalExpanded,
-                                    toggleProposal: {
-                                        if transcript.expandedProposalTurnIDs.contains(row.turn.id) { transcript.expandedProposalTurnIDs.remove(row.turn.id) }
-                                        else { transcript.expandedProposalTurnIDs.insert(row.turn.id) }
-                                    },
-                                    skillProposals: row.skillProposals
-                                )
-                                .frame(width: canvasWidth, alignment: .leading).id(row.turn.id)
-                            }
+                            .frame(maxWidth: .infinity, minHeight: 260)
                         }
-                            Color.clear
-                                .frame(height: 1)
-                                .id("chat-bottom")
-                                .background(GeometryReader { marker in
-                                    Color.clear.preference(key: ChatBottomPreferenceKey.self, value: marker.frame(in: .named("studyrocket-chat")).maxY)
-                                })
+                    }
+                    ForEach(rows) { row in
+                        VStack(alignment: .leading, spacing: 18) {
+                            if row.showsDateDivider { ChatDateDivider(date: row.turn.date) }
+                            ChatTurnView(
+                                turn: row.turn,
+                                canvasWidth: 840,
+                                status: status,
+                                processExpanded: row.processExpanded,
+                                toggleProcess: {
+                                    if transcript.expandedProcessTurnIDs.contains(row.turn.id) { transcript.expandedProcessTurnIDs.remove(row.turn.id) }
+                                    else { transcript.expandedProcessTurnIDs.insert(row.turn.id) }
+                                },
+                                proposals: row.proposals,
+                                proposalExpanded: row.proposalExpanded,
+                                toggleProposal: {
+                                    if transcript.expandedProposalTurnIDs.contains(row.turn.id) { transcript.expandedProposalTurnIDs.remove(row.turn.id) }
+                                    else { transcript.expandedProposalTurnIDs.insert(row.turn.id) }
+                                },
+                                skillProposals: row.skillProposals
+                            )
                         }
-                        .frame(width: canvasWidth, alignment: .leading)
-                        .padding(.vertical, 20)
-                        .padding(.horizontal, StudyRocketTheme.pageInset)
-                        .frame(width: viewportWidth, alignment: .leading)
-                    .coordinateSpace(name: "studyrocket-chat")
-                    .onPreferenceChange(ChatBottomPreferenceKey.self) { bottomY in
-                        updateScrollPosition(bottomY <= geometry.size.height + 72)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .listRowInsets(EdgeInsets(top: 9, leading: StudyRocketTheme.pageInset, bottom: 9, trailing: StudyRocketTheme.pageInset))
+                        .listRowSeparator(.hidden)
+                        .id(row.id)
                     }
-                    .onChange(of: transcript.scrollRequest?.id) { _, _ in
-                        guard let request = transcript.scrollRequest else { return }
-                        if reduceMotion || !request.force { proxy.scrollTo(request.target, anchor: .bottom) }
-                        else { withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(request.target, anchor: .bottom) } }
+                    Color.clear
+                        .frame(height: 1)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                        .id("chat-bottom")
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(
+                    ChatScrollViewObserver(onDistance: { distance in
+                        isNearBottom = distance <= (isNearBottom ? ChatScrollPolicy.leaveThreshold : ChatScrollPolicy.enterThreshold)
+                        _ = updateScrollPosition(distance)
+                    }, onUserScroll: userDidScroll)
+                )
+                .onChange(of: transcript.scrollRequest?.id) { _, requestID in
+                    guard let requestID, let request = transcript.scrollRequest else { return }
+                    if reduceMotion || !request.force {
+                        proxy.scrollTo(request.target, anchor: .bottom)
+                    } else {
+                        withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(request.target, anchor: .bottom) }
                     }
-                    .onAppear {
-                        guard !didInitialScroll, !transcript.turns.isEmpty, transcript.loadState == .loaded else { return }
-                        didInitialScroll = true
-                        DispatchQueue.main.async { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                    _ = consumeScrollRequest(requestID)
+                }
+                .onAppear { scrollToInitialHistory(using: proxy) }
+                .onChange(of: transcript.loadState) { _, state in
+                    if state == .loading { didInitialScroll = false; return }
+                    scrollToInitialHistory(using: proxy)
+                }
+                if !isNearBottom && !transcript.turns.isEmpty {
+                    StudyIconButton(systemImage: "arrow.down", label: "回到最新消息") {
+                        requestScrollToBottom()
                     }
-                    .onChange(of: transcript.loadState) { _, state in
-                        if state == .loading { didInitialScroll = false; return }
-                        guard state == .loaded, !didInitialScroll, !transcript.turns.isEmpty else { return }
-                        didInitialScroll = true
-                        DispatchQueue.main.async { proxy.scrollTo("chat-bottom", anchor: .bottom) }
-                    }
-                    if !transcript.isNearBottom && !transcript.turns.isEmpty {
-                        StudyIconButton(systemImage: "arrow.down", label: "回到最新消息") {
-                            requestScrollToBottom()
-                        }
-                        .background(.regularMaterial, in: Circle())
-                        .padding(.trailing, StudyRocketTheme.pageInset)
-                        .padding(.bottom, 14)
-                        .transition(.opacity)
-                    }
+                    .background(.regularMaterial, in: Circle())
+                    .padding(.trailing, StudyRocketTheme.pageInset)
+                    .padding(.bottom, 14)
+                    .transition(.opacity)
                 }
             }
         }
+    }
+
+    private func scrollToInitialHistory(using proxy: ScrollViewProxy) {
+        guard !didInitialScroll, transcript.loadState == .loaded, !transcript.turns.isEmpty else { return }
+        didInitialScroll = true
+        DispatchQueue.main.async { proxy.scrollTo("chat-bottom", anchor: .bottom) }
     }
 
     private func transcriptRows() -> [ChatTranscriptRow] {
@@ -1358,6 +1439,18 @@ private struct ChatTranscript: View {
     }
 }
 
+private struct ChatEmptyLoadingView: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            ProgressView()
+            Text("正在加载聊天记录…").font(.system(size: StudyRocketTheme.bodySize)).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 260)
+        .listRowInsets(EdgeInsets())
+        .listRowSeparator(.hidden)
+    }
+}
+
 private struct ChatTranscriptRow: Identifiable {
     let turn: ChatTurnPresentation
     let showsDateDivider: Bool
@@ -1368,9 +1461,110 @@ private struct ChatTranscriptRow: Identifiable {
     var id: String { turn.id }
 }
 
-private struct ChatBottomPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = .infinity
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+private struct ChatScrollViewObserver: NSViewRepresentable {
+    let onDistance: (CGFloat) -> Void
+    let onUserScroll: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onDistance: onDistance, onUserScroll: onUserScroll) }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        view.setContentHuggingPriority(.required, for: .horizontal)
+        view.setContentHuggingPriority(.required, for: .vertical)
+        DispatchQueue.main.async { context.coordinator.attach(from: view) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onDistance = onDistance
+        context.coordinator.onUserScroll = onUserScroll
+        DispatchQueue.main.async { context.coordinator.attach(from: nsView) }
+    }
+
+    final class Coordinator {
+        var onDistance: (CGFloat) -> Void
+        var onUserScroll: () -> Void
+        private var observedScrollViews: [NSScrollView] = []
+        private var observations: [NSObjectProtocol] = []
+        private var readScheduled = false
+        private weak var preferredScrollView: NSScrollView?
+
+        init(onDistance: @escaping (CGFloat) -> Void, onUserScroll: @escaping () -> Void) {
+            self.onDistance = onDistance
+            self.onUserScroll = onUserScroll
+        }
+
+        func attach(from view: NSView) {
+            guard let window = view.window else {
+                retryAttach(from: view)
+                return
+            }
+            var candidates: [NSScrollView] = []
+            collectScrollViews(in: window.contentView, into: &candidates)
+            let usable = candidates.filter {
+                $0.documentView != nil && $0.bounds.width >= 300 && $0.hasVerticalScroller
+            }
+            guard !usable.isEmpty else {
+                retryAttach(from: view)
+                return
+            }
+            let oldIDs = observedScrollViews.map(ObjectIdentifier.init)
+            let newIDs = usable.map(ObjectIdentifier.init)
+            if oldIDs != newIDs {
+                detach()
+                observedScrollViews = usable
+                let center = NotificationCenter.default
+                for scroll in usable {
+                    observations.append(center.addObserver(forName: NSScrollView.willStartLiveScrollNotification, object: scroll, queue: .main) { [weak self] _ in self?.onUserScroll() })
+                    observations.append(center.addObserver(forName: NSScrollView.didLiveScrollNotification, object: scroll, queue: .main) { [weak self, weak scroll] _ in self?.scheduleRead(for: scroll) })
+                    observations.append(center.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak self, weak scroll] _ in self?.scheduleRead(for: scroll) })
+                }
+            }
+            scheduleRead()
+        }
+
+        private func retryAttach(from view: NSView) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak view] in
+                guard let self, let view else { return }
+                self.attach(from: view)
+            }
+        }
+
+        private func detach() {
+            let center = NotificationCenter.default
+            observations.forEach(center.removeObserver)
+            observations.removeAll()
+            observedScrollViews.removeAll()
+            preferredScrollView = nil
+        }
+
+        private func collectScrollViews(in view: NSView?, into result: inout [NSScrollView]) {
+            guard let view else { return }
+            if let scroll = view as? NSScrollView { result.append(scroll) }
+            for child in view.subviews { collectScrollViews(in: child, into: &result) }
+        }
+
+        func scheduleRead(for preferred: NSScrollView? = nil) {
+            if let preferred { preferredScrollView = preferred }
+            guard !readScheduled else { return }
+            readScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.readScheduled = false
+                let scroll = self.preferredScrollView ?? self.observedScrollViews.max(by: { lhs, rhs in
+                    (lhs.documentView?.bounds.height ?? 0) < (rhs.documentView?.bounds.height ?? 0)
+                })
+                self.preferredScrollView = nil
+                guard let scroll, let document = scroll.documentView else { return }
+                let distance = max(0, document.bounds.maxY - scroll.contentView.bounds.maxY)
+                self.onDistance(distance)
+            }
+        }
+
+        deinit {
+            detach()
+        }
+    }
 }
 
 private struct ChatInlineError: View {
@@ -1447,7 +1641,7 @@ struct ChatTurnView: View {
             }
             if !skillProposals.isEmpty { InlineSkillProposalPanel(turnID: turn.id, proposals: skillProposals) }
             if let error = turn.errorMessage { Label(error, systemImage: "exclamationmark.triangle.fill").font(.system(size: StudyRocketTheme.bodySize)).foregroundStyle(.orange).padding(.leading, 42) }
-        }.frame(width: canvasWidth, alignment: .leading).id(turn.id)
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -1477,7 +1671,7 @@ struct UserMessageView: View {
                 .frame(minHeight: 16, alignment: .top)
             }
         }
-        .frame(width: canvasWidth, alignment: .trailing)
+        .frame(maxWidth: .infinity, alignment: .trailing)
         .onHover { showTime = $0 }
     }
 }
@@ -1496,7 +1690,7 @@ struct AssistantMessageView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: StudyRocketTheme.readingMaxWidth, alignment: .leading)
                 } else {
-                    CachedAssistantMarkdown(text: message.text)
+                    CachedAssistantMarkdown(messageID: message.id, text: message.text)
                         .frame(maxWidth: StudyRocketTheme.readingMaxWidth, alignment: .leading)
                 }
                 HStack(spacing: 8) {
@@ -1521,43 +1715,125 @@ struct AssistantMessageView: View {
 }
 
 private struct CachedAssistantMarkdown: View {
+    let messageID: String
     let text: String
-    @State private var content: MarkdownContent
+    @State private var document: ChatMarkdownDocument?
+    private static let cache = ChatMarkdownCache()
 
-    init(text: String) {
+    init(messageID: String, text: String) {
+        self.messageID = messageID
         self.text = text
-        _content = State(initialValue: MarkdownContent(text))
     }
 
     var body: some View {
         Group {
-            if Self.containsMarkdownTable(text) {
-                // MarkdownUI tables use GeometryReader anchors that are unstable in a fast-scrolling LazyVStack.
+            if let document {
+                ChatMarkdownDocumentView(document: document)
+            } else {
+                // Keep the completed text visible while the one-time parse is
+                // prepared; a slow parser must never create a white bubble.
                 Text(text)
                     .font(.system(size: StudyRocketTheme.bodySize))
                     .foregroundStyle(.primary)
                     .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Markdown(content)
-                    .markdownTheme(.gitHub)
-                    .markdownTextStyle {
-                        FontSize(StudyRocketTheme.bodySize)
-                        ForegroundColor(.primary)
-                    }
             }
         }
-        .onChange(of: text) { _, newValue in content = MarkdownContent(newValue) }
+        .task(id: "\(messageID):\(ChatMarkdownCache.exactTextHash(text))") {
+            document = await Self.cache.document(for: messageID, text: text)
+        }
+    }
+}
+
+private struct ChatMarkdownDocumentView: View {
+    let document: ChatMarkdownDocument
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            ForEach(Array(document.blocks.enumerated()), id: \.offset) { _, block in
+                blockView(block)
+            }
+        }
     }
 
-    private static func containsMarkdownTable(_ text: String) -> Bool {
-        let lines = text.split(whereSeparator: \.isNewline).map(String.init)
-        guard lines.contains(where: { $0.contains("|") }) else { return false }
-        return lines.contains { line in
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.contains("|") && trimmed.contains("-") else { return false }
-            return trimmed.allSatisfy { character in
-                character == "|" || character == "-" || character == ":" || character == " " || character == "\t"
+    @ViewBuilder
+    private func blockView(_ block: ChatMarkdownBlock) -> some View {
+        switch block {
+        case .paragraph(let content): inlineText(content).font(.system(size: StudyRocketTheme.bodySize)).fixedSize(horizontal: false, vertical: true)
+        case .heading(let level, let content):
+            inlineText(content)
+                .font(.system(size: level <= 2 ? 20 : 17, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+        case .quote(let blocks):
+            ChatMarkdownDocumentView(document: ChatMarkdownDocument(blocks: blocks))
+                .padding(.leading, 12)
+                .overlay(alignment: .leading) { Rectangle().fill(Color.secondary.opacity(0.35)).frame(width: 3) }
+        case .bulletedList(let items):
+            VStack(alignment: .leading, spacing: 5) { ForEach(Array(items.enumerated()), id: \.offset) { _, item in HStack(alignment: .top, spacing: 7) { Text("•"); inlineText(item) } } }
+        case .numberedList(let start, let items):
+            VStack(alignment: .leading, spacing: 5) { ForEach(Array(items.enumerated()), id: \.offset) { offset, item in HStack(alignment: .top, spacing: 7) { Text("\(start + offset)."); inlineText(item) } } }
+        case .taskList(let items):
+            VStack(alignment: .leading, spacing: 5) { ForEach(Array(items.enumerated()), id: \.offset) { _, item in HStack(alignment: .top, spacing: 7) { Image(systemName: item.checked ? "checkmark.square.fill" : "square").foregroundStyle(item.checked ? .secondary : .primary); inlineText(item.content).strikethrough(item.checked, color: .secondary) } } }
+        case .codeBlock(let language, let code):
+            ScrollView(.horizontal, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 5) { if let language { Text(language).font(.caption2).foregroundStyle(.secondary) }; Text(code).font(.system(size: 13, design: .monospaced)).textSelection(.enabled) }
+                    .padding(11)
             }
+            .background(Color.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        case .table(let headers, let rows): tableView(headers: headers, rows: rows)
+        case .divider: Divider()
+        }
+    }
+
+    private func tableView(headers: [[ChatMarkdownInline]], rows: [[[ChatMarkdownInline]]]) -> some View {
+        let columnCount = max(1, max(headers.count, rows.map(\.count).max() ?? 0))
+        return ScrollView(.horizontal, showsIndicators: true) {
+            Grid(horizontalSpacing: 0, verticalSpacing: 0) {
+                GridRow {
+                    ForEach(0..<columnCount, id: \.self) { index in
+                        cellView(index < headers.count ? headers[index] : [], emphasized: true)
+                            .frame(width: 160)
+                    }
+                }
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    GridRow {
+                        ForEach(0..<columnCount, id: \.self) { index in
+                            cellView(index < row.count ? row[index] : [], emphasized: false)
+                                .frame(width: 160)
+                        }
+                    }
+                }
+            }
+            .fixedSize()
+        }
+        .overlay { RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)) }
+    }
+
+    private func cellView(_ content: [ChatMarkdownInline], emphasized: Bool) -> some View {
+        inlineText(content)
+            .font(.system(size: 13, weight: emphasized ? .semibold : .regular))
+            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(emphasized ? Color.secondary.opacity(0.10) : Color.clear)
+            .overlay(alignment: .trailing) { Rectangle().fill(Color.secondary.opacity(0.16)).frame(width: 1) }
+            .overlay(alignment: .bottom) { Rectangle().fill(Color.secondary.opacity(0.16)).frame(height: 1) }
+    }
+
+    private func inlineText(_ inlines: [ChatMarkdownInline]) -> Text {
+        inlines.reduce(Text("") as Text) { result, inline in
+            result + inlineText(inline)
+        }
+    }
+
+    private func inlineText(_ inline: ChatMarkdownInline) -> Text {
+        switch inline {
+        case .text(let value): return Text(value)
+        case .strong(let children): return inlineText(children).bold()
+        case .emphasis(let children): return inlineText(children).italic()
+        case .strikethrough(let children): return inlineText(children).strikethrough()
+        case .code(let value): return Text(value).font(.system(size: 13, design: .monospaced)).foregroundColor(.accentColor)
+        case .link(let children, _, _): return inlineText(children).underline().foregroundColor(.accentColor)
+        case .lineBreak: return Text("\n")
         }
     }
 }
@@ -1588,7 +1864,16 @@ struct ProcessDisclosureView: View {
                     .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel(expanded ? "收起过程，\(messages.count) 条" : "查看过程，\(messages.count) 条").accessibilityHint("双击展开或收起该回合的过程消息")
-            if expanded { VStack(alignment: .leading, spacing: 8) { ForEach(messages) { Text($0.text).font(.system(size: StudyRocketTheme.bodySize)).foregroundStyle(.secondary).padding(.leading, 14) } }.padding(.bottom, 4) }
+            if expanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(messages) { message in
+                        CachedAssistantMarkdown(messageID: message.id, text: message.text)
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 14)
+                    }
+                }
+                .padding(.bottom, 4)
+            }
         }.padding(.leading, 36).frame(maxWidth: StudyRocketTheme.readingMaxWidth + 36, alignment: .leading)
     }
 }

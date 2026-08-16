@@ -85,8 +85,6 @@ final class ChatTranscriptState: ObservableObject {
     @Published var expandedProcessTurnIDs = Set<String>()
     @Published var expandedProposalTurnIDs = Set<String>()
     @Published var scrollRequest: ChatScrollRequest?
-    @Published private(set) var isNearBottom = true
-    @Published private(set) var revision = 0
     @Published private(set) var loadState: ChatHistoryLoadState = .loading
     private var scrollCoordinator = ChatScrollCoordinator()
 
@@ -94,7 +92,6 @@ final class ChatTranscriptState: ObservableObject {
         guard self.turns != turns || loadState != state else { return }
         self.turns = turns
         loadState = state
-        revision &+= 1
     }
 
     func setLoadState(_ state: ChatHistoryLoadState) {
@@ -102,19 +99,22 @@ final class ChatTranscriptState: ObservableObject {
         loadState = state
     }
 
-    func updateNearBottom(_ value: Bool) {
-        guard isNearBottom != value else { return }
-        isNearBottom = value
-        if !value { scrollCoordinator.reset() }
-    }
-
     func requestScroll(_ request: ChatScrollRequest) {
-        guard scrollCoordinator.enqueue(target: request.target, force: request.force) else { return }
+        guard scrollCoordinator.enqueue(target: request.target, force: request.force, id: request.id) else { return }
         scrollRequest = request
     }
 
-    func markChanged() {
-        revision &+= 1
+    @discardableResult
+    func consumeScrollRequest(id: UUID) -> ChatScrollRequest? {
+        guard let request = scrollRequest, request.id == id,
+              scrollCoordinator.consume(id: id) != nil else { return nil }
+        scrollRequest = nil
+        return request
+    }
+
+    func cancelScrollRequests() {
+        scrollCoordinator.reset()
+        scrollRequest = nil
     }
 
     func clearForNewRepository() {
@@ -123,10 +123,8 @@ final class ChatTranscriptState: ObservableObject {
         skillProposals.removeAll()
         expandedProcessTurnIDs.removeAll()
         expandedProposalTurnIDs.removeAll()
-        scrollRequest = nil
-        scrollCoordinator.reset()
+        cancelScrollRequests()
         loadState = .loading
-        revision &+= 1
     }
 }
 
@@ -223,13 +221,13 @@ final class CodexAppServerClient: NSObject {
 
         var legacyHistory: [ChatMessage] = []
         if let legacyThreadID, legacyThreadID != threadID {
-            let response = try await request(method: "thread/read", params: [
+            if let response = try? await request(method: "thread/read", params: [
                 "threadId": legacyThreadID, "includeTurns": true
-            ])
-            let legacyThread = try resultObject(response)
-            legacyHistory = await Task.detached(priority: .utility) {
-                self.parseHistory(legacyThread["thread"] as? [String: Any]) ?? []
-            }.value
+            ]), let legacyThread = try? resultObject(response) {
+                legacyHistory = await Task.detached(priority: .utility) {
+                    self.parseHistory(legacyThread["thread"] as? [String: Any]) ?? []
+                }.value
+            }
         }
 
         let thread: [String: Any]
@@ -237,11 +235,7 @@ final class CodexAppServerClient: NSObject {
             let response = try await request(method: "thread/resume", params: [
                 "threadId": threadID, "includeTurns": true, "cwd": root.path,
                 "sandbox": "read-only", "approvalPolicy": "never", "runtimeWorkspaceRoots": [root.path],
-                "developerInstructions": Self.developerInstructions(),
-                // Re-register the same namespace when resuming the fixed task.
-                // Without this, an older task can resolve a proposal call with a
-                // null dynamic-tool namespace even though thread/start is valid.
-                "dynamicTools": Self.dynamicTools
+                "developerInstructions": Self.developerInstructions()
             ])
             thread = try resultObject(response)
             currentThreadID = threadID
@@ -262,7 +256,7 @@ final class CodexAppServerClient: NSObject {
         let history = (legacyHistory + currentHistory).sorted { $0.date < $1.date }
         var turnOrder: [String] = []
         for id in history.compactMap(\.turnID) where !turnOrder.contains(id) { turnOrder.append(id) }
-        let recentTurnIDs = Set(turnOrder.suffix(20))
+        let recentTurnIDs = Set(turnOrder.suffix(10))
         onHistory?(history.filter { $0.turnID.map(recentTurnIDs.contains) ?? false })
         return currentThreadID!
     }
@@ -353,7 +347,8 @@ final class CodexAppServerClient: NSObject {
             let phase = ChatMessagePhase(rawValue: item["phase"] as? String ?? "") ?? .unknown
             streamItems[itemID] = ("", phase)
         case "item/agentMessage/delta":
-            guard matchesCurrentTurn(params), let itemID = params["itemId"] as? String, let delta = params["delta"] as? String else { return }
+            guard matchesCurrentTurn(params), let itemID = params["itemId"] as? String, let delta = params["delta"] as? String,
+                  !completedItems.contains(itemID) else { return }
             let phase = streamItems[itemID]?.phase ?? .unknown
             streamItems[itemID, default: ("", phase)].text += delta
             bufferDelta(turnID: activeTurnID!, itemID: itemID, text: streamItems[itemID]?.text ?? delta, phase: phase)
@@ -482,26 +477,6 @@ final class CodexAppServerClient: NSObject {
         return result.isEmpty ? nil : result
     }
 
-    static let dynamicTools: [[String: Any]] = [[
-        "type": "namespace",
-        "name": StudyRocketDynamicToolContract.namespace,
-        "description": "StudyRocket 应用的只读草案工具。调用只会建立待确认的差异，绝不直接写文件。",
-        "tools": [
-            [
-                "type": "function",
-                "name": StudyRocketDynamicToolContract.proposalTool,
-                "description": "提出对学业 Markdown 的修改草案。应用会展示差异并等待用户确认。",
-                "inputSchema": ["type": "object", "properties": ["path": ["type": "string", "description": "仓库内 Markdown 相对路径"], "content": ["type": "string", "description": "完整候选文件正文"], "reason": ["type": "string", "description": "修改理由"]], "required": ["path", "content", "reason"]]
-            ],
-            [
-                "type": "function",
-                "name": StudyRocketDynamicToolContract.skillProposalTool,
-                "description": "仅在周复盘有稳定证据时提出现有 Skill 的修改草案；用户必须确认。",
-                "inputSchema": ["type": "object", "properties": ["path": ["type": "string"], "content": ["type": "string"], "reason": ["type": "string"]], "required": ["path", "content", "reason"]]
-            ]
-        ]
-    ]]
-
     static func developerInstructions(legacyHistory: [ChatMessage] = []) -> String {
         let continuity = legacyContinuity(from: legacyHistory)
         return """
@@ -543,18 +518,20 @@ final class StudyChatStore: ObservableObject {
     @Published private(set) var threadID: String?
     private let client = CodexAppServerClient()
     private let hostClient = StudyRocketHostClient()
-    private let hostThreadID = "019ff539-bc1a-7b73-9a29-6340b47690e0"
+    private let taskDescriptorStore = StudyRocketTaskDescriptorStore()
     private var root: URL?
     private var usingHost = false
     private var hostProposalIDs: [UUID: String] = [:]
     private var hostSkillProposalIDs: [UUID: String] = [:]
     private var hostEventsTask: Task<Void, Never>?
     private var hostTurnTask: Task<Void, Never>?
+    private var hostReconnectFailures = 0
     private var pendingPrompt: String?
     private var pendingUnknownMessages: [String: [ChatMessage]] = [:]
     private var pendingSubmissionID: String?
-    private var pendingMigration: (root: URL, newThreadID: String, legacyThreadID: String)?
     private var scrollPolicy = ChatScrollPolicy()
+    private var streamFollowTask: Task<Void, Never>?
+    private var pendingStreamFollowTarget: String?
     private var connectionGeneration = 0
 #if DEBUG
     private var stressFixtureTask: Task<Void, Never>?
@@ -571,7 +548,6 @@ final class StudyChatStore: ObservableObject {
     init() {
         client.onTurnStarted = { [weak self] turnID, startedAt in
             guard let self else { return }
-            self.commitPendingMigration()
             self.assignPendingSubmission(to: turnID, startedAt: startedAt)
         }
         client.onReplyDelta = { [weak self] turnID, itemID, delta, phase in
@@ -623,8 +599,45 @@ final class StudyChatStore: ObservableObject {
 
     private func publishHistory(_ history: [ChatMessage]) {
         let presented = Self.present(history)
-        transcript.replaceHistory(presented)
+        if transcript.turns.isEmpty {
+            transcript.replaceHistory(presented)
+        } else {
+            transcript.replaceHistory(Self.merge(transcript.turns, with: presented))
+        }
         transcript.setLoadState(.loaded)
+    }
+
+    private static func merge(_ current: [ChatTurnPresentation], with authoritative: [ChatTurnPresentation]) -> [ChatTurnPresentation] {
+        var merged = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
+        for historyTurn in authoritative {
+            guard var turn = merged[historyTurn.id] else {
+                merged[historyTurn.id] = historyTurn
+                continue
+            }
+            if let user = historyTurn.userMessage { turn.userMessage = user }
+            for message in historyTurn.processMessages {
+                turn.processMessages.removeAll { $0.id == message.id }
+                turn.processMessages.append(message)
+            }
+            for message in historyTurn.finalMessages {
+                turn.finalMessages.removeAll { $0.id == message.id }
+                turn.finalMessages.append(message)
+            }
+            if historyTurn.status != .inProgress {
+                // A terminal history snapshot is authoritative. Any local
+                // streaming placeholder not present in that snapshot is a
+                // late/incomplete event and must not survive as streaming UI.
+                let processIDs = Set(historyTurn.processMessages.map(\.id))
+                let finalIDs = Set(historyTurn.finalMessages.map(\.id))
+                turn.processMessages.removeAll { $0.isStreaming && !processIDs.contains($0.id) }
+                turn.finalMessages.removeAll { $0.isStreaming && !finalIDs.contains($0.id) }
+                turn.status = historyTurn.status
+                turn.completedAt = historyTurn.completedAt
+                turn.errorMessage = historyTurn.errorMessage
+            }
+            merged[historyTurn.id] = turn
+        }
+        return Array(merged.values.sorted { $0.date < $1.date }.suffix(10))
     }
 
     private static func messages(from response: ChatHistoryResponse) -> [ChatMessage] {
@@ -642,7 +655,6 @@ final class StudyChatStore: ObservableObject {
     private func ensureTurn(_ id: String, date: Date? = nil) -> Int {
         if let index = turnIndex(id) { return index }
         transcript.turns.append(ChatTurnPresentation(id: id, startedAt: date))
-        transcript.markChanged()
         return transcript.turns.count - 1
     }
 
@@ -651,7 +663,6 @@ final class StudyChatStore: ObservableObject {
         var turn = transcript.turns.remove(at: index)
         turn = ChatTurnPresentation(id: turnID, userMessage: turn.userMessage.map { ChatMessage(id: $0.id, role: $0.role, text: $0.text, date: startedAt ?? $0.date, turnID: turnID, phase: $0.phase, turnState: .inProgress) }, finalMessages: turn.finalMessages, processMessages: turn.processMessages, status: .inProgress, startedAt: startedAt ?? turn.startedAt, completedAt: nil)
         transcript.turns.insert(turn, at: index)
-        transcript.markChanged()
         self.pendingSubmissionID = nil
     }
 
@@ -671,6 +682,7 @@ final class StudyChatStore: ObservableObject {
             } else { turn.finalMessages.append(partial) }
         }
         transcript.turns[index] = turn
+        scheduleStreamingFollow(turnID: turnID)
     }
 
     private func appendProcess(_ message: ChatMessage) {
@@ -754,16 +766,18 @@ final class StudyChatStore: ObservableObject {
 #endif
         let rootChanged = self.root?.standardizedFileURL != root.standardizedFileURL
         self.root = root.standardizedFileURL
-        if rootChanged || forceCreate { transcript.clearForNewRepository() }
+        if rootChanged || forceCreate {
+            transcript.clearForNewRepository()
+            scrollPolicy = ChatScrollPolicy()
+        }
         transcript.setLoadState(.loading)
         pendingUnknownMessages.removeAll(); errorMessage = nil; setState(.connecting)
         let key = threadKey(for: root)
+        let descriptor = forceCreate ? nil : taskDescriptorStore.load(for: root)
         let stored = forceCreate ? nil : UserDefaults.standard.string(forKey: key)
-        let storedVersion = UserDefaults.standard.integer(forKey: threadProtocolKey(for: root))
-        let shouldMigrate = !forceCreate && StudyRocketThreadProtocol.requiresMigration(storedThreadID: stored, storedVersion: storedVersion)
-        let legacy = shouldMigrate ? stored : UserDefaults.standard.string(forKey: legacyThreadKey(for: root))
-        let active = shouldMigrate ? nil : stored
-        pendingMigration = nil
+        let legacyStored = forceCreate ? nil : UserDefaults.standard.string(forKey: legacyThreadKey(for: root))
+        let active = descriptor?.protocolVersion == StudyRocketThreadProtocol.currentVersion ? descriptor?.threadID : nil
+        let legacy = active == nil ? (descriptor?.threadID ?? stored ?? legacyStored) : nil
         threadID = active
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--chat-stress-fixture") {
@@ -777,10 +791,12 @@ final class StudyChatStore: ObservableObject {
         // stdio path below so the desktop app remains usable by itself.
         if !forceCreate, await hostClient.waitUntilAvailable(for: root) {
             do {
+                let health = try await hostClient.health(for: root)
                 let history = try await hostClient.history()
-                guard generation == connectionGeneration else { return }
+                guard generation == connectionGeneration, let activeThreadID = health.activeThreadID else { throw StudyChatError.protocolError("StudyRocket Host 没有返回学业任务 ID。") }
                 usingHost = true
-                threadID = hostThreadID
+                hostReconnectFailures = 0
+                threadID = activeThreadID
                 publishHistory(Self.messages(from: history))
                 startHostEvents(generation: generation)
                 await refreshHostProposals()
@@ -796,13 +812,10 @@ final class StudyChatStore: ObservableObject {
             let id = try await client.connect(root: root, threadID: active, legacyThreadID: legacy)
             guard generation == connectionGeneration else { return }
             threadID = id
-            if shouldMigrate, let legacy {
-                pendingMigration = (root.standardizedFileURL, id, legacy)
-            } else {
-                UserDefaults.standard.set(id, forKey: key)
-                UserDefaults.standard.set(StudyRocketThreadProtocol.currentVersion, forKey: threadProtocolKey(for: root))
-                if let legacy { UserDefaults.standard.set(legacy, forKey: legacyThreadKey(for: root)) }
-            }
+            if active == nil { try? taskDescriptorStore.save(StudyRocketTaskDescriptor(threadID: id), for: root) }
+            UserDefaults.standard.set(id, forKey: key)
+            UserDefaults.standard.set(StudyRocketThreadProtocol.currentVersion, forKey: threadProtocolKey(for: root))
+            if let legacy { UserDefaults.standard.set(legacy, forKey: legacyThreadKey(for: root)) }
             setState(.connected)
             if let pendingPrompt { draft = pendingPrompt; self.pendingPrompt = nil }
         } catch {
@@ -831,16 +844,9 @@ final class StudyChatStore: ObservableObject {
         UserDefaults.standard.removeObject(forKey: threadKey(for: root))
         UserDefaults.standard.removeObject(forKey: legacyThreadKey(for: root))
         UserDefaults.standard.set(StudyRocketThreadProtocol.currentVersion, forKey: threadProtocolKey(for: root))
+        taskDescriptorStore.remove(for: root)
         client.disconnect(); threadID = nil
         await connectInternal(to: root, forceCreate: true)
-    }
-
-    private func commitPendingMigration() {
-        guard let migration = pendingMigration else { return }
-        UserDefaults.standard.set(migration.newThreadID, forKey: threadKey(for: migration.root))
-        UserDefaults.standard.set(StudyRocketThreadProtocol.currentVersion, forKey: threadProtocolKey(for: migration.root))
-        UserDefaults.standard.set(migration.legacyThreadID, forKey: legacyThreadKey(for: migration.root))
-        pendingMigration = nil
     }
 
     var canCreateNewTask: Bool { root != nil && connectionState == .failed }
@@ -856,14 +862,33 @@ final class StudyChatStore: ObservableObject {
         else { transcript.expandedProposalTurnIDs.insert(turnID) }
     }
 
-    func updateScrollPosition(isNearBottom: Bool) {
-        guard scrollPolicy.update(isNearBottom: isNearBottom) else { return }
-        transcript.updateNearBottom(scrollPolicy.isNearBottom)
+    @discardableResult
+    func updateScrollPosition(distanceFromBottom: CGFloat) -> Bool {
+        let changed = scrollPolicy.update(distanceFromBottom: distanceFromBottom)
+        if changed && !scrollPolicy.isNearBottom {
+            cancelStreamingFollow()
+            transcript.cancelScrollRequests()
+        }
+        return changed
+    }
+
+    /// A live user scroll wins over a queued/programmatic follow request.
+    /// Keep the policy detached until the distance hysteresis explicitly
+    /// reattaches it.
+    func userDidScroll() {
+        cancelStreamingFollow()
+        scrollPolicy.update(isNearBottom: false)
+        transcript.cancelScrollRequests()
+    }
+
+    private func cancelStreamingFollow() {
+        streamFollowTask?.cancel()
+        streamFollowTask = nil
+        pendingStreamFollowTarget = nil
     }
 
     func requestScrollToBottom(force: Bool = true) {
         scrollPolicy.forceToBottom()
-        transcript.updateNearBottom(scrollPolicy.isNearBottom)
         transcript.requestScroll(ChatScrollRequest(target: "chat-bottom", force: force))
     }
 
@@ -888,11 +913,11 @@ final class StudyChatStore: ObservableObject {
             let localID = "local-\(UUID().uuidString)"
             pendingSubmissionID = localID
             transcript.turns.append(ChatTurnPresentation(id: localID, userMessage: ChatMessage(id: UUID().uuidString, role: .user, text: text, date: .now, turnID: localID, turnState: .inProgress), status: .inProgress, startedAt: .now))
-            transcript.markChanged()
             requestScroll(to: localID, force: true)
         }
         draft = ""; errorMessage = nil; isBusy = true; setState(.thinking); pendingUnknownMessages.removeAll()
         if usingHost {
+            hostStreamText.reset()
             sendThroughHost(text)
             return
         }
@@ -920,10 +945,26 @@ final class StudyChatStore: ObservableObject {
         hostEventsTask?.cancel(); hostEventsTask = nil
         hostStreamText.reset()
         hostTurnTask?.cancel(); hostTurnTask = nil; hostStreamText.reset(); usingHost = false
+        streamFollowTask?.cancel(); streamFollowTask = nil; pendingStreamFollowTarget = nil
+        scrollPolicy = ChatScrollPolicy()
 #if DEBUG
         stressFixtureTask?.cancel(); stressFixtureTask = nil
 #endif
         client.disconnect(); isBusy = false; setState(.disconnected)
+    }
+
+    private func scheduleStreamingFollow(turnID: String) {
+        guard scrollPolicy.shouldFollowIncrementalChanges() else { return }
+        pendingStreamFollowTarget = turnID
+        guard streamFollowTask == nil else { return }
+        streamFollowTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled, let self else { return }
+            let target = self.pendingStreamFollowTarget
+            self.pendingStreamFollowTarget = nil
+            self.streamFollowTask = nil
+            if let target { self.requestScroll(to: target, force: false) }
+        }
     }
 
 #if DEBUG
@@ -943,11 +984,10 @@ final class StudyChatStore: ObservableObject {
                     let turnID = "stress-live-\(cycle)"
                     let user = ChatMessage(id: "\(turnID)-user", role: .user, text: "压力夹具第 \(cycle) 轮：请继续整理这份长文本。", date: .now, turnID: turnID, turnState: .inProgress)
                     self.transcript.turns.append(ChatTurnPresentation(id: turnID, userMessage: user, status: .inProgress, startedAt: .now))
-                    if self.transcript.turns.count > 20 { self.transcript.turns.removeFirst(self.transcript.turns.count - 20) }
-                    self.transcript.markChanged()
+                    if self.transcript.turns.count > 10 { self.transcript.turns.removeFirst(self.transcript.turns.count - 10) }
                     self.isBusy = true
                     self.setState(.thinking)
-                    let answer = "流式压力夹具第 \(cycle) 轮。这里包含一段较长的回答，用于模拟持续布局：" + String(repeating: "滚动期间保持稳定消息 ID，避免整棵消息树重新计算。 ", count: 10) + "\n\n| 字段 | 值 |\n| --- | --- |\n| cycle | \(cycle) |\n| mode | debug |\n\n```swift\nlet stableID = \"stress-answer-\\(cycle)\"\n```"
+                    let answer = "流式压力夹具第 \(cycle) 轮。这里包含一段较长的回答，用于模拟持续布局：" + String(repeating: "滚动期间保持稳定消息 ID，避免整棵消息树重新计算。 ", count: 10) + "\n\n| 字段 | 值 | 预期 | 说明 |\n| --- | --- | --- | --- |\n| cycle | \(cycle) | 20+ | debug |\n| mode | streaming | stable | 120ms 合并 |\n\n```swift\nlet stableID = \"stress-answer-\\(cycle)\"\nlet wideColumns = Array(repeating: \"long-value\", count: 12)\n```"
                     var accumulated = ""
                     for chunk in Self.stressChunks(answer, size: 18) {
                         try await Task.sleep(for: .milliseconds(70))
@@ -976,8 +1016,8 @@ final class StudyChatStore: ObservableObject {
         for index in 1...20 {
             let turnID = "stress-history-\(index)"
             messages.append(ChatMessage(id: "\(turnID)-user", role: .user, text: "请分析第 \(index) 份课程材料，并给出可执行的复习步骤。", date: Date(timeIntervalSince1970: 1_750_000_000 + Double(index * 60)), turnID: turnID, turnState: .completed))
-            messages.append(ChatMessage(id: "\(turnID)-process", role: .assistant, text: "正在整理课程材料、提取术语并检查交付物边界。\n\n| 检查项 | 结果 |\n| --- | --- |\n| 课程 | 已识别 |\n| 资料 | 已加载 |", date: Date(timeIntervalSince1970: 1_750_000_030 + Double(index * 60)), turnID: turnID, phase: .commentary, turnState: .completed))
-            messages.append(ChatMessage(id: "\(turnID)-answer", role: .assistant, text: "第 \(index) 份材料的复习建议：\n\n" + String(repeating: "先完成一个可验证的小交付物，再回看错误并归档。 ", count: 14) + "\n\n```python\nsummary = build_revision_plan(materials)\nprint(summary)\n```", date: Date(timeIntervalSince1970: 1_750_000_060 + Double(index * 60)), turnID: turnID, phase: .finalAnswer, turnState: .completed))
+            messages.append(ChatMessage(id: "\(turnID)-process", role: .assistant, text: "## 处理过程\n\n正在整理课程材料、提取术语并检查交付物边界。\n\n| 检查项 | 结果 | 证据 | 负责人 | 状态 |\n| --- | --- | --- | --- | --- |\n| 课程 | 已识别 | 课表 | 助理 | 已加载 |\n| 资料 | 已加载 | PDF 提取文本 | 助理 | 待核对 |\n\n- [ ] 检查引用\n- [x] 保留原始事实", date: Date(timeIntervalSince1970: 1_750_000_030 + Double(index * 60)), turnID: turnID, phase: .commentary, turnState: .completed))
+            messages.append(ChatMessage(id: "\(turnID)-answer", role: .assistant, text: "# 第 \(index) 份材料的复习建议\n\n" + String(repeating: "先完成一个可验证的小交付物，再回看错误并归档。 ", count: 14) + "\n\n| 指标 | 本轮 | 目标 | 备注 |\n| --- | --- | --- | --- |\n| 术语 | 12 | 15 | 继续补齐 |\n| 自测 | 2 | 3 | 明天复做 |\n\n```python\nsummary = build_revision_plan(materials)\nfor section in summary.sections:\n    print(section.title, section.deliverables)\n```", date: Date(timeIntervalSince1970: 1_750_000_060 + Double(index * 60)), turnID: turnID, phase: .finalAnswer, turnState: .completed))
         }
         return messages
     }
@@ -1016,37 +1056,69 @@ final class StudyChatStore: ObservableObject {
         hostEventsTask?.cancel()
         hostEventsTask = Task { [weak self] in
             guard let self else { return }
+            var retryIndex = 0
             while !Task.isCancelled {
+                var receivedEvent = false
+                var streamEnded = false
                 do {
                     for try await event in await hostClient.events() {
                         try Task.checkCancellation()
                         guard generation == connectionGeneration else { return }
+                        if !receivedEvent {
+                            receivedEvent = true
+                            self.hostReconnectFailures = 0
+                            retryIndex = 0
+                            Task { [weak self] in await self?.reconcileHostHistory(finalState: .inProgress, generation: generation) }
+                        }
                         consumeHostEvent(event)
                     }
+                    streamEnded = true
                 } catch is CancellationError {
                     return
                 } catch {
                     guard generation == connectionGeneration else { return }
-                    isBusy = false
-                    setState(.failed)
-                    errorMessage = "StudyRocket Host 的实时对话连接已断开，历史记录仍保留。"
+                    hostReconnectFailures += 1
+                    if hostReconnectFailures >= 3 {
+                        setState(.failed)
+                        errorMessage = "StudyRocket Host 的实时对话连接连续失败 3 次，历史记录仍保留。"
+                    } else {
+                        setState(.reconnecting)
+                        errorMessage = nil
+                    }
                 }
-                try? await Task.sleep(for: .milliseconds(500))
+                if streamEnded, !Task.isCancelled, generation == connectionGeneration {
+                    hostReconnectFailures += 1
+                    if hostReconnectFailures >= 3 {
+                        setState(.failed)
+                        errorMessage = "StudyRocket Host 的实时对话连接连续失败 3 次，历史记录仍保留。"
+                    } else {
+                        setState(.reconnecting)
+                        errorMessage = nil
+                    }
+                }
+                let delays: [Duration] = [.milliseconds(500), .seconds(1), .seconds(2), .seconds(5)]
+                let delay = delays[min(retryIndex, delays.count - 1)]
+                retryIndex += 1
+                try? await Task.sleep(for: delay)
             }
         }
     }
 
     private func consumeHostEvent(_ event: HostEventEnvelope) {
-        guard usingHost, let chatEvent = event.chat else { return }
+        guard usingHost else { return }
+        if event.kind == "heartbeat" { return }
+        guard let chatEvent = event.chat else { return }
         switch chatEvent.kind {
         case "delta":
             guard let turnID = chatEvent.turnID, let itemID = chatEvent.itemID, let delta = chatEvent.text else { return }
+            let key = "\(turnID)-\(itemID)"
+            guard !hostStreamText.completedItemIDs.contains(key) else { return }
             if pendingSubmissionID != nil { assignPendingSubmission(to: turnID, startedAt: .now) }
             replaceStreaming(turnID: turnID, itemID: itemID, text: accumulatedHostText(turnID: turnID, itemID: itemID, delta: delta), phase: ChatMessagePhase(rawValue: chatEvent.phase ?? "") ?? .unknown)
         case "item_completed":
             guard let turnID = chatEvent.turnID, let itemID = chatEvent.itemID, let text = chatEvent.text else { return }
             let phase = ChatMessagePhase(rawValue: chatEvent.phase ?? "") ?? .unknown
-            _ = hostStreamText.complete(itemID: "\(turnID)-\(itemID)", text: text)
+            guard hostStreamText.complete(itemID: "\(turnID)-\(itemID)", text: text) != nil else { return }
             if phase == .commentary {
                 appendProcess(ChatMessage(id: itemID, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase))
             } else {
@@ -1056,9 +1128,11 @@ final class StudyChatStore: ObservableObject {
             guard let status = chatEvent.status else { return }
             switch status {
             case "completed":
-                Task { await reconcileHostHistory(finalState: .completed) }
+                let generation = connectionGeneration
+                Task { await reconcileHostHistory(finalState: .completed, generation: generation) }
             case "interrupted":
-                Task { await reconcileHostHistory(finalState: .interrupted) }
+                let generation = connectionGeneration
+                Task { await reconcileHostHistory(finalState: .interrupted, generation: generation) }
             case "failed":
                 isBusy = false
                 setState(.failed)
@@ -1077,14 +1151,16 @@ final class StudyChatStore: ObservableObject {
         return hostStreamText.append(itemID: key, delta: delta) ?? hostStreamText.streams[key] ?? delta
     }
 
-    private func reconcileHostHistory(finalState: ChatTurnState) async {
-        guard usingHost else { return }
+    private func reconcileHostHistory(finalState: ChatTurnState, generation: Int? = nil) async {
+        guard usingHost, (generation == nil || generation == connectionGeneration) else { return }
         do {
             let response = try await hostClient.history()
-            guard usingHost else { return }
+            guard usingHost, (generation == nil || generation == connectionGeneration) else { return }
             publishHistory(Self.messages(from: response))
-            hostStreamText.reset()
-            isBusy = false
+            if finalState != .inProgress {
+                hostStreamText.clearStreams()
+                isBusy = false
+            }
             switch finalState {
             case .completed: setState(.connected)
             case .interrupted: setState(.stopped)

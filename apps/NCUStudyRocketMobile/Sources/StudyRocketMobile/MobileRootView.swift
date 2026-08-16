@@ -73,32 +73,44 @@ private struct MobileHomeView: View {
 
     var body: some View {
         NavigationStack {
-            homeContent
-                .background(Color(uiColor: .systemGroupedBackground))
+            Group {
+                if session.snapshot?.home == nil, session.savedEndpoint == nil {
+                    unconfiguredContent
+                } else {
+                    homeContent
+                }
+            }
+                .background(MobileTheme.groupedBackground)
+                #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
+                #endif
+        }
+    }
+
+    private var unconfiguredContent: some View {
+        GeometryReader { proxy in
+            VStack(alignment: .leading, spacing: 18) {
+                homeHeader
+                quickActions
+
+                Spacer(minLength: 0)
+
+                MobileUnframedConnectionPrompt {
+                    onNavigate(4)
+                }
+                .frame(maxWidth: .infinity)
+
+                Spacer(minLength: 0)
+            }
+            .padding(MobileTheme.pageInset)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
         }
     }
 
     private var homeContent: some View {
         ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    HStack(alignment: .top, spacing: 12) {
-                        MobileBrandMark(size: 46)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("NCU StudyRocket")
-                                .font(.system(.title2, design: .rounded, weight: .bold))
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.82)
-                            HStack(alignment: .center, spacing: 8) {
-                                Text(session.snapshot?.home.dateLabel ?? "你的学习工作台")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                MobileStatusBanner(session: session)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    homeHeader
                     if let home = session.snapshot?.home {
                         MobileSurface {
                             VStack(alignment: .leading, spacing: 12) {
@@ -121,91 +133,90 @@ private struct MobileHomeView: View {
                         MobileSurface {
                             VStack(alignment: .leading, spacing: 14) {
                                 MobileSectionHeading(title: "今日安排", detail: "上午 · 中午 · 晚上", icon: "point.3.connected.trianglepath.dotted")
-                                MobileDayRail(periods: home.periods)
+                                MobileTodayChecklist(periods: home.periods)
                             }
                         }
 
                         MobileSurface {
                             VStack(alignment: .leading, spacing: 10) {
                                 MobileSectionHeading(title: "本周交付物", detail: "不含今日安排", icon: "checklist")
-                                if home.visibleDeliveries.isEmpty {
-                                    Text("除今日安排外，本周暂无其他交付物")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                } else {
-                                    ForEach(home.visibleDeliveries) { delivery in
-                                        Button {
-                                            Task { await session.toggleDelivery(delivery) }
-                                        } label: {
-                                            HStack(alignment: .top, spacing: 10) {
-                                                Image(systemName: delivery.isCompleted ? "checkmark.circle.fill" : "circle")
-                                                    .foregroundStyle(delivery.isCompleted ? MobileTheme.completion : .secondary)
-                                                    .padding(.top, 1)
-                                                Text(delivery.text)
-                                                    .font(.subheadline)
-                                                    .foregroundStyle(delivery.isCompleted ? .secondary : .primary)
-                                                    .strikethrough(delivery.isCompleted, color: .secondary)
-                                                    .fixedSize(horizontal: false, vertical: true)
-                                                Spacer(minLength: 0)
-                                            }
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .padding(.vertical, 5)
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                }
+                                MobileDeliveryOverview(
+                                    deliveries: home.visibleDeliveries,
+                                    completed: home.completedDeliveries,
+                                    total: home.totalDeliveries
+                                )
                             }
                         }
                     } else {
-                        if session.savedEndpoint == nil {
-                            MobileHomeConnectionCard { onNavigate(4) }
-                        } else {
-                            MobileSurface {
-                                VStack(alignment: .leading, spacing: 14) {
-                                    MobileInlineNotice(text: "暂时无法连接 Mac Host。确认 Host 已启动、Tailscale 已连接并已启用 Serve。", symbol: "wifi.exclamationmark", tint: .orange)
-                                    HStack {
-                                        Button("刷新") { Task { await session.refresh() } }
-                                        Button("检查连接设置") { onNavigate(4) }
-                                    }
-                                    .buttonStyle(.bordered)
+                        MobileSurface {
+                            VStack(alignment: .leading, spacing: 14) {
+                                MobileInlineNotice(text: "暂时无法连接 Mac Host。确认 Host 已启动、Tailscale 已连接并已启用 Serve。", symbol: "wifi.exclamationmark", tint: .orange)
+                                HStack {
+                                    Button("刷新") { Task { await session.refresh() } }
+                                    Button("检查连接设置") { onNavigate(4) }
                                 }
+                                .buttonStyle(.bordered)
                             }
                         }
                     }
 
-                    HStack(spacing: 8) {
-                        MobileQuickAction(title: "学业对话", symbol: "bubble.left.and.bubble.right", action: { onNavigate(1) })
-                        MobileQuickAction(title: "周计划", symbol: "calendar", action: { onNavigate(2) })
-                        MobileQuickAction(title: "写日结", symbol: "checkmark.circle", action: { onNavigate(3) })
-                    }
+                    quickActions
                 }
                 .padding(MobileTheme.pageInset)
             }
             .refreshable { await session.refresh() }
     }
+
+    private var homeHeader: some View {
+        HStack(alignment: .top, spacing: 12) {
+            MobileBrandMark(size: 46)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("NCU StudyRocket")
+                    .font(.system(.title2, design: .rounded, weight: .bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                HStack(alignment: .center, spacing: 8) {
+                    Text(session.snapshot?.home.dateLabel ?? "你的学习工作台")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    MobileStatusBanner(session: session)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var quickActions: some View {
+        HStack(spacing: 8) {
+            MobileQuickAction(title: "学业对话", symbol: "bubble.left.and.bubble.right", action: { onNavigate(1) })
+            MobileQuickAction(title: "周计划", symbol: "calendar", action: { onNavigate(2) })
+            MobileQuickAction(title: "写日结", symbol: "checkmark.circle", action: { onNavigate(3) })
+        }
+    }
 }
 
-private struct MobileHomeConnectionCard: View {
+private struct MobileUnframedConnectionPrompt: View {
     let startConnection: () -> Void
 
     var body: some View {
-        MobileSurface {
-            VStack(alignment: .leading, spacing: 14) {
-                Image(systemName: "desktopcomputer.and.arrow.down")
-                    .font(.system(size: 46, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .symbolRenderingMode(.hierarchical)
-                    .accessibilityHidden(true)
-                Text("连接你的 Mac Host")
-                    .font(.system(.title3, design: .rounded, weight: .bold))
-                Text("从 Mac 的 StudyRocket Host 复制私有 HTTPS 地址和一次性配对码，即可在手机继续查看计划、复盘和对话。")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button("开始连接", action: startConnection)
-                    .buttonStyle(.borderedProminent)
-            }
+        VStack(spacing: 14) {
+            Image(systemName: "desktopcomputer.and.arrow.down")
+                .font(.system(size: 52, weight: .medium))
+                .foregroundStyle(.secondary)
+                .symbolRenderingMode(.hierarchical)
+                .accessibilityHidden(true)
+            Text("连接 Mac Host")
+                .font(.system(.title2, design: .rounded, weight: .bold))
+            Text("首次使用需要填写 Mac 的私有 HTTPS 地址，并输入 Host 窗口中的一次性配对码。")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("开始连接", action: startConnection)
+                .buttonStyle(.borderedProminent)
         }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: 340)
     }
 }
 
@@ -293,7 +304,7 @@ private struct MobileChatView: View {
                                 .padding(.horizontal, MobileTheme.pageInset)
                                 .padding(.vertical, 18)
                             }
-                            .background(Color(uiColor: .systemGroupedBackground))
+                            .background(MobileTheme.groupedBackground)
                             .coordinateSpace(name: "mobile-chat-scroll")
                             .onPreferenceChange(MobileChatBottomPreference.self) { bottomY in
                                 showJumpToLatest = bottomY > container.size.height + 72
@@ -352,7 +363,9 @@ private struct MobileChatView: View {
                 .background(.bar)
             }
             .navigationTitle("学业对话")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
         }
     }
 }
@@ -435,20 +448,60 @@ private struct MobileChatMessage: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         } else {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
                 MobileBrandMark(size: 26)
-                    .alignmentGuide(.firstTextBaseline) { dimension in dimension[VerticalAlignment.center] }
-                Markdown(message.text)
-                    .markdownTheme(.gitHub)
-                    .markdownTextStyle {
-                        FontSize(15)
-                        ForegroundColor(.primary)
-                    }
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+                MobileMarkdownView(text: message.text)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+/// MarkdownUI's default table layout measures itself against the narrowest
+/// available width on iPhone.  Keep normal prose flexible, but give a table a
+/// stable column width inside a native horizontal scroller so it never forces
+/// every character into its own line or overlaps the next message.
+private struct MobileMarkdownView: View {
+    let text: String
+
+    private var blocks: [StudyRocketMarkdownBlock] {
+        StudyRocketMarkdownParser.blocks(from: text)
+    }
+
+    @ViewBuilder
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                switch block {
+                case .prose(let value):
+                    markdown(value)
+                case .table(let value, let columns):
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("左右滑动查看完整表格")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .accessibilityHint("横向滚动可查看表格的全部列")
+                        ScrollView(.horizontal, showsIndicators: true) {
+                            markdown(value)
+                                .frame(minWidth: CGFloat(columns) * 144, alignment: .leading)
+                        }
+                        .scrollIndicators(.visible)
+                    }
+                }
+            }
+        }
+    }
+
+    private func markdown(_ value: String) -> some View {
+        Markdown(value)
+            .markdownTheme(.basic)
+            .markdownTextStyle {
+                FontSize(15)
+                ForegroundColor(.primary)
+            }
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -539,6 +592,12 @@ private struct MobileProcessDisclosure: View {
     }
 }
 
+private enum MobilePlanFocus: Hashable {
+    case slot(dayID: String, index: Int)
+    case delivery(String)
+    case buffer(String)
+}
+
 private struct MobilePlanView: View {
     @ObservedObject var session: MobileSession
     let onNavigate: (Int) -> Void
@@ -548,6 +607,7 @@ private struct MobilePlanView: View {
     @State private var bufferDrafts: [String: String] = [:]
     @State private var loadedRevision = ""
     @State private var saveMessage: String?
+    @FocusState private var focusedField: MobilePlanFocus?
 
     var body: some View {
         NavigationStack {
@@ -577,9 +637,11 @@ private struct MobilePlanView: View {
                                                 .padding(8)
                                                 .frame(minHeight: 86)
                                                 .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                                .focused($focusedField, equals: .slot(dayID: day.id, index: index))
                                         }
                                     }
                                     Button("保存当天计划") {
+                                        focusedField = nil
                                         let updated = updatedDays(from: days)
                                         let deliveries = week.deliveries.map { delivery in
                                             DeliverySnapshot(id: delivery.id, text: deliveryDrafts[delivery.id] ?? delivery.text, isCompleted: delivery.isCompleted, dateLabel: delivery.dateLabel)
@@ -617,6 +679,7 @@ private struct MobilePlanView: View {
                                             .padding(8)
                                             .frame(minHeight: 54, maxHeight: 120)
                                             .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                            .focused($focusedField, equals: .delivery(delivery.id))
                                     }
                                 }
                                 }
@@ -637,6 +700,7 @@ private struct MobilePlanView: View {
                                             .padding(8)
                                             .frame(minHeight: 54, maxHeight: 120)
                                             .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                            .focused($focusedField, equals: .buffer(rule.id))
                                     }
                                 }
                                 }
@@ -661,10 +725,26 @@ private struct MobilePlanView: View {
                 .padding(MobileTheme.pageInset)
             }
             .navigationTitle("周计划")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
-            .background(Color(uiColor: .systemGroupedBackground))
+            #endif
+            .background(MobileTheme.groupedBackground)
             .onAppear { syncSelection() }
-            .onChange(of: session.snapshot?.revision) { _, _ in syncSelection() }
+            .onChange(of: session.snapshot?.revision) { _, _ in
+                focusedField = nil
+                syncSelection()
+            }
+            .onChange(of: selectedDayID) { _, _ in focusedField = nil }
+            .onDisappear { focusedField = nil }
+            #if os(iOS)
+            .scrollDismissesKeyboard(.interactively)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("完成") { focusedField = nil }
+                }
+            }
+            #endif
         }
     }
 
@@ -762,8 +842,10 @@ private struct MobileDailyView: View {
                 }
                 .padding(MobileTheme.pageInset)
             }
-            .background(Color(uiColor: .systemGroupedBackground))
+            .background(MobileTheme.groupedBackground)
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .onAppear { syncFields() }
             .onChange(of: session.snapshot?.revision) { _, _ in syncFields() }
         }
@@ -799,20 +881,6 @@ private struct MobileMoreView: View {
     var body: some View {
         NavigationStack {
             List {
-                if let summaries = session.snapshot?.summaries, !summaries.isEmpty {
-                    Section("学习资料") {
-                        ForEach(summaries) { summary in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(summary.title).font(.headline)
-                                Text(summary.detail)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            .padding(.vertical, 4)
-                        }
-                    }
-                }
                 Section("连接") {
                     MobileStatusBanner(session: session)
                     if session.state == .online {
@@ -837,10 +905,14 @@ private struct MobileMoreView: View {
 
                     if showPairingForm || session.savedEndpoint == nil {
                         TextField("Mac Host HTTPS 地址", text: $endpoint)
+                            #if os(iOS)
                             .textInputAutocapitalization(.never)
+                            #endif
                             .autocorrectionDisabled()
                         TextField("一次性配对码", text: $pairingCode)
+                            #if os(iOS)
                             .textInputAutocapitalization(.never)
+                            #endif
                             .autocorrectionDisabled()
                         TextField("设备名称", text: $deviceName)
                         MobilePrimaryButton(title: "配对并连接", symbol: "link.badge.plus") {
@@ -864,6 +936,30 @@ private struct MobileMoreView: View {
                             .font(.footnote)
                             .foregroundStyle(session.state == .online ? .teal : .secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if let summaries = session.snapshot?.summaries, !summaries.isEmpty {
+                    Section("学习资料") {
+                        ForEach(summaries) { summary in
+                            let key = summary.documentKey ?? legacyDocumentKey(summary.id)
+                            if let key {
+                                NavigationLink {
+                                    MobileDocumentDetailView(session: session, documentKey: key, title: summary.title)
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        Image(systemName: "doc.text")
+                                            .foregroundStyle(MobileTheme.rail)
+                                        Text(summary.title)
+                                            .font(.body.weight(.medium))
+                                        Spacer(minLength: 0)
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                    .frame(minHeight: 44)
+                                }
+                            }
+                        }
                     }
                 }
                 Section("Host 与配对") {
@@ -920,6 +1016,59 @@ private struct MobileMoreView: View {
             }
             .navigationTitle("更多")
         }
+    }
+
+    private func legacyDocumentKey(_ id: String) -> String? {
+        if id == "course" || id.hasSuffix("/课程.md") { return "course" }
+        if id == "research" || id.hasSuffix("/科研.md") { return "research" }
+        if id == "recommendation" || id.hasSuffix("/保研.md") { return "recommendation" }
+        if id == "life" || id.hasSuffix("/生活.md") { return "life" }
+        if id == "library" || id.hasSuffix("/来源索引.md") { return "library" }
+        return nil
+    }
+}
+
+private struct MobileDocumentDetailView: View {
+    @ObservedObject var session: MobileSession
+    let documentKey: String
+    let title: String
+    @State private var detail: DocumentDetail?
+    @State private var isLoading = true
+
+    var body: some View {
+        ScrollView {
+            Group {
+                if let detail {
+                    MobileMarkdownView(text: detail.markdown)
+                        .textSelection(.enabled)
+                } else if isLoading {
+                    ProgressView("正在读取资料")
+                        .frame(maxWidth: .infinity, minHeight: 220)
+                } else {
+                    MobileEmptyState(
+                        title: "暂时无法读取",
+                        message: "连接 Mac Host 后重试；如果之前打开过此资料，也会优先显示本机缓存。",
+                        symbol: "doc.text.magnifyingglass",
+                        actionTitle: "刷新数据",
+                        action: { Task { await load() } }
+                    )
+                    .frame(minHeight: 360)
+                }
+            }
+            .padding(MobileTheme.pageInset)
+        }
+        .background(MobileTheme.groupedBackground)
+        .navigationTitle(title)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .task { await load() }
+    }
+
+    private func load() async {
+        isLoading = true
+        detail = await session.document(for: documentKey)
+        isLoading = false
     }
 }
 

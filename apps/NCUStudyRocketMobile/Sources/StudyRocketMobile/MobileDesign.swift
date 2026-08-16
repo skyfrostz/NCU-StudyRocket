@@ -5,6 +5,7 @@ enum MobileTheme {
     static let brand = Color(red: 0.03, green: 0.42, blue: 0.86)
     static let rail = Color(red: 0.00, green: 0.67, blue: 0.69)
     static let completion = Color.teal
+    static let groupedBackground = Color(light: Color(red: 0.95, green: 0.95, blue: 0.97), dark: Color(red: 0.08, green: 0.08, blue: 0.10))
     static let pageInset: CGFloat = 20
     static let cardRadius: CGFloat = 16
 
@@ -150,6 +151,85 @@ struct MobileDayRail: View {
     }
 }
 
+/// Read-only checklist styling for the three time blocks.  Periods do not
+/// carry completion state in the Markdown contract, so the icon is an
+/// activity indicator rather than a tappable checkbox.
+struct MobileTodayChecklist: View {
+    let periods: [PeriodSnapshot]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(periods.enumerated()), id: \.element.id) { index, period in
+                let hasText = !period.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: hasText ? "circle.dotted" : "circle")
+                        .foregroundStyle(hasText ? MobileTheme.rail : Color.secondary)
+                        .font(.body)
+                        .padding(.top, 2)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(period.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(hasText ? period.text : "未安排")
+                            .font(.subheadline)
+                            .foregroundStyle(hasText ? .primary : .secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                if index < periods.count - 1 { Divider().padding(.leading, 28) }
+            }
+        }
+    }
+}
+
+struct MobileDeliveryOverview: View {
+    let deliveries: [DeliverySnapshot]
+    let completed: Int
+    let total: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(total == 0 ? "暂无其他交付物" : "已完成 (completed) / (total) 项")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(total == 0 ? .secondary : .primary)
+                Spacer(minLength: 8)
+                if total > 0 {
+                    ProgressView(value: Double(completed), total: Double(total))
+                        .tint(MobileTheme.completion)
+                        .frame(width: 96)
+                }
+            }
+            if deliveries.isEmpty {
+                Text("除今日安排外，本周暂无其他交付物")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(deliveries.prefix(3)) { delivery in
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: delivery.isCompleted ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(delivery.isCompleted ? MobileTheme.completion : .secondary)
+                            .padding(.top, 2)
+                        Text(delivery.text)
+                            .font(.subheadline)
+                            .foregroundStyle(delivery.isCompleted ? .secondary : .primary)
+                            .strikethrough(delivery.isCompleted, color: .secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                }
+                if deliveries.count > 3 {
+                    Text("还有 (deliveries.count - 3) 项，前往周计划查看")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
 struct MobileInlineNotice: View {
     let text: String
     let symbol: String
@@ -188,7 +268,9 @@ struct MobileFactField: View {
                 TextField(placeholder, text: $text, axis: multiline ? .vertical : .horizontal)
                     .font(.body)
                     .lineLimit(multiline ? 4 : 1)
+                    #if os(iOS)
                     .textInputAutocapitalization(.sentences)
+                    #endif
                     .padding(.vertical, 1)
             }
         }

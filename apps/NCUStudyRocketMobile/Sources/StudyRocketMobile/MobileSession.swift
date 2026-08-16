@@ -42,6 +42,10 @@ private struct MobilePendingDrafts: Codable {
     var deliveries: [PendingDeliveryToggle]
 }
 
+public enum MobileDocumentKey {
+    public static let all: Set<String> = ["course", "research", "recommendation", "life", "library"]
+}
+
 @MainActor
 public final class MobileSession: ObservableObject {
     @Published public private(set) var state: MobileConnectionState = .unconfigured
@@ -54,22 +58,33 @@ public final class MobileSession: ObservableObject {
     @Published public private(set) var pendingWeekDraft: WeeklyPlanSnapshot?
     @Published public private(set) var pendingDailyDraft: DailySnapshot?
     @Published public private(set) var pendingDeliveryCount = 0
+    /// Documents are fetched only after the user opens one of the five
+    /// allowlisted summaries.  Keeping this separate from the snapshot keeps
+    /// the home payload small and makes offline behaviour explicit.
+    @Published public private(set) var documentDetails: [String: DocumentDetail] = [:]
     @Published public var inputDraft = "" {
         didSet { UserDefaults.standard.set(inputDraft, forKey: "studyrocket.inputDraft") }
     }
 
     private let cacheURL: URL
     private let draftsURL: URL
+    private let documentsURL: URL
     private let endpointKey = "studyrocket.hostEndpoint"
     private var client: StudyRocketRemoteClient?
     private var eventsTask: Task<Void, Never>?
+    private var reconnectFailures = 0
+    private var streamGeneration = 0
+    private var completedTurnIDs = Set<String>()
+    private var completedItemKeys = Set<String>()
 
     public init(cacheDirectory: URL? = nil) {
         let base = cacheDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("NCU StudyRocket Mobile", isDirectory: true)
         cacheURL = base.appendingPathComponent("snapshot.json")
         draftsURL = base.appendingPathComponent("pending-drafts.json")
+        documentsURL = base.appendingPathComponent("documents", isDirectory: true)
         inputDraft = UserDefaults.standard.string(forKey: "studyrocket.inputDraft") ?? ""
         loadCache()
+        loadDocumentCache()
         loadDrafts()
         if let endpoint = UserDefaults.standard.string(forKey: endpointKey), let url = URL(string: endpoint), url.scheme?.lowercased() == "https" {
             client = StudyRocketRemoteClient(endpoint: url)
@@ -78,6 +93,22 @@ public final class MobileSession: ObservableObject {
     }
 
     public var savedEndpoint: String? { UserDefaults.standard.string(forKey: endpointKey) }
+
+    /// Fetch a complete read-only document, falling back to the last version
+    /// the user opened when the Host is unavailable.
+    public func document(for documentKey: String) async -> DocumentDetail? {
+        guard MobileDocumentKey.all.contains(documentKey) else { return nil }
+        let cached = documentDetails[documentKey]
+        guard let client else { return cached }
+        do {
+            let value = try await client.document(documentKey: documentKey)
+            documentDetails[documentKey] = value
+            saveDocumentCache(value)
+            return value
+        } catch {
+            return cached
+        }
+    }
 
     public func configure(endpoint: URL) {
         guard endpoint.scheme?.lowercased() == "https" else {
@@ -159,8 +190,10 @@ public final class MobileSession: ObservableObject {
 
     public func refreshChat() async {
         guard let client else { return }
+        let generation = streamGeneration
         do {
             let history = try await client.chatHistory().messages
+            guard generation == streamGeneration else { return }
             mergeHistory(history)
         } catch {
             // 对话历史加载失败不清空已有内容，页面仍可保留当前草稿。
@@ -169,31 +202,62 @@ public final class MobileSession: ObservableObject {
 
     public func startEventStream() {
         guard eventsTask == nil, let client else { return }
+        reconnectFailures = 0
+        streamGeneration &+= 1
+        let generation = streamGeneration
         eventsTask = Task { [weak self] in
-            var retryDelay: Duration = .seconds(1)
+            var retryIndex = 0
             while !Task.isCancelled {
                 guard let self else { return }
                 let stream = await client.events()
+                var receivedEvent = false
+                var streamEnded = false
                 do {
                     for try await value in stream {
                         guard !Task.isCancelled else { break }
+                        if !receivedEvent {
+                            receivedEvent = true
+                            self.reconnectFailures = 0
+                            retryIndex = 0
+                            self.state = .online
+                            Task { [weak self] in
+                                guard let self, self.streamGeneration == generation else { return }
+                                await self.refreshChat()
+                            }
+                        }
                         self.consumeHostEvent(value)
-                        retryDelay = .seconds(1)
                     }
+                    streamEnded = true
                 } catch {
                     if !Task.isCancelled {
-                        self.state = .offline(lastUpdated: self.snapshot?.fetchedAt)
+                        self.reconnectFailures += 1
+                        if self.reconnectFailures >= 3 {
+                            self.state = .failed("实时连接连续失败 3 次，历史记录仍保留。")
+                        } else {
+                            self.state = .connecting
+                        }
+                    }
+                }
+                if streamEnded, !Task.isCancelled {
+                    self.reconnectFailures += 1
+                    if self.reconnectFailures >= 3 {
+                        self.state = .failed("实时连接连续失败 3 次，历史记录仍保留。")
+                    } else {
+                        self.state = .connecting
                     }
                 }
                 guard !Task.isCancelled else { break }
-                try? await Task.sleep(for: retryDelay)
-                retryDelay = min(retryDelay * 2, .seconds(30))
+                let delays: [Duration] = [.milliseconds(500), .seconds(1), .seconds(2), .seconds(5)]
+                let delay = delays[min(retryIndex, delays.count - 1)]
+                retryIndex += 1
+                try? await Task.sleep(for: delay)
             }
             self?.eventsTask = nil
         }
     }
 
     public func stopEventStream() {
+        streamGeneration &+= 1
         eventsTask?.cancel()
         eventsTask = nil
     }
@@ -204,6 +268,7 @@ public final class MobileSession: ObservableObject {
     }
 
     private func consumeHostEvent(_ event: HostEventEnvelope) {
+        if event.kind == "heartbeat" { return }
         if let snapshot = event.snapshot {
             self.snapshot = snapshot
             state = .online
@@ -224,6 +289,8 @@ public final class MobileSession: ObservableObject {
         switch event.kind {
         case "delta":
             guard let turnID = event.turnID, let itemID = event.itemID, let text = event.text else { return }
+            let key = streamKey(turnID: turnID, itemID: itemID)
+            guard !completedItemKeys.contains(key), !completedTurnIDs.contains(turnID) else { return }
             let id = "stream-\(turnID)-\(itemID)"
             if let index = chatMessages.firstIndex(where: { $0.id == id }) {
                 let current = chatMessages[index]
@@ -235,23 +302,29 @@ public final class MobileSession: ObservableObject {
             chatRevision &+= 1
         case "item_completed":
             guard let turnID = event.turnID, let itemID = event.itemID, let text = event.text else { return }
+            let key = streamKey(turnID: turnID, itemID: itemID)
+            guard completedItemKeys.insert(key).inserted else { return }
             let id = "stream-\(turnID)-\(itemID)"
             if let index = chatMessages.firstIndex(where: { $0.id == id }) {
                 let current = chatMessages[index]
-                chatMessages[index] = ChatMessageDTO(id: id, role: "assistant", text: text, date: current.date, turnID: turnID, phase: event.phase ?? current.phase, status: "inProgress")
+                chatMessages[index] = ChatMessageDTO(id: id, role: "assistant", text: text, date: current.date, turnID: turnID, phase: event.phase ?? current.phase, status: completedTurnIDs.contains(turnID) ? "completed" : "inProgress")
             } else {
-                chatMessages.append(ChatMessageDTO(id: id, role: "assistant", text: text, date: .now, turnID: turnID, phase: event.phase, status: "inProgress"))
+                chatMessages.append(ChatMessageDTO(id: id, role: "assistant", text: text, date: .now, turnID: turnID, phase: event.phase, status: completedTurnIDs.contains(turnID) ? "completed" : "inProgress"))
             }
             chatRevision &+= 1
         case "status":
             switch event.status {
             case "completed":
+                if let turnID = event.turnID { completedTurnIDs.insert(turnID) }
                 isChatBusy = false
                 Task { [weak self] in
                     await self?.refreshChat()
                     await self?.refreshProposals()
                 }
-            case "interrupted", "failed": isChatBusy = false
+            case "interrupted", "failed":
+                if let turnID = event.turnID { completedTurnIDs.insert(turnID) }
+                isChatBusy = false
+                Task { [weak self] in await self?.refreshChat() }
             default: break
             }
             chatRevision &+= 1
@@ -262,15 +335,36 @@ public final class MobileSession: ObservableObject {
     private func mergeHistory(_ history: [ChatMessageDTO]) {
         let streamMessages = chatMessages.filter { $0.id.hasPrefix("stream-") }
         let pendingMessages = chatMessages.filter { $0.id.hasPrefix("mobile-pending-") }
-        var merged = history
-        for message in streamMessages where !history.contains(where: { $0.turnID == message.turnID && $0.text == message.text }) {
-            merged.append(message)
+        var merged = history.map { message in
+            let status = message.status ?? (message.turnID.map { completedTurnIDs.contains($0) } == true ? "completed" : nil)
+            if let turnID = message.turnID {
+                if status == "completed" || status == "interrupted" || status == "failed" { completedTurnIDs.insert(turnID) }
+                completedItemKeys.insert(streamKey(turnID: turnID, itemID: message.id))
+            }
+            return ChatMessageDTO(id: message.id, role: message.role, text: message.text, date: message.date, turnID: message.turnID, phase: message.phase, status: status)
+        }
+
+        for message in streamMessages {
+            guard let turnID = message.turnID, let historyMessage = history.first(where: { $0.turnID == turnID && $0.id == streamItemID(message.id, turnID: turnID) }) else {
+                if let turnID = message.turnID, !completedTurnIDs.contains(turnID) { merged.append(message) }
+                continue
+            }
+            if let index = merged.firstIndex(where: { $0.id == historyMessage.id }) {
+                merged[index] = historyMessage
+            }
         }
         for message in pendingMessages where !history.contains(where: { $0.role == "user" && $0.text == message.text }) {
             merged.append(message)
         }
-        chatMessages = merged.sorted { $0.date < $1.date }
-        chatRevision &+= 1
+        let sorted = merged.sorted { $0.date < $1.date }
+        if chatMessages != sorted { chatMessages = sorted; chatRevision &+= 1 }
+    }
+
+    private func streamKey(turnID: String, itemID: String) -> String { "\(turnID)|\(itemID)" }
+
+    private func streamItemID(_ streamID: String, turnID: String) -> String {
+        let prefix = "stream-\(turnID)-"
+        return streamID.hasPrefix(prefix) ? String(streamID.dropFirst(prefix.count)) : streamID
     }
 
     public func applyProposals(ids: [String]? = nil) async {
@@ -402,9 +496,13 @@ public final class MobileSession: ObservableObject {
         eventsTask = nil
         try? FileManager.default.removeItem(at: cacheURL)
         try? FileManager.default.removeItem(at: draftsURL)
+        try? FileManager.default.removeItem(at: documentsURL)
         snapshot = nil
         chatMessages = []
+        completedTurnIDs.removeAll()
+        completedItemKeys.removeAll()
         proposals = []
+        documentDetails = [:]
         health = nil
         pendingWeekDraft = nil
         pendingDailyDraft = nil
@@ -417,6 +515,26 @@ public final class MobileSession: ObservableObject {
         guard let data = try? Data(contentsOf: cacheURL), let value = try? JSONDecoder().decode(SnapshotResponse.self, from: data) else { return }
         snapshot = value
         state = .offline(lastUpdated: value.fetchedAt)
+    }
+
+    private func loadDocumentCache() {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: nil) else { return }
+        let decoder = JSONDecoder()
+        for file in files where file.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: file), let detail = try? decoder.decode(DocumentDetail.self, from: data), MobileDocumentKey.all.contains(detail.documentKey) else { continue }
+            documentDetails[detail.documentKey] = detail
+        }
+    }
+
+    private func saveDocumentCache(_ value: DocumentDetail) {
+        guard MobileDocumentKey.all.contains(value.documentKey) else { return }
+        do {
+            try FileManager.default.createDirectory(at: documentsURL, withIntermediateDirectories: true)
+            let url = documentsURL.appendingPathComponent("\(value.documentKey).json")
+            try JSONEncoder().encode(value).write(to: url, options: .atomic)
+        } catch {
+            // A cache failure must never make a successful read fail.
+        }
     }
 
     private func loadPendingDrafts() -> MobilePendingDrafts {
@@ -540,6 +658,13 @@ public actor StudyRocketRemoteClient {
         try await get("/v1/summaries", as: [SummaryCard].self)
     }
 
+    public func document(documentKey: String) async throws -> DocumentDetail {
+        guard MobileDocumentKey.all.contains(documentKey) else {
+            throw StudyRocketRemoteError(body: APIErrorBody(code: "invalid_document", message: "资料键无效。"))
+        }
+        return try await get("/v1/documents/\(documentKey)", as: DocumentDetail.self)
+    }
+
     public func sendChat(text: String) async throws {
         var request = URLRequest(url: endpoint.appendingPathComponent("v1/chat/send"))
         request.httpMethod = "POST"
@@ -560,6 +685,7 @@ public actor StudyRocketRemoteClient {
                 do {
                     var request = URLRequest(url: endpoint.appendingPathComponent("v1/events"))
                     request.httpMethod = "GET"
+                    request.timeoutInterval = 90
                     try authenticate(&request)
                     let (bytes, response) = try await session.bytes(for: request)
                     guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {

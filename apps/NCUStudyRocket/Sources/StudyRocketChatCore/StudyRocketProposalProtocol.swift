@@ -1,4 +1,5 @@
 import Foundation
+import StudyRocketShared
 
 public enum StudyRocketDynamicToolContract {
     public static let namespace = "studyrocket"
@@ -63,7 +64,9 @@ public enum StudyRocketDynamicToolContract {
 }
 
 public enum StudyRocketThreadProtocol {
-    public static let currentVersion = 2
+    public static let currentVersion = StudyRocketAPI.academicTaskProtocolVersion
+    /// Only used as a one-time migration source for the pre-descriptor Host.
+    public static let legacyHostThreadID = "019ff539-bc1a-7b73-9a29-6340b47690e0"
 
     public static func requiresMigration(storedThreadID: String?, storedVersion: Int) -> Bool {
         guard let storedThreadID, !storedThreadID.isEmpty else { return false }

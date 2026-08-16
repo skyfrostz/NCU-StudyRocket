@@ -6,6 +6,9 @@ import Darwin
 
 public enum StudyRocketAPI {
     public static let version = 1
+    /// Version of the persisted academic-task/dynamic-tool contract.
+    /// Bump this when a resumed task cannot safely reuse its tool registry.
+    public static let academicTaskProtocolVersion = 3
     public static let prefix = "/v1"
     public static let defaultHostPort: UInt16 = 43817
 }
@@ -16,6 +19,7 @@ public enum StudyRocketLocalSession {
     public static let directoryName = "NCU StudyRocket"
     public static let tokenFileName = "host-local-session"
     public static let codexLeaseFileName = "codex-owner.json"
+    public static let academicTaskDirectoryName = "Academic Tasks"
 
     public static func tokenURL(fileManager: FileManager = .default) -> URL {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -36,6 +40,57 @@ public enum StudyRocketLocalSession {
 
     public static func codexLeaseURL(fileManager: FileManager = .default) -> URL {
         tokenURL(fileManager: fileManager).deletingLastPathComponent().appendingPathComponent(codexLeaseFileName)
+    }
+
+    public static func academicTaskDirectoryURL(fileManager: FileManager = .default) -> URL {
+        tokenURL(fileManager: fileManager).deletingLastPathComponent().appendingPathComponent(academicTaskDirectoryName, isDirectory: true)
+    }
+}
+
+/// The only persistent identity shared by the desktop app and the optional
+/// Host. Conversation content remains in Codex; this file merely tells the
+/// next owner which compatible task to resume for a repository.
+public struct StudyRocketTaskDescriptor: Codable, Equatable, Sendable {
+    public let threadID: String
+    public let protocolVersion: Int
+
+    public init(threadID: String, protocolVersion: Int = StudyRocketAPI.academicTaskProtocolVersion) {
+        self.threadID = threadID
+        self.protocolVersion = protocolVersion
+    }
+}
+
+public final class StudyRocketTaskDescriptorStore: @unchecked Sendable {
+    private let fileManager: FileManager
+    private let directory: URL
+
+    public init(fileManager: FileManager = .default, directory: URL? = nil) {
+        self.fileManager = fileManager
+        self.directory = directory ?? StudyRocketLocalSession.academicTaskDirectoryURL(fileManager: fileManager)
+    }
+
+    public func load(for root: URL) -> StudyRocketTaskDescriptor? {
+        guard let data = try? Data(contentsOf: url(for: root)),
+              let descriptor = try? JSONDecoder().decode(StudyRocketTaskDescriptor.self, from: data),
+              !descriptor.threadID.isEmpty else { return nil }
+        return descriptor
+    }
+
+    public func save(_ descriptor: StudyRocketTaskDescriptor, for root: URL) throws {
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(descriptor)
+        try data.write(to: url(for: root), options: .atomic)
+        try? fileManager.setAttributes([.posixPermissions: NSNumber(value: Int16(0o600))], ofItemAtPath: url(for: root).path)
+    }
+
+    public func remove(for root: URL) {
+        try? fileManager.removeItem(at: url(for: root))
+    }
+
+    private func url(for root: URL) -> URL {
+        let digest = SHA256.hash(data: Data(root.standardizedFileURL.path.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        return directory.appendingPathComponent("(digest).json")
     }
 }
 
@@ -400,12 +455,102 @@ public struct SummaryCard: Codable, Equatable, Sendable, Identifiable {
     public let title: String
     public let detail: String
     public let updatedAt: Date?
+    /// Stable logical key used by the mobile client to request the complete
+    /// read-only Markdown document.  It is optional so snapshots written by
+    /// older Hosts continue to decode.
+    public let documentKey: String?
 
-    public init(id: String, title: String, detail: String, updatedAt: Date? = nil) {
+    public init(id: String, title: String, detail: String, updatedAt: Date? = nil, documentKey: String? = nil) {
         self.id = id
         self.title = title
         self.detail = detail
         self.updatedAt = updatedAt
+        self.documentKey = documentKey
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, title, detail, updatedAt, documentKey }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        title = try values.decode(String.self, forKey: .title)
+        detail = try values.decode(String.self, forKey: .detail)
+        updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt)
+        documentKey = try values.decodeIfPresent(String.self, forKey: .documentKey)
+    }
+}
+
+/// A complete, read-only Markdown document exposed by the Host through a
+/// fixed logical-key allowlist.  The phone may cache this value locally after
+/// the user explicitly opens it; it is never a second source of truth.
+public struct DocumentDetail: Codable, Equatable, Sendable, Identifiable {
+    public let documentKey: String
+    public let title: String
+    public let markdown: String
+    public let revision: String
+    public let fetchedAt: Date
+
+    public var id: String { documentKey }
+
+    public init(documentKey: String, title: String, markdown: String, revision: String, fetchedAt: Date = .now) {
+        self.documentKey = documentKey
+        self.title = title
+        self.markdown = markdown
+        self.revision = revision
+        self.fetchedAt = fetchedAt
+    }
+}
+
+public enum StudyRocketMarkdownBlock: Equatable, Sendable {
+    case prose(String)
+    case table(markdown: String, columns: Int)
+}
+
+/// A deliberately small, platform-neutral block classifier.  It does not
+/// render Markdown or change its contents; native clients use it only to put
+/// wide tables in a horizontal scroller while leaving prose responsive.
+public enum StudyRocketMarkdownParser {
+    public static func blocks(from text: String) -> [StudyRocketMarkdownBlock] {
+        let lines = text.components(separatedBy: .newlines)
+        var result: [StudyRocketMarkdownBlock] = []
+        var prose: [String] = []
+        var index = 0
+
+        func isTableLine(_ line: String) -> Bool {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return !trimmed.hasPrefix("```") && trimmed.filter { $0 == "|" }.count >= 1
+        }
+
+        func isDivider(_ line: String) -> Bool {
+            let cells = line.split(separator: "|", omittingEmptySubsequences: true)
+            return !cells.isEmpty && cells.allSatisfy { cell in
+                cell.trimmingCharacters(in: .whitespaces).allSatisfy { $0 == "-" || $0 == ":" || $0 == " " }
+            }
+        }
+
+        func flushProse() {
+            guard !prose.isEmpty else { return }
+            let value = prose.joined(separator: "\n")
+            if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { result.append(.prose(value)) }
+            prose.removeAll(keepingCapacity: true)
+        }
+
+        while index < lines.count {
+            guard index + 1 < lines.count, isTableLine(lines[index]), isDivider(lines[index + 1]) else {
+                prose.append(lines[index])
+                index += 1
+                continue
+            }
+            flushProse()
+            let start = index
+            index += 2
+            while index < lines.count && isTableLine(lines[index]) { index += 1 }
+            let table = lines[start..<index].joined(separator: "\n")
+            let columns = lines[start].split(separator: "|", omittingEmptySubsequences: true).count
+            result.append(.table(markdown: table, columns: max(columns, 2)))
+        }
+        flushProse()
+        return result.isEmpty ? [.prose(text)] : result
     }
 }
 

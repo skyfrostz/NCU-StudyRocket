@@ -664,6 +664,26 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
             }
             payload = (try? encoder.encode(snapshotBuilder.build().summaries)) ?? Data("[]".utf8)
             status = "200 OK"
+        } else if method == "GET", path.hasPrefix("/v1/documents/") {
+            guard isAuthorized(headers: headers, method: method, path: path, body: body) else {
+                payload = (try? encoder.encode(APIErrorBody(code: "unauthorized", message: "设备尚未配对或请求签名已失效。", retryable: false))) ?? Data("{}".utf8)
+                status = "401 Unauthorized"
+                return makeResponse(status: status, payload: payload)
+            }
+            let prefix = "/v1/documents/"
+            let key = String(path.dropFirst(prefix.count))
+            // Accept only an exact logical key.  No URL path or filename can
+            // be supplied by a phone client.
+            if key.isEmpty || key.contains("/") || key.removingPercentEncoding != key || HostSnapshotBuilder.documentMap[key] == nil {
+                payload = (try? encoder.encode(APIErrorBody(code: "invalid_document", message: "资料键无效。", retryable: false))) ?? Data("{}".utf8)
+                status = "400 Bad Request"
+            } else if let detail = snapshotBuilder.document(documentKey: key) {
+                payload = (try? encoder.encode(detail)) ?? Data("{}".utf8)
+                status = "200 OK"
+            } else {
+                payload = (try? encoder.encode(APIErrorBody(code: "document_unavailable", message: "资料缺失或内容为空。", retryable: false))) ?? Data("{}".utf8)
+                status = "404 Not Found"
+            }
         } else if method == "GET", path == "/v1/proposals" {
             guard isAuthorized(headers: headers, method: method, path: path, body: body) else {
                 payload = (try? encoder.encode(APIErrorBody(code: "unauthorized", message: "设备尚未配对或请求签名已失效。", retryable: false))) ?? Data("{}".utf8)
@@ -861,6 +881,14 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
 private final class StudyRocketEventHub: @unchecked Sendable {
     private let lock = NSLock()
     private var connections: [UUID: NWConnection] = [:]
+    private let heartbeatTimer: DispatchSourceTimer
+
+    init() {
+        heartbeatTimer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        heartbeatTimer.schedule(deadline: .now() + .seconds(20), repeating: .seconds(20))
+        heartbeatTimer.setEventHandler { [weak self] in self?.publishHeartbeat() }
+        heartbeatTimer.resume()
+    }
 
     func add(_ connection: NWConnection) {
         let id = UUID()
@@ -895,10 +923,17 @@ private final class StudyRocketEventHub: @unchecked Sendable {
         }
     }
 
+    private func publishHeartbeat() {
+        publish(event: "heartbeat", envelope: HostEventEnvelope(kind: "heartbeat"))
+    }
+
     func closeAll() {
         lock.lock(); let current = connections; connections.removeAll(); lock.unlock()
         current.values.forEach { $0.cancel() }
+        heartbeatTimer.cancel()
     }
+
+    deinit { heartbeatTimer.cancel() }
 
     private func remove(_ id: UUID) {
         lock.lock(); connections.removeValue(forKey: id); lock.unlock()

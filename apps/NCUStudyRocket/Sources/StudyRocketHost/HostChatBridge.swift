@@ -18,7 +18,9 @@ enum HostChatError: LocalizedError {
 private final class HostCodexSession {
     private let executable = "/Applications/ChatGPT.app/Contents/Resources/codex"
     private let root: URL
-    private let threadID: String
+    private let descriptorStore = StudyRocketTaskDescriptorStore()
+    private var threadID: String
+    private var migratedHistory: [ChatMessageDTO] = []
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
@@ -29,20 +31,22 @@ private final class HostCodexSession {
     private var pendingTurnResult: Result<Void, Error>?
     private var activeTurnID: String?
     private var replyItems: [String: String] = [:]
+    private var completedItemIDs = Set<String>()
     private var history: [ChatMessageDTO] = []
     private var idleShutdownTask: Task<Void, Never>?
     var onToolCall: (([String: Any]) -> [String: Any])?
     var onProcessExit: (() -> Void)?
     var onReplyDelta: ((String, String, String, String?) -> Void)?
     var onItemCompleted: ((String, String, String, String?) -> Void)?
-    var onTurnStatus: ((String, String) -> Void)?
+    var onTurnStatus: ((String, String, String?) -> Void)?
 
-    init(root: URL, threadID: String) {
+    init(root: URL, threadID: String = StudyRocketThreadProtocol.legacyHostThreadID) {
         self.root = root.standardizedFileURL
         self.threadID = threadID
     }
 
     var isRunning: Bool { process?.isRunning == true }
+    var currentThreadID: String { threadID }
 
     private func processDidTerminate() {
         idleShutdownTask?.cancel()
@@ -52,6 +56,7 @@ private final class HostCodexSession {
         output = nil
         process = nil
         let error = HostChatError.unavailable("Codex 本地任务已退出，请重新连接。")
+        let interruptedTurnID = activeTurnID
         let requests = pending.values
         pending.removeAll()
         for continuation in requests { continuation.resume(throwing: error) }
@@ -61,6 +66,7 @@ private final class HostCodexSession {
             continuation.resume(throwing: error)
         }
         pendingTurnResult = nil
+        if let interruptedTurnID { onTurnStatus?(interruptedTurnID, "failed", error.localizedDescription) }
         onProcessExit?()
     }
 
@@ -126,6 +132,7 @@ private final class HostCodexSession {
         touchActivity()
         guard turnContinuation == nil else { throw HostChatError.unavailable("上一轮学业对话仍在运行。") }
         replyItems.removeAll()
+        completedItemIDs.removeAll()
         let response = try await request(method: "turn/start", params: [
             "threadId": threadID,
             "input": [["type": "text", "text": text]],
@@ -206,7 +213,8 @@ private final class HostCodexSession {
                 currentThreadID: threadID,
                 activeTurnID: activeTurnID
             ),
-                  let itemID = params["itemId"] as? String, let delta = params["delta"] as? String else { return }
+                  let itemID = params["itemId"] as? String, let delta = params["delta"] as? String,
+                  !completedItemIDs.contains(itemID) else { return }
             replyItems[itemID, default: ""] += delta
             onReplyDelta?(turnID, itemID, delta, params["phase"] as? String)
         case "item/completed":
@@ -218,7 +226,8 @@ private final class HostCodexSession {
                   let item = params["item"] as? [String: Any],
                   item["type"] as? String == "agentMessage",
                   let itemID = item["id"] as? String,
-                  let text = item["text"] as? String else { return }
+                  let text = item["text"] as? String,
+                  completedItemIDs.insert(itemID).inserted else { return }
             replyItems[itemID] = text
             onItemCompleted?(turnID, itemID, text, item["phase"] as? String)
         case "item/tool/call":
@@ -279,7 +288,7 @@ private final class HostCodexSession {
     private func parseHistory(_ thread: [String: Any]) -> [ChatMessageDTO] {
         guard let turns = thread["turns"] as? [[String: Any]] else { return [] }
         var messages: [ChatMessageDTO] = []
-        for turn in turns.suffix(20) {
+        for turn in turns.suffix(10) {
             guard let id = turn["id"] as? String, let items = turn["items"] as? [[String: Any]] else { continue }
             let status = turn["status"] as? String
             let date = date(from: turn["completedAt"] ?? turn["startedAt"]) ?? .now
