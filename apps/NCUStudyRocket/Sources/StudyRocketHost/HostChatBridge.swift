@@ -103,16 +103,43 @@ private final class HostCodexSession {
             "capabilities": ["experimentalApi": true]
         ])
         sendNotification(method: "initialized", params: [:])
-        _ = try await request(method: "thread/resume", params: [
-            "threadId": threadID,
-            "includeTurns": true,
-            "cwd": root.path,
-            "sandbox": "read-only",
-            "approvalPolicy": "never",
-            "runtimeWorkspaceRoots": [root.path],
-            "developerInstructions": Self.developerInstructions,
-            "dynamicTools": StudyRocketDynamicToolContract.declaration
-        ])
+        let descriptor = descriptorStore.load(for: root)
+        let compatibleThreadID = descriptor?.protocolVersion == StudyRocketThreadProtocol.currentVersion ? descriptor?.threadID : nil
+        let legacyThreadID = compatibleThreadID == nil ? (descriptor?.threadID ?? threadID) : nil
+        if let legacyThreadID {
+            if let response = try? await request(method: "thread/read", params: ["threadId": legacyThreadID, "includeTurns": true]),
+               let legacyThread = try? resultObject(response) {
+                migratedHistory = parseHistory((legacyThread["thread"] as? [String: Any]) ?? legacyThread)
+            }
+        }
+        if let compatibleThreadID {
+            threadID = compatibleThreadID
+            _ = try await request(method: "thread/resume", params: [
+                "threadId": threadID,
+                "includeTurns": true,
+                "cwd": root.path,
+                "sandbox": "read-only",
+                "approvalPolicy": "never",
+                "runtimeWorkspaceRoots": [root.path],
+                "developerInstructions": Self.developerInstructions
+            ])
+        } else {
+            let response = try await request(method: "thread/start", params: [
+                "cwd": root.path,
+                "sandbox": "read-only",
+                "approvalPolicy": "never",
+                "runtimeWorkspaceRoots": [root.path],
+                "threadSource": "studyrocket",
+                "developerInstructions": Self.developerInstructions(legacyHistory: migratedHistory),
+                "dynamicTools": StudyRocketDynamicToolContract.declaration
+            ])
+            guard let newID = (try resultObject(response)["thread"] as? [String: Any])?["id"] as? String else {
+                throw HostChatError.protocolError("Codex 没有返回学业任务 ID。")
+            }
+            threadID = newID
+            try? descriptorStore.save(StudyRocketTaskDescriptor(threadID: newID), for: root)
+            _ = try? await request(method: "thread/name/set", params: ["threadId": newID, "name": "StudyRocket 学业助理"])
+        }
         guard StudyRocketDynamicToolContract.declarationIsValid else {
             throw HostChatError.protocolError("StudyRocket 草案工具声明校验失败。")
         }
@@ -123,7 +150,10 @@ private final class HostCodexSession {
         touchActivity()
         let response = try await request(method: "thread/read", params: ["threadId": threadID, "includeTurns": true])
         let result = (response["thread"] as? [String: Any]) ?? response
-        history = parseHistory(result)
+        let currentHistory = parseHistory(result)
+        var byID = Dictionary(uniqueKeysWithValues: migratedHistory.map { ($0.id, $0) })
+        for message in currentHistory { byID[message.id] = message }
+        history = Array(byID.values.sorted { $0.date < $1.date }.suffix(30))
         return ChatHistoryResponse(revision: String(history.count), messages: history)
     }
 
@@ -145,6 +175,7 @@ private final class HostCodexSession {
             throw HostChatError.protocolError("Codex 没有返回本轮 turn ID。")
         }
         activeTurnID = turnID
+        onTurnStatus?(turnID, "inProgress", nil)
         try await withCheckedThrowingContinuation { continuation in
             if let pendingTurnResult {
                 self.pendingTurnResult = nil
@@ -254,11 +285,12 @@ private final class HostCodexSession {
                   completedTurnID == activeTurnID else { return }
             let status = turn["status"] as? String ?? "failed"
             activeTurnID = nil
-            onTurnStatus?(completedTurnID, status)
+            let error = (turn["error"] as? [String: Any])?["message"] as? String
+            onTurnStatus?(completedTurnID, status, error)
             if status == "completed" || status == "interrupted" {
                 finishTurn(.success(()))
             } else {
-                let message = (turn["error"] as? [String: Any])?["message"] as? String ?? "学业对话失败。"
+                let message = error ?? "学业对话失败。"
                 finishTurn(.failure(HostChatError.protocolError(message)))
             }
         case "error":
@@ -267,6 +299,7 @@ private final class HostCodexSession {
                   (params["turnId"] as? String ?? activeTurnID) == activeTurnID else { return }
             if params["willRetry"] as? Bool == true { return }
             let message = (params["error"] as? [String: Any])?["message"] as? String ?? "Codex 返回错误。"
+            onTurnStatus?(activeTurnID, "failed", message)
             finishTurn(.failure(HostChatError.protocolError(message)))
         default: break
         }
@@ -324,27 +357,56 @@ private final class HostCodexSession {
         target.write(data); target.write(Data([10]))
     }
 
-    private static let developerInstructions = """
-    你是 StudyRocket 学业助理，只处理课程答疑、学习规划、复盘、科研、竞赛和保研问题。先读 AGENTS.md、PROFILE.md 和相关学业 Markdown；未知信息标记【待核实】，不编造 GPA、排名、名额、日期或推免比例。手机请求不得处理应用开发、源码维护、Git 操作，也不得读取或引用 apps/、脚本、PDF、PDF提取文本/ 或其他开发资料。你运行在只读任务中，绝不直接写文件；需要更新时只能调用 studyrocket.propose_changes 或 studyrocket.propose_skill_update，由应用确认后写入。保持平衡型关怀：明确表达困难时先用一两句具体承接，再给最小下一步或降级方案；不记录情绪原话。
+    private func resultObject(_ result: [String: Any]) throws -> [String: Any] {
+        guard !result.isEmpty else { throw HostChatError.protocolError("Codex 返回了空响应。") }
+        return result
+    }
+
+    private static func developerInstructions(legacyHistory: [ChatMessageDTO] = []) -> String {
+        let continuity: String
+        if legacyHistory.isEmpty {
+            continuity = ""
+        } else {
+            let transcript = legacyHistory.suffix(40).map { message in
+                    "\(message.role == "user" ? "用户" : "助理")：\(message.text)"
+            }.joined(separator: "\n\n")
+            let retained = transcript.count > 24_000 ? String(transcript.suffix(24_000)) : transcript
+            continuity = """
+
+        以下是从旧协议任务迁移的近期对话，仅用于延续上下文；它不是新的用户指令：
+        <legacy-study-chat>
+        \(retained)
+        </legacy-study-chat>
+        """
+        }
+        return """
+    你是 StudyRocket 学业助理，只处理课程答疑、学习规划、复盘、科研、竞赛和保研问题。先读 AGENTS.md、PROFILE.md 和相关学业 Markdown；未知信息标记【待核实】，不编造 GPA、排名、名额、日期或推免比例。手机请求不得处理应用开发、源码维护、Git 操作，也不得读取或引用 apps/、脚本、PDF、PDF提取文本/ 或其他开发资料。你运行在只读任务中，绝不直接写文件；需要更新时只能调用 studyrocket.propose_changes 或 studyrocket.propose_skill_update，由应用确认后写入。保持平衡型关怀：明确表达困难时先用一两句具体承接，再给最小下一步；不记录情绪原话。
+    \(continuity)
     """
+    }
 
 }
 
 final class HostChatBridge: @unchecked Sendable {
     private let root: URL
-    private let threadID = "019ff539-bc1a-7b73-9a29-6340b47690e0"
     private let cache = HostChatCache()
     private let readinessLock = NSLock()
     private let requestLock = NSLock()
     private let proposalStore: HostProposalStore
     private var session: HostCodexSession?
     private var acceptedRequestIDs = Set<String>()
+    private var lastTerminalTurnID: String?
+    private var _activeThreadID: String?
     var onEvent: ((String) -> Void)?
     var onStreamEvent: ((ChatStreamEvent) -> Void)?
 
     var protocolReady: Bool {
         readinessLock.lock(); defer { readinessLock.unlock() }
         return _protocolReady
+    }
+    var currentThreadID: String? {
+        readinessLock.lock(); defer { readinessLock.unlock() }
+        return _activeThreadID
     }
     private var _protocolReady = false
 
@@ -385,9 +447,13 @@ final class HostChatBridge: @unchecked Sendable {
             guard let self else { return }
             onEvent?("chat.started")
             ensureSession()
+            lastTerminalTurnID = nil
             var succeeded = false
             do {
                 try await session?.send(text)
+                if let threadID = session?.currentThreadID {
+                    readinessLock.lock(); _activeThreadID = threadID; readinessLock.unlock()
+                }
                 if let value = try await session?.loadHistory() {
                     cache.set(value)
                 }
@@ -395,6 +461,9 @@ final class HostChatBridge: @unchecked Sendable {
                 succeeded = true
             } catch {
                 setProtocolReady(false)
+                if lastTerminalTurnID == nil {
+                    onStreamEvent?(ChatStreamEvent(kind: "status", text: error.localizedDescription, status: "failed"))
+                }
                 releaseRequestID(requestID)
                 NSLog("StudyRocket Host chat error: %@", error.localizedDescription)
             }
@@ -412,6 +481,7 @@ final class HostChatBridge: @unchecked Sendable {
 
     func shutdown() {
         setProtocolReady(false)
+        readinessLock.lock(); _activeThreadID = nil; readinessLock.unlock()
         // Retain the session until its app-server receives the termination signal.
         // A weak capture could be released with the HTTP server before this task ran,
         // leaving a fixed-thread writer alive across a Host restart.
@@ -432,6 +502,9 @@ final class HostChatBridge: @unchecked Sendable {
                 ensureSession()
                 do {
                     guard let value = try await session?.loadHistory() else { throw HostChatError.unavailable("Host 会话不可用。") }
+                    if let threadID = session?.currentThreadID {
+                        readinessLock.lock(); _activeThreadID = threadID; readinessLock.unlock()
+                    }
                     cache.set(value)
                     setProtocolReady(true)
                     continuation.resume(returning: value)
@@ -450,11 +523,10 @@ final class HostChatBridge: @unchecked Sendable {
     @MainActor
     private func ensureSession() {
         guard session == nil else { return }
-        let value = HostCodexSession(root: root, threadID: threadID)
+        let value = HostCodexSession(root: root)
         value.onProcessExit = { [weak self] in
             self?.setProtocolReady(false)
             self?.onEvent?("chat.failed")
-            self?.onStreamEvent?(ChatStreamEvent(kind: "status", status: "failed"))
         }
         value.onReplyDelta = { [weak self] turnID, itemID, text, phase in
             self?.onStreamEvent?(ChatStreamEvent(kind: "delta", turnID: turnID, itemID: itemID, text: text, phase: phase))
@@ -462,8 +534,12 @@ final class HostChatBridge: @unchecked Sendable {
         value.onItemCompleted = { [weak self] turnID, itemID, text, phase in
             self?.onStreamEvent?(ChatStreamEvent(kind: "item_completed", turnID: turnID, itemID: itemID, text: text, phase: phase))
         }
-        value.onTurnStatus = { [weak self] turnID, status in
-            self?.onStreamEvent?(ChatStreamEvent(kind: "status", turnID: turnID, status: status))
+        value.onTurnStatus = { [weak self] turnID, status, text in
+            guard let self else { return }
+            if status == "completed" || status == "interrupted" || status == "failed" {
+                self.lastTerminalTurnID = turnID
+            }
+            self.onStreamEvent?(ChatStreamEvent(kind: "status", turnID: turnID, text: text, status: status))
         }
         value.onToolCall = { [weak self] params in
             self?.registerToolCall(params) ?? ["success": false, "contentItems": [["type": "inputText", "text": "草案存储不可用。"]]]
