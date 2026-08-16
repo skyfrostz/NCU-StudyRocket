@@ -452,7 +452,7 @@ final class HostChatBridge: @unchecked Sendable {
             do {
                 try await session?.send(text)
                 if let threadID = session?.currentThreadID {
-                    readinessLock.lock(); _activeThreadID = threadID; readinessLock.unlock()
+                    setActiveThreadID(threadID)
                 }
                 if let value = try await session?.loadHistory() {
                     cache.set(value)
@@ -503,7 +503,7 @@ final class HostChatBridge: @unchecked Sendable {
                 do {
                     guard let value = try await session?.loadHistory() else { throw HostChatError.unavailable("Host 会话不可用。") }
                     if let threadID = session?.currentThreadID {
-                        readinessLock.lock(); _activeThreadID = threadID; readinessLock.unlock()
+                        setActiveThreadID(threadID)
                     }
                     cache.set(value)
                     setProtocolReady(true)
@@ -519,6 +519,12 @@ final class HostChatBridge: @unchecked Sendable {
     func proposals() -> ProposalListResponse { proposalStore.list() }
 
     func apply(_ request: ProposalApplyRequest) throws -> ProposalListResponse { try proposalStore.apply(request) }
+
+    private func setActiveThreadID(_ threadID: String?) {
+        readinessLock.lock()
+        _activeThreadID = threadID
+        readinessLock.unlock()
+    }
 
     @MainActor
     private func ensureSession() {
