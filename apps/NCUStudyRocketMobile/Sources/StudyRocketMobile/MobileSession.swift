@@ -19,7 +19,7 @@ public enum MobileConnectionState: Equatable, Sendable {
         case .offline(let date):
             if let date { return "离线 · 缓存于 \(Self.dateFormatter.string(from: date))" }
             return "离线"
-        case .failed(let message): return message
+        case .failed: return "连接失败"
         }
     }
 
@@ -36,10 +36,44 @@ private struct PendingDeliveryToggle: Codable, Equatable {
     let isCompleted: Bool
 }
 
+private struct PendingPeriodToggle: Codable, Equatable {
+    let dayID: String
+    let periodID: String
+    let textHash: String
+    let isCompleted: Bool
+
+    var key: String { "\(dayID)|\(periodID)" }
+}
+
+private struct PendingChatDelta {
+    let turnID: String
+    let itemID: String
+    var text: String
+    var phase: String?
+}
+
 private struct MobilePendingDrafts: Codable {
     var week: WeeklyPlanSnapshot?
     var daily: DailySnapshot?
     var deliveries: [PendingDeliveryToggle]
+    var periods: [PendingPeriodToggle]
+
+    init(week: WeeklyPlanSnapshot?, daily: DailySnapshot?, deliveries: [PendingDeliveryToggle], periods: [PendingPeriodToggle] = []) {
+        self.week = week
+        self.daily = daily
+        self.deliveries = deliveries
+        self.periods = periods
+    }
+
+    private enum CodingKeys: String, CodingKey { case week, daily, deliveries, periods }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        week = try values.decodeIfPresent(WeeklyPlanSnapshot.self, forKey: .week)
+        daily = try values.decodeIfPresent(DailySnapshot.self, forKey: .daily)
+        deliveries = try values.decodeIfPresent([PendingDeliveryToggle].self, forKey: .deliveries) ?? []
+        periods = try values.decodeIfPresent([PendingPeriodToggle].self, forKey: .periods) ?? []
+    }
 }
 
 public enum MobileDocumentKey {
@@ -58,6 +92,9 @@ public final class MobileSession: ObservableObject {
     @Published public private(set) var pendingWeekDraft: WeeklyPlanSnapshot?
     @Published public private(set) var pendingDailyDraft: DailySnapshot?
     @Published public private(set) var pendingDeliveryCount = 0
+    @Published public private(set) var pendingPeriodCount = 0
+    @Published public private(set) var pendingPeriodStates: [String: Bool] = [:]
+    @Published public private(set) var lastConnectionIssue: String?
     /// Documents are fetched only after the user opens one of the five
     /// allowlisted summaries.  Keeping this separate from the snapshot keeps
     /// the home payload small and makes offline behaviour explicit.
@@ -76,6 +113,8 @@ public final class MobileSession: ObservableObject {
     private var streamGeneration = 0
     private var completedTurnIDs = Set<String>()
     private var completedItemKeys = Set<String>()
+    private var pendingChatDeltas: [String: PendingChatDelta] = [:]
+    private var deltaFlushTask: Task<Void, Never>?
 
     public init(cacheDirectory: URL? = nil) {
         let base = cacheDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("NCU StudyRocket Mobile", isDirectory: true)
@@ -84,7 +123,6 @@ public final class MobileSession: ObservableObject {
         documentsURL = base.appendingPathComponent("documents", isDirectory: true)
         inputDraft = UserDefaults.standard.string(forKey: "studyrocket.inputDraft") ?? ""
         loadCache()
-        loadDocumentCache()
         loadDrafts()
         if let endpoint = UserDefaults.standard.string(forKey: endpointKey), let url = URL(string: endpoint), url.scheme?.lowercased() == "https" {
             client = StudyRocketRemoteClient(endpoint: url)
@@ -98,8 +136,25 @@ public final class MobileSession: ObservableObject {
     /// the user opened when the Host is unavailable.
     public func document(for documentKey: String) async -> DocumentDetail? {
         guard MobileDocumentKey.all.contains(documentKey) else { return nil }
-        let cached = documentDetails[documentKey]
+        let cached: DocumentDetail?
+        if let memoryValue = documentDetails[documentKey] {
+            cached = memoryValue
+        } else {
+            cached = await Self.readCachedDocument(
+                at: documentsURL.appendingPathComponent("\(documentKey).json"),
+                expectedKey: documentKey
+            )
+        }
+        if let cached { documentDetails[documentKey] = cached }
         guard let client else { return cached }
+        if let cached {
+            Task { [weak self] in
+                guard let value = try? await client.document(documentKey: documentKey) else { return }
+                self?.documentDetails[documentKey] = value
+                self?.saveDocumentCache(value)
+            }
+            return cached
+        }
         do {
             let value = try await client.document(documentKey: documentKey)
             documentDetails[documentKey] = value
@@ -148,10 +203,13 @@ public final class MobileSession: ObservableObject {
             let value = try await client.snapshot()
             snapshot = value
             state = .online
+            lastConnectionIssue = nil
             saveCache(value)
             startEventStream()
         } catch {
-            state = .offline(lastUpdated: snapshot?.fetchedAt)
+            let contextualized = MobileEndpointError.contextualized(error)
+            lastConnectionIssue = contextualized.localizedDescription
+            state = snapshot == nil ? .failed(contextualized.localizedDescription) : .offline(lastUpdated: snapshot?.fetchedAt)
         }
     }
 
@@ -291,18 +349,19 @@ public final class MobileSession: ObservableObject {
             guard let turnID = event.turnID, let itemID = event.itemID, let text = event.text else { return }
             let key = streamKey(turnID: turnID, itemID: itemID)
             guard !completedItemKeys.contains(key), !completedTurnIDs.contains(turnID) else { return }
-            let id = "stream-\(turnID)-\(itemID)"
-            if let index = chatMessages.firstIndex(where: { $0.id == id }) {
-                let current = chatMessages[index]
-                chatMessages[index] = ChatMessageDTO(id: id, role: "assistant", text: current.text + text, date: current.date, turnID: turnID, phase: event.phase ?? current.phase, status: "inProgress")
+            if var pending = pendingChatDeltas[key] {
+                pending.text += text
+                pending.phase = event.phase ?? pending.phase
+                pendingChatDeltas[key] = pending
             } else {
-                chatMessages.append(ChatMessageDTO(id: id, role: "assistant", text: text, date: .now, turnID: turnID, phase: event.phase, status: "inProgress"))
+                pendingChatDeltas[key] = PendingChatDelta(turnID: turnID, itemID: itemID, text: text, phase: event.phase)
             }
             isChatBusy = true
-            chatRevision &+= 1
+            scheduleDeltaFlush()
         case "item_completed":
             guard let turnID = event.turnID, let itemID = event.itemID, let text = event.text else { return }
             let key = streamKey(turnID: turnID, itemID: itemID)
+            pendingChatDeltas.removeValue(forKey: key)
             guard completedItemKeys.insert(key).inserted else { return }
             let id = "stream-\(turnID)-\(itemID)"
             if let index = chatMessages.firstIndex(where: { $0.id == id }) {
@@ -313,6 +372,7 @@ public final class MobileSession: ObservableObject {
             }
             chatRevision &+= 1
         case "status":
+            flushPendingChatDeltas()
             switch event.status {
             case "completed":
                 if let turnID = event.turnID { completedTurnIDs.insert(turnID) }
@@ -330,6 +390,32 @@ public final class MobileSession: ObservableObject {
             chatRevision &+= 1
         default: break
         }
+    }
+
+    private func scheduleDeltaFlush() {
+        guard deltaFlushTask == nil else { return }
+        deltaFlushTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled else { return }
+            self?.flushPendingChatDeltas()
+            self?.deltaFlushTask = nil
+        }
+    }
+
+    private func flushPendingChatDeltas() {
+        guard !pendingChatDeltas.isEmpty else { return }
+        let values = Array(pendingChatDeltas.values)
+        pendingChatDeltas.removeAll(keepingCapacity: true)
+        for value in values {
+            let id = "stream-\(value.turnID)-\(value.itemID)"
+            if let index = chatMessages.firstIndex(where: { $0.id == id }) {
+                let current = chatMessages[index]
+                chatMessages[index] = ChatMessageDTO(id: id, role: "assistant", text: current.text + value.text, date: current.date, turnID: value.turnID, phase: value.phase ?? current.phase, status: "inProgress")
+            } else {
+                chatMessages.append(ChatMessageDTO(id: id, role: "assistant", text: value.text, date: .now, turnID: value.turnID, phase: value.phase, status: "inProgress"))
+            }
+        }
+        chatRevision &+= 1
     }
 
     private func mergeHistory(_ history: [ChatMessageDTO]) {
@@ -423,6 +509,58 @@ public final class MobileSession: ObservableObject {
         }
     }
 
+    public func effectivePeriodCompletion(dayID: String, period: PeriodSnapshot) -> Bool {
+        pendingPeriodStates[periodKey(dayID: dayID, periodID: period.id)] ?? period.isCompleted
+    }
+
+    public func isPeriodTogglePending(dayID: String, period: PeriodSnapshot) -> Bool {
+        pendingPeriodStates[periodKey(dayID: dayID, periodID: period.id)] != nil
+    }
+
+    public func togglePeriod(dayID: String, period: PeriodSnapshot) async {
+        let text = period.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, ["morning", "noon", "evening"].contains(period.id) else { return }
+        let key = periodKey(dayID: dayID, periodID: period.id)
+        if pendingPeriodStates[key] != nil {
+            guard state != .online else { return }
+            var drafts = loadPendingDrafts()
+            drafts.periods.removeAll { $0.key == key }
+            pendingPeriodStates.removeValue(forKey: key)
+            saveDrafts(drafts)
+            return
+        }
+        let desired = !period.isCompleted
+        let textHash = PeriodCompletion.textHash(for: period.text)
+        pendingPeriodStates[key] = desired
+
+        guard let client, let current = snapshot, state == .online else {
+            var drafts = loadPendingDrafts()
+            drafts.periods.removeAll { $0.key == key }
+            drafts.periods.append(PendingPeriodToggle(dayID: dayID, periodID: period.id, textHash: textHash, isCompleted: desired))
+            saveDrafts(drafts)
+            return
+        }
+
+        do {
+            let value = try await client.togglePeriod(
+                dayID: dayID,
+                periodID: period.id,
+                textHash: textHash,
+                isCompleted: desired,
+                baseRevision: current.revision
+            )
+            snapshot = value
+            pendingPeriodStates.removeValue(forKey: key)
+            lastConnectionIssue = nil
+            state = .online
+            saveCache(value)
+        } catch {
+            pendingPeriodStates.removeValue(forKey: key)
+            lastConnectionIssue = error.localizedDescription
+            state = .failed(error.localizedDescription)
+        }
+    }
+
     public func saveDaily(_ entry: DailySnapshot) async {
         guard let client, let current = snapshot, state == .online else {
             pendingDailyDraft = entry
@@ -442,7 +580,7 @@ public final class MobileSession: ObservableObject {
     }
 
     public var hasPendingDrafts: Bool {
-        pendingWeekDraft != nil || pendingDailyDraft != nil || pendingDeliveryCount > 0
+        pendingWeekDraft != nil || pendingDailyDraft != nil || pendingDeliveryCount > 0 || pendingPeriodCount > 0
     }
 
     public func commitPendingDrafts() async {
@@ -478,6 +616,27 @@ public final class MobileSession: ObservableObject {
                 pendingDeliveryCount = drafts.deliveries.count
                 saveDrafts(drafts)
             }
+            while let draft = drafts.periods.first {
+                guard let latest = snapshot else { break }
+                let period = latest.week.days.first(where: { $0.id == draft.dayID })?.slots.first(where: { $0.id == draft.periodID })
+                guard let period, PeriodCompletion.textHash(for: period.text) == draft.textHash else {
+                    drafts.periods.removeFirst()
+                    pendingPeriodStates.removeValue(forKey: draft.key)
+                    saveDrafts(drafts)
+                    continue
+                }
+                let value = try await client.togglePeriod(
+                    dayID: draft.dayID,
+                    periodID: draft.periodID,
+                    textHash: draft.textHash,
+                    isCompleted: draft.isCompleted,
+                    baseRevision: latest.revision
+                )
+                snapshot = value
+                drafts.periods.removeAll { $0.key == draft.key }
+                pendingPeriodStates.removeValue(forKey: draft.key)
+                saveDrafts(drafts)
+            }
             saveDrafts()
         } catch {
             state = .failed(error.localizedDescription)
@@ -488,12 +647,17 @@ public final class MobileSession: ObservableObject {
         pendingWeekDraft = nil
         pendingDailyDraft = nil
         pendingDeliveryCount = 0
-        saveDrafts(MobilePendingDrafts(week: nil, daily: nil, deliveries: []))
+        pendingPeriodCount = 0
+        pendingPeriodStates = [:]
+        saveDrafts(MobilePendingDrafts(week: nil, daily: nil, deliveries: [], periods: []))
     }
 
     public func clearLocalCache() {
         eventsTask?.cancel()
         eventsTask = nil
+        deltaFlushTask?.cancel()
+        deltaFlushTask = nil
+        pendingChatDeltas.removeAll()
         try? FileManager.default.removeItem(at: cacheURL)
         try? FileManager.default.removeItem(at: draftsURL)
         try? FileManager.default.removeItem(at: documentsURL)
@@ -507,8 +671,16 @@ public final class MobileSession: ObservableObject {
         pendingWeekDraft = nil
         pendingDailyDraft = nil
         pendingDeliveryCount = 0
+        pendingPeriodCount = 0
+        pendingPeriodStates = [:]
         inputDraft = ""
-        state = .unconfigured
+        lastConnectionIssue = nil
+        if client == nil {
+            state = .unconfigured
+        } else {
+            state = .connecting
+            Task { await refresh() }
+        }
     }
 
     private func loadCache() {
@@ -517,13 +689,14 @@ public final class MobileSession: ObservableObject {
         state = .offline(lastUpdated: value.fetchedAt)
     }
 
-    private func loadDocumentCache() {
-        guard let files = try? FileManager.default.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: nil) else { return }
-        let decoder = JSONDecoder()
-        for file in files where file.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: file), let detail = try? decoder.decode(DocumentDetail.self, from: data), MobileDocumentKey.all.contains(detail.documentKey) else { continue }
-            documentDetails[detail.documentKey] = detail
-        }
+    private nonisolated static func readCachedDocument(at url: URL, expectedKey: String) async -> DocumentDetail? {
+        await Task.detached(priority: .utility) {
+            guard let data = try? Data(contentsOf: url),
+                  let detail = try? JSONDecoder().decode(DocumentDetail.self, from: data),
+                  detail.documentKey == expectedKey,
+                  MobileDocumentKey.all.contains(detail.documentKey) else { return nil }
+            return detail
+        }.value
     }
 
     private func saveDocumentCache(_ value: DocumentDetail) {
@@ -539,7 +712,7 @@ public final class MobileSession: ObservableObject {
 
     private func loadPendingDrafts() -> MobilePendingDrafts {
         guard let data = try? Data(contentsOf: draftsURL), let value = try? JSONDecoder().decode(MobilePendingDrafts.self, from: data) else {
-            return MobilePendingDrafts(week: pendingWeekDraft, daily: pendingDailyDraft, deliveries: [])
+            return MobilePendingDrafts(week: pendingWeekDraft, daily: pendingDailyDraft, deliveries: [], periods: [])
         }
         return value
     }
@@ -549,6 +722,8 @@ public final class MobileSession: ObservableObject {
         pendingWeekDraft = value.week
         pendingDailyDraft = value.daily
         pendingDeliveryCount = value.deliveries.count
+        pendingPeriodCount = value.periods.count
+        pendingPeriodStates = Dictionary(uniqueKeysWithValues: value.periods.map { ($0.key, $0.isCompleted) })
     }
 
     private func saveDrafts(_ value: MobilePendingDrafts? = nil) {
@@ -556,6 +731,8 @@ public final class MobileSession: ObservableObject {
         pendingWeekDraft = drafts.week
         pendingDailyDraft = drafts.daily
         pendingDeliveryCount = drafts.deliveries.count
+        pendingPeriodCount = drafts.periods.count
+        pendingPeriodStates = Dictionary(uniqueKeysWithValues: drafts.periods.map { ($0.key, $0.isCompleted) })
         do {
             try FileManager.default.createDirectory(at: draftsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try JSONEncoder().encode(drafts).write(to: draftsURL, options: .atomic)
@@ -572,6 +749,8 @@ public final class MobileSession: ObservableObject {
             // 缓存失败不影响在线读写；下次启动仍会尝试重新拉取。
         }
     }
+
+    private func periodKey(dayID: String, periodID: String) -> String { "\(dayID)|\(periodID)" }
 }
 
 public struct StudyRocketRemoteError: LocalizedError {
@@ -738,6 +917,20 @@ public actor StudyRocketRemoteClient {
 
     public func toggleDelivery(text: String, isCompleted: Bool, baseRevision: String) async throws -> SnapshotResponse {
         try await post("/v1/deliveries/toggle", body: DeliveryToggleRequest(text: text, isCompleted: isCompleted, metadata: WriteMetadata(baseRevision: baseRevision)), as: SnapshotResponse.self)
+    }
+
+    public func togglePeriod(dayID: String, periodID: String, textHash: String, isCompleted: Bool, baseRevision: String) async throws -> SnapshotResponse {
+        try await post(
+            "/v1/periods/toggle",
+            body: PeriodCompletionToggleRequest(
+                dayID: dayID,
+                periodID: periodID,
+                textHash: textHash,
+                isCompleted: isCompleted,
+                metadata: WriteMetadata(baseRevision: baseRevision)
+            ),
+            as: SnapshotResponse.self
+        )
     }
 
     public func saveDaily(entry: DailySnapshot, baseRevision: String) async throws -> SnapshotResponse {

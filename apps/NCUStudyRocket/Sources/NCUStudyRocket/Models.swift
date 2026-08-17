@@ -84,12 +84,14 @@ struct WeeklyScheduledRow: Hashable {
 struct WeeklyPlan {
     static let days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     static let periods = ["上午", "中午", "晚上"]
+    static let periodIDs = ["morning", "noon", "evening"]
     var format: WeeklyPlanFormat = .timeGrid
     var cells: [[String]] = Array(repeating: Array(repeating: "", count: 7), count: 3)
     var datedRows: [WeeklyDatedRow] = []
     var dayDateLabels: [String] = Array(repeating: "", count: 7)
     var unassignedByDay: [String] = Array(repeating: "", count: 7)
     var dayCompletion: [Bool] = Array(repeating: false, count: 7)
+    var periodCompletion: [[Bool]] = Array(repeating: Array(repeating: false, count: 7), count: 3)
     var historicalRows: [WeeklyScheduledRow] = []
     var futureRows: [WeeklyScheduledRow] = []
     var migrationNotice: String?
@@ -112,6 +114,13 @@ struct WeeklyPlan {
               let day = MarkdownParser.leadingDate(in: dayDateLabels[column], relativeTo: date) else { return false }
         return MarkdownParser.studyCalendar.isDate(day, inSameDayAs: date)
     }
+}
+
+struct TodayPeriodTask: Identifiable, Equatable {
+    let id: String
+    let period: String
+    let task: String
+    let isCompleted: Bool
 }
 
 struct DailyEntry: Identifiable {
@@ -139,9 +148,9 @@ final class DashboardModel: ObservableObject {
         return (weekday + 5) % 7
     }
 
-    var todayCells: [(period: String, task: String)] { todayCells(on: .now) }
+    var todayCells: [TodayPeriodTask] { todayCells(on: .now) }
 
-    func todayCells(on date: Date) -> [(period: String, task: String)] {
+    func todayCells(on date: Date) -> [TodayPeriodTask] {
         let index = dayIndex(for: date)
         return WeeklyPlan.periods.enumerated().map { periodIndex, period in
             let task = index.flatMap { day in
@@ -149,7 +158,12 @@ final class DashboardModel: ObservableObject {
                     ? plan.cells[periodIndex][day]
                     : nil
             }
-            return (period, task ?? "")
+            let completed = index.map { day in
+                plan.periodCompletion.indices.contains(periodIndex)
+                    && plan.periodCompletion[periodIndex].indices.contains(day)
+                    && plan.periodCompletion[periodIndex][day]
+            } ?? false
+            return TodayPeriodTask(id: WeeklyPlan.periodIDs[periodIndex], period: period, task: task ?? "", isCompleted: completed)
         }
     }
 
@@ -159,11 +173,18 @@ final class DashboardModel: ObservableObject {
     }
 
     var filteredDeliveries: [WeeklyDelivery] { plan.deliveriesExcluding(.now) }
-    var visibleDeliveries: [WeeklyDelivery] { filteredDeliveries }
+    var visibleDeliveries: [WeeklyDelivery] {
+        filteredDeliveries.sorted { left, right in
+            let lhs = deliverySortKey(left)
+            let rhs = deliverySortKey(right)
+            if lhs.group != rhs.group { return lhs.group < rhs.group }
+            return lhs.date < rhs.date
+        }
+    }
     var completedDeliveries: Int { filteredDeliveries.filter(\.isCompleted).count }
     var visibleDeliveryCount: Int { filteredDeliveries.count }
     var firstOpenTask: String? {
-        todayCells.first(where: { !$0.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.task
+        todayCells.first(where: { !$0.isCompleted && !$0.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.task
     }
 
     private static func weekdayIndex(for date: Date) -> Int {
@@ -210,6 +231,52 @@ final class DashboardModel: ObservableObject {
             plan.deliveries[index].isCompleted.toggle()
             errorMessage = error.localizedDescription
         }
+    }
+
+    func togglePeriod(_ periodID: String, workspace: WorkspaceStore) {
+        guard let day = dayIndex(for: .now),
+              let period = WeeklyPlan.periodIDs.firstIndex(of: periodID),
+              plan.cells.indices.contains(period), plan.cells[period].indices.contains(day) else { return }
+        let text = plan.cells[period][day]
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let dayID = Self.isoDate(from: plan.dayDateLabels[day]) else { return }
+        let current = plan.periodCompletion[period][day]
+        guard let root else { return }
+        let repository = MarkdownRepository(root: root)
+        do {
+            let replacement = try MarkdownParser.replacePeriodCompletion(
+                in: original,
+                dayID: dayID,
+                periodID: periodID,
+                text: text,
+                isCompleted: !current
+            )
+            try repository.save(replacement, relative: file, loadedHash: loadedHash)
+            original = replacement
+            loadedHash = repository.hash(replacement)
+            plan.periodCompletion[period][day] = !current
+            errorMessage = nil
+            workspace.refreshGitStatus()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func deliverySortKey(_ delivery: WeeklyDelivery) -> (group: Int, date: Date) {
+        guard let date = MarkdownParser.leadingDate(in: delivery.text, relativeTo: .now) else {
+            return (delivery.isCompleted ? 3 : 2, .distantFuture)
+        }
+        if delivery.isCompleted { return (3, date) }
+        return (date < MarkdownParser.studyCalendar.startOfDay(for: .now) ? 0 : 1, date)
+    }
+
+    private static func isoDate(from label: String) -> String? {
+        guard let date = MarkdownParser.leadingDate(in: label, relativeTo: .now) else { return nil }
+        let formatter = DateFormatter()
+        formatter.calendar = MarkdownParser.studyCalendar
+        formatter.timeZone = MarkdownParser.studyCalendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
 }
 
@@ -337,8 +404,8 @@ final class WorkspaceStore: ObservableObject {
     }
 }
 
-enum MarkdownError: LocalizedError { case outsideWorkspace, nonMarkdown, conflict
-    var errorDescription: String? { switch self { case .outsideWorkspace: "文件不在当前仓库内"; case .nonMarkdown: "只允许编辑 Markdown 文件"; case .conflict: "文件已被其他程序修改" } }
+enum MarkdownError: LocalizedError { case outsideWorkspace, nonMarkdown, conflict, invalidManagedBlock
+    var errorDescription: String? { switch self { case .outsideWorkspace: "文件不在当前仓库内"; case .nonMarkdown: "只允许编辑 Markdown 文件"; case .conflict: "文件已被其他程序修改"; case .invalidManagedBlock: "时段完成状态边界已损坏，请先修复计划文件" } }
 }
 
 final class MarkdownRepository {
@@ -437,6 +504,12 @@ final class MarkdownDocumentModel: ObservableObject {
     }
 }
 
+private struct PeriodCompletionEntry: Hashable {
+    let dayID: String
+    let periodID: String
+    let textHash: String
+}
+
 enum MarkdownParser {
     static var studyCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
@@ -477,6 +550,7 @@ enum MarkdownParser {
                 plan.buffer = plan.bufferRules.map(\.text).joined(separator: "\n")
             }
         }
+        applyPeriodCompletions(in: lines, referenceDate: referenceDate, to: &plan)
         return plan
     }
 
@@ -519,7 +593,127 @@ enum MarkdownParser {
                 lines.replaceSubrange(section.content, with: ["<!-- studyrocket:buffer:start -->"] + bufferLines + ["<!-- studyrocket:buffer:end -->"])
             }
         }
+        return reconcilePeriodCompletions(in: lines.joined(separator: "\n"), with: plan)
+    }
+
+    static func replacePeriodCompletion(
+        in source: String,
+        dayID: String,
+        periodID: String,
+        text: String,
+        isCompleted: Bool
+    ) throws -> String {
+        guard WeeklyPlan.periodIDs.contains(periodID), isoDate(dayID) != nil else { throw MarkdownError.invalidManagedBlock }
+        var records = try periodCompletionRecords(in: source)
+        records.removeAll { $0.dayID == dayID && $0.periodID == periodID }
+        if isCompleted {
+            records.append(PeriodCompletionEntry(dayID: dayID, periodID: periodID, textHash: periodTextHash(text)))
+        }
+        return try replacingPeriodCompletionBlock(in: source, records: records)
+    }
+
+    private static func applyPeriodCompletions(in lines: [String], referenceDate: Date, to plan: inout WeeklyPlan) {
+        guard let records = try? periodCompletionRecords(in: lines.joined(separator: "\n")) else { return }
+        let recordSet = Set(records)
+        for day in 0..<min(plan.dayDateLabels.count, 7) {
+            guard let date = leadingDate(in: plan.dayDateLabels[day], relativeTo: referenceDate) else { continue }
+            let dayID = isoDateString(date)
+            for period in 0..<min(plan.cells.count, WeeklyPlan.periodIDs.count) where plan.cells[period].indices.contains(day) {
+                let text = plan.cells[period][day]
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                let record = PeriodCompletionEntry(
+                    dayID: dayID,
+                    periodID: WeeklyPlan.periodIDs[period],
+                    textHash: periodTextHash(text)
+                )
+                plan.periodCompletion[period][day] = recordSet.contains(record)
+            }
+        }
+    }
+
+    private static func reconcilePeriodCompletions(in source: String, with plan: WeeklyPlan) -> String {
+        guard source.contains("studyrocket:period-completion:start"),
+              let records = try? periodCompletionRecords(in: source) else { return source }
+        var valid = Set<PeriodCompletionEntry>()
+        for day in 0..<min(plan.dayDateLabels.count, 7) {
+            guard let date = leadingDate(in: plan.dayDateLabels[day], relativeTo: .now) else { continue }
+            let dayID = isoDateString(date)
+            for period in 0..<min(plan.cells.count, WeeklyPlan.periodIDs.count) where plan.cells[period].indices.contains(day) {
+                let text = plan.cells[period][day]
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                valid.insert(PeriodCompletionEntry(
+                    dayID: dayID,
+                    periodID: WeeklyPlan.periodIDs[period],
+                    textHash: periodTextHash(text)
+                ))
+            }
+        }
+        return (try? replacingPeriodCompletionBlock(in: source, records: records.filter(valid.contains))) ?? source
+    }
+
+    private static func periodCompletionRecords(in source: String) throws -> [PeriodCompletionEntry] {
+        let lines = source.components(separatedBy: .newlines)
+        let starts = lines.indices.filter { lines[$0].contains("studyrocket:period-completion:start") }
+        let ends = lines.indices.filter { lines[$0].contains("studyrocket:period-completion:end") }
+        guard starts.count <= 1, ends.count <= 1, starts.count == ends.count else { throw MarkdownError.invalidManagedBlock }
+        guard let start = starts.first, let end = ends.first else { return [] }
+        guard start < end else { throw MarkdownError.invalidManagedBlock }
+        return lines[(start + 1)..<end].compactMap { line in
+            guard let cells = splitTableRow(line), cells.count >= 4,
+                  isoDate(cells[0]) != nil,
+                  WeeklyPlan.periodIDs.contains(cells[1]),
+                  cells[2].range(of: #"^[0-9a-fA-F]{64}$"#, options: .regularExpression) != nil,
+                  parseBoolean(cells[3]) else { return nil }
+            return PeriodCompletionEntry(dayID: cells[0], periodID: cells[1], textHash: cells[2].lowercased())
+        }
+    }
+
+    private static func replacingPeriodCompletionBlock(in source: String, records: [PeriodCompletionEntry]) throws -> String {
+        var lines = source.components(separatedBy: .newlines)
+        let starts = lines.indices.filter { lines[$0].contains("studyrocket:period-completion:start") }
+        let ends = lines.indices.filter { lines[$0].contains("studyrocket:period-completion:end") }
+        guard starts.count <= 1, ends.count <= 1, starts.count == ends.count else { throw MarkdownError.invalidManagedBlock }
+        if let start = starts.first, let end = ends.first {
+            guard start < end else { throw MarkdownError.invalidManagedBlock }
+            lines.removeSubrange(start...end)
+        }
+        guard let weeklyEnd = lines.firstIndex(where: { $0.contains("studyrocket:weekly:end") }) else { throw MarkdownError.invalidManagedBlock }
+        let order = ["morning": 0, "noon": 1, "evening": 2]
+        let unique = Array(Set(records)).sorted {
+            ($0.dayID, order[$0.periodID] ?? .max, $0.textHash) < ($1.dayID, order[$1.periodID] ?? .max, $1.textHash)
+        }
+        let block = [
+            "<!-- studyrocket:period-completion:start -->",
+            "| 日期 | 时段 | 正文 SHA-256 | 完成 |",
+            "|------|------|-------------|------|"
+        ] + unique.map { "| \($0.dayID) | \($0.periodID) | \($0.textHash) | [x] |" }
+            + ["<!-- studyrocket:period-completion:end -->"]
+        lines.insert(contentsOf: block, at: weeklyEnd + 1)
         return lines.joined(separator: "\n")
+    }
+
+    private static func isoDate(_ value: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.calendar = studyCalendar
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = studyCalendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        guard let date = formatter.date(from: value), formatter.string(from: date) == value else { return nil }
+        return date
+    }
+
+    private static func isoDateString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = studyCalendar
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = studyCalendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    private static func periodTextHash(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     static func leadingDate(in text: String, relativeTo reference: Date, calendar: Calendar = studyCalendar) -> Date? {

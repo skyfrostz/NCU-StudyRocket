@@ -25,17 +25,17 @@ public final class MobileReminderScheduler: NSObject, UNUserNotificationCenterDe
     private let center = UNUserNotificationCenter.current()
 
     private override init() {
-        enabled = UserDefaults.standard.object(forKey: "studyrocket.mobileRemindersEnabled") as? Bool ?? true
+        enabled = UserDefaults.standard.object(forKey: "studyrocket.mobileRemindersEnabled") as? Bool ?? false
         super.init()
         center.delegate = self
     }
 
     public func configure() async {
-        _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
         guard enabled else {
             center.removeAllPendingNotificationRequests()
             return
         }
+        _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
         await scheduleDaily()
         await scheduleWeekly()
         await scheduleNextMonthEnd()

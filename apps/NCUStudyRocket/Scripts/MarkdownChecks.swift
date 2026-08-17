@@ -8,7 +8,8 @@ struct MarkdownChecks {
 
     static func main() {
         let source = "# 计划\n\n| 时段 | 周一 | 周二 | 周三 | 周四 | 周五 | 周六 | 周日 |\n|------|------|------|------|------|------|------|------|\n| 上午 | 数学 | | | | | | 复盘+重排 |\n| 下午 | | | | | | | |\n| 晚上 | | | | | | | |\n\n## 交付物清单\n- [ ] 读完第一章\n\n## 缓冲\n- 每天留白"
-        var plan = MarkdownParser.weekly(source)
+        let rollingWindowReference = MarkdownParser.studyCalendar.date(from: DateComponents(year: 2026, month: 8, day: 13))!
+        var plan = MarkdownParser.weekly(source, referenceDate: rollingWindowReference)
         check(plan.historicalRows.first?.slots[0] == "数学", "weekly parser preserves past rows")
         plan.cells[1][1] = "Python"; plan.deliveries = [WeeklyDelivery(text: "完成小测", isCompleted: true)]
         let updated = MarkdownParser.replaceWeekly(source, with: plan)

@@ -1199,11 +1199,19 @@ final class StudyChatStore: ObservableObject {
             guard usingHost, (generation == nil || generation == connectionGeneration) else { return }
             let messages = Self.messages(from: response)
             publishHistory(messages)
-            if finalState == .inProgress, let hostActiveTurnID,
-               let authoritative = Self.present(messages).first(where: { $0.id == hostActiveTurnID }),
-               authoritative.status != .inProgress {
-                completeTurn(ChatTurnResult(turnID: hostActiveTurnID, status: authoritative.status, errorMessage: authoritative.errorMessage, completedAt: authoritative.completedAt ?? .now))
-                isBusy = false
+            if finalState == .inProgress,
+               (isBusy || pendingSubmissionID != nil || hostActiveTurnID != nil) {
+                let authoritativeTurns = Self.present(messages)
+                let authoritative = (hostActiveTurnID.flatMap { id in authoritativeTurns.first(where: { $0.id == id }) })
+                    ?? authoritativeTurns.last(where: { $0.userMessage?.text == lastSubmitted })
+                if let authoritative {
+                    hostActiveTurnID = authoritative.id
+                    if pendingSubmissionID != nil { assignPendingSubmission(to: authoritative.id, startedAt: authoritative.startedAt) }
+                    if authoritative.status != .inProgress {
+                        completeTurn(ChatTurnResult(turnID: authoritative.id, status: authoritative.status, errorMessage: authoritative.errorMessage, completedAt: authoritative.completedAt ?? .now))
+                        isBusy = false
+                    }
+                }
             }
             if finalState != .inProgress {
                 hostStreamText.clearStreams()

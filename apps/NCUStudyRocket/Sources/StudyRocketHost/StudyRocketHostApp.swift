@@ -215,6 +215,7 @@ final class HostController: ObservableObject {
     @Published private(set) var chatStatus = "未连接"
     @Published private(set) var chatBusy = false
     private var server: StudyRocketHTTPServer?
+    private var startupDeadline: DispatchWorkItem?
     private var terminationSources: [DispatchSourceSignal] = []
     private var rootURL: URL {
         let path = UserDefaults.standard.string(forKey: "workspaceRoot") ?? "/Users/skyfrost/Desktop/大学"
@@ -248,9 +249,12 @@ final class HostController: ObservableObject {
             self.server = server
             pairingCode = server.generatePairingCode()
             devices = server.devices()
+            armStartupDeadline(for: server)
             server.start { [weak self] ready, message in
                 Task { @MainActor in
-                    guard let self, self.server != nil, self.status == .starting else { return }
+                    guard let self, self.server === server, self.status == .starting else { return }
+                    self.startupDeadline?.cancel()
+                    self.startupDeadline = nil
                     if ready {
                         self.status = .running
                         self.chatStatus = "已连接"
@@ -270,6 +274,8 @@ final class HostController: ObservableObject {
     }
 
     func stop() {
+        startupDeadline?.cancel()
+        startupDeadline = nil
         server?.stop()
         server = nil
         pairingCode = nil
@@ -277,6 +283,25 @@ final class HostController: ObservableObject {
         chatStatus = "未连接"
         chatBusy = false
         status = .stopped
+    }
+
+    /// The Host listener may be healthy while the local Codex stdio process is
+    /// wedged.  Do not leave the macOS control panel in `.starting` forever in
+    /// that case: the deadline is owned by the UI actor and always tears down
+    /// the listener, local-session token, lease, and child process together.
+    private func armStartupDeadline(for expectedServer: StudyRocketHTTPServer) {
+        startupDeadline?.cancel()
+        let deadline = DispatchWorkItem { [weak self, weak expectedServer] in
+            guard let self,
+                  let expectedServer,
+                  self.server === expectedServer,
+                  self.status == .starting else { return }
+            self.errorMessage = "Codex 自检超时（25 秒），Host 已停止。请重新启动连接。"
+            self.stop()
+            self.status = .failed
+        }
+        startupDeadline = deadline
+        DispatchQueue.main.asyncAfter(deadline: .now() + 25, execute: deadline)
     }
 
     func refreshDevices() {
@@ -794,7 +819,8 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
                 payload = (try? encoder.encode(APIErrorBody(code: "invalid_request", message: error.localizedDescription, retryable: false))) ?? Data("{}".utf8)
                 status = "400 Bad Request"
             }
-        } else if ["POST", "PUT"].contains(method), ["/v1/week", "/v1/deliveries/toggle", "/v1/daily"].contains(path) {
+        } else if (["POST", "PUT"].contains(method) && ["/v1/week", "/v1/deliveries/toggle", "/v1/daily"].contains(path))
+                    || (method == "POST" && path == "/v1/periods/toggle") {
             guard isAuthorized(headers: headers, method: method, path: path, body: body) else {
                 payload = (try? encoder.encode(APIErrorBody(code: "unauthorized", message: "设备尚未配对或请求签名已失效。", retryable: false))) ?? Data("{}".utf8)
                 status = "401 Unauthorized"
@@ -805,6 +831,7 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
                 switch path {
                 case "/v1/week": snapshot = try writeService.applyWeek(decoder.decode(PlanWriteRequest.self, from: body))
                 case "/v1/deliveries/toggle": snapshot = try writeService.toggleDelivery(decoder.decode(DeliveryToggleRequest.self, from: body))
+                case "/v1/periods/toggle": snapshot = try writeService.togglePeriod(decoder.decode(PeriodCompletionToggleRequest.self, from: body))
                 default: snapshot = try writeService.applyDaily(decoder.decode(DailyWriteRequest.self, from: body))
                 }
                 eventHub.publish(snapshot)

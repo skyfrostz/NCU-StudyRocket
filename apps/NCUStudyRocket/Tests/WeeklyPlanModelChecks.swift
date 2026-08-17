@@ -58,6 +58,22 @@ struct WeeklyPlanModelChecks {
         check(reparsed.unassignedByDay == migrated.unassignedByDay, "unassigned rows round trip")
         check(reparsed.dayCompletion == migrated.dayCompletion, "day completion round trip")
 
+        let completedMorning = try MarkdownParser.replacePeriodCompletion(
+            in: upgraded,
+            dayID: "2026-08-13",
+            periodID: "morning",
+            text: migrated.cells[0][0],
+            isCompleted: true
+        )
+        let completedPlan = MarkdownParser.weekly(completedMorning, referenceDate: today)
+        check(completedPlan.periodCompletion[0][0], "period completion round trips through the managed status block")
+        var changedPlan = completedPlan
+        changedPlan.cells[0][0] = "正文已变化"
+        let changedSource = MarkdownParser.replaceWeekly(completedMorning, with: changedPlan)
+        let changedParsed = MarkdownParser.weekly(changedSource, referenceDate: today)
+        check(!changedParsed.periodCompletion[0][0], "editing a period body resets its completion state")
+        check(!changedSource.contains("| 2026-08-13 | morning |"), "stale completion hashes are pruned on save")
+
         let legacyBuffer = """
         ## 缓冲
         - 每天保留 90 分钟弹性

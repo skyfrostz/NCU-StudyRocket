@@ -339,11 +339,29 @@ public struct PeriodSnapshot: Codable, Equatable, Sendable, Identifiable {
     public let id: String
     public let title: String
     public let text: String
+    public let isCompleted: Bool
 
-    public init(id: String, title: String, text: String) {
+    public init(id: String, title: String, text: String, isCompleted: Bool = false) {
         self.id = id
         self.title = title
         self.text = text
+        self.isCompleted = isCompleted
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, title, text, isCompleted }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        title = try values.decode(String.self, forKey: .title)
+        text = try values.decode(String.self, forKey: .text)
+        isCompleted = try values.decodeIfPresent(Bool.self, forKey: .isCompleted) ?? false
+    }
+}
+
+public enum PeriodCompletion {
+    public static func textHash(for text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 }
 
@@ -515,14 +533,36 @@ public enum StudyRocketMarkdownParser {
         var result: [StudyRocketMarkdownBlock] = []
         var prose: [String] = []
         var index = 0
+        var fence: Character?
+
+        func tableCells(_ line: String) -> [String] {
+            var cells: [String] = []
+            var current = ""
+            var escaped = false
+            for character in line {
+                if character == "|", !escaped {
+                    cells.append(current.trimmingCharacters(in: .whitespaces))
+                    current = ""
+                } else {
+                    current.append(character)
+                }
+                if character == "\\" { escaped.toggle() } else { escaped = false }
+            }
+            cells.append(current.trimmingCharacters(in: .whitespaces))
+            if cells.first?.isEmpty == true { cells.removeFirst() }
+            if cells.last?.isEmpty == true { cells.removeLast() }
+            return cells
+        }
 
         func isTableLine(_ line: String) -> Bool {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            return !trimmed.hasPrefix("```") && trimmed.filter { $0 == "|" }.count >= 1
+            let count = tableCells(line).count
+            return !trimmed.hasPrefix("```") && !trimmed.hasPrefix("~~~")
+                && (count >= 2 || (count == 1 && trimmed.hasPrefix("|") && trimmed.hasSuffix("|")))
         }
 
         func isDivider(_ line: String) -> Bool {
-            let cells = line.split(separator: "|", omittingEmptySubsequences: true)
+            let cells = tableCells(line)
             return !cells.isEmpty && cells.allSatisfy { cell in
                 cell.trimmingCharacters(in: .whitespaces).allSatisfy { $0 == "-" || $0 == ":" || $0 == " " }
             }
@@ -536,6 +576,18 @@ public enum StudyRocketMarkdownParser {
         }
 
         while index < lines.count {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            if let marker = trimmed.first, (trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~")) {
+                fence = fence == nil ? marker : (fence == marker ? nil : fence)
+                prose.append(lines[index])
+                index += 1
+                continue
+            }
+            if fence != nil {
+                prose.append(lines[index])
+                index += 1
+                continue
+            }
             guard index + 1 < lines.count, isTableLine(lines[index]), isDivider(lines[index + 1]) else {
                 prose.append(lines[index])
                 index += 1
@@ -546,7 +598,7 @@ public enum StudyRocketMarkdownParser {
             index += 2
             while index < lines.count && isTableLine(lines[index]) { index += 1 }
             let table = lines[start..<index].joined(separator: "\n")
-            let columns = lines[start].split(separator: "|", omittingEmptySubsequences: true).count
+            let columns = tableCells(lines[start]).count
             result.append(.table(markdown: table, columns: max(columns, 2)))
         }
         flushProse()
@@ -705,6 +757,22 @@ public struct DeliveryToggleRequest: Codable, Equatable, Sendable {
 
     public init(text: String, isCompleted: Bool, metadata: WriteMetadata) {
         self.text = text
+        self.isCompleted = isCompleted
+        self.metadata = metadata
+    }
+}
+
+public struct PeriodCompletionToggleRequest: Codable, Equatable, Sendable {
+    public let dayID: String
+    public let periodID: String
+    public let textHash: String
+    public let isCompleted: Bool
+    public let metadata: WriteMetadata
+
+    public init(dayID: String, periodID: String, textHash: String, isCompleted: Bool, metadata: WriteMetadata) {
+        self.dayID = dayID
+        self.periodID = periodID
+        self.textHash = textHash
         self.isCompleted = isCompleted
         self.metadata = metadata
     }

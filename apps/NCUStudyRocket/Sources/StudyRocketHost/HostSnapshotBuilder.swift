@@ -16,16 +16,17 @@ final class HostSnapshotBuilder {
 
     func build(now: Date = .now) -> SnapshotResponse {
         let planText = read("工作台/下周计划.md")
-        let plan = parsePlan(planText, now: now)
+        let plan = parsePlan(planText, now: now, completions: parsePeriodCompletions(planText))
         let daily = parseDaily(now: now)
         let visibleDeliveries = plan.deliveries.filter { delivery in
             guard let label = delivery.dateLabel, let date = parseDate(label, relativeTo: now) else { return true }
             return !calendar.isDate(date, inSameDayAs: now)
         }
+        let today = plan.days.first { calendar.isDate(parseDate($0.dateLabel, relativeTo: now) ?? .distantPast, inSameDayAs: now) }
         let home = HomeSnapshot(
             dateLabel: dateLabel(now),
-            periods: plan.days.first(where: { calendar.isDate(parseDate($0.dateLabel, relativeTo: now) ?? .distantPast, inSameDayAs: now) })?.slots ?? Self.emptyPeriods,
-            firstOpenTask: plan.days.first(where: { calendar.isDate(parseDate($0.dateLabel, relativeTo: now) ?? .distantPast, inSameDayAs: now) })?.slots.first(where: { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.text,
+            periods: today?.slots ?? Self.emptyPeriods,
+            firstOpenTask: today?.slots.first(where: { !$0.isCompleted && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.text,
             visibleDeliveries: visibleDeliveries,
             completedDeliveries: visibleDeliveries.filter { $0.isCompleted }.count,
             totalDeliveries: visibleDeliveries.count
@@ -41,7 +42,7 @@ final class HostSnapshotBuilder {
         PeriodSnapshot(id: "evening", title: "晚上", text: "")
     ]
 
-    private func parsePlan(_ source: String, now: Date) -> WeeklyPlanSnapshot {
+    private func parsePlan(_ source: String, now: Date, completions: Set<PeriodCompletionRecord>) -> WeeklyPlanSnapshot {
         let window = (0..<7).map { calendar.date(byAdding: .day, value: $0, to: calendar.startOfDay(for: now))! }
         var dayValues: [Date: [String]] = [:]
         var deliveries: [DeliverySnapshot] = []
@@ -123,18 +124,15 @@ final class HostSnapshotBuilder {
 
         let days = window.map { date -> DaySnapshot in
             let values = dayValues[calendar.startOfDay(for: date)] ?? ["", "", ""]
-            return DaySnapshot(id: isoDate(date), dateLabel: dateLabel(date), slots: [
-                PeriodSnapshot(id: "morning", title: "上午", text: values[safe: 0] ?? ""),
-                PeriodSnapshot(id: "noon", title: "中午", text: values[safe: 1] ?? ""),
-                PeriodSnapshot(id: "evening", title: "晚上", text: values[safe: 2] ?? "")
-            ])
+            let dayID = isoDate(date)
+            return DaySnapshot(id: dayID, dateLabel: dateLabel(date), slots: makePeriods(dayID: dayID, values: values, completions: completions))
         }
-        let hiddenRows = parseHiddenRows(source)
+        let hiddenRows = parseHiddenRows(source, reference: now, completions: completions)
         let start = calendar.startOfDay(for: now)
         let end = calendar.date(byAdding: .day, value: 7, to: start) ?? start
         var historicalRows: [ScheduledRowSnapshot] = []
         var futureRows: [ScheduledRowSnapshot] = []
-        for row in visibleRows.map(makeScheduledRow) + hiddenRows {
+        for row in visibleRows.map({ makeScheduledRow($0, reference: now, completions: completions) }) + hiddenRows {
             guard let date = parseDate(row.dateLabel, relativeTo: now) else {
                 futureRows.append(row)
                 continue
@@ -145,21 +143,22 @@ final class HostSnapshotBuilder {
         return WeeklyPlanSnapshot(days: days, bufferRules: parseBuffers(source), deliveries: deliveries, historicalRows: historicalRows, futureRows: futureRows)
     }
 
-    private func makeScheduledRow(_ row: (label: String, slots: [String], unassigned: String, completed: Bool)) -> ScheduledRowSnapshot {
-        ScheduledRowSnapshot(
+    private func makeScheduledRow(
+        _ row: (label: String, slots: [String], unassigned: String, completed: Bool),
+        reference: Date,
+        completions: Set<PeriodCompletionRecord>
+    ) -> ScheduledRowSnapshot {
+        let dayID = parseDate(row.label, relativeTo: reference).map(isoDate)
+        return ScheduledRowSnapshot(
             id: stableID("schedule", row.label, row.slots.joined(separator: "\u{1f}"), row.unassigned),
             dateLabel: row.label,
-            slots: [
-                PeriodSnapshot(id: "morning", title: "上午", text: row.slots[safe: 0] ?? ""),
-                PeriodSnapshot(id: "noon", title: "中午", text: row.slots[safe: 1] ?? ""),
-                PeriodSnapshot(id: "evening", title: "晚上", text: row.slots[safe: 2] ?? "")
-            ],
+            slots: makePeriods(dayID: dayID, values: row.slots, completions: completions),
             unassigned: row.unassigned,
             isCompleted: row.completed
         )
     }
 
-    private func parseHiddenRows(_ source: String) -> [ScheduledRowSnapshot] {
+    private func parseHiddenRows(_ source: String, reference: Date, completions: Set<PeriodCompletionRecord>) -> [ScheduledRowSnapshot] {
         let markers = [
             ("studyrocket:weekly:history:start", "studyrocket:weekly:history:end"),
             ("studyrocket:weekly:future:start", "studyrocket:weekly:future:end")
@@ -179,10 +178,47 @@ final class HostSnapshotBuilder {
                     (1...3).map { values[safe: $0] ?? "" },
                     values[safe: 4] ?? "",
                     values.indices.contains(5) && parseBoolean(values[5])
-                )))
+                ), reference: reference, completions: completions))
             }
         }
         return result
+    }
+
+    private func makePeriods(dayID: String?, values: [String], completions: Set<PeriodCompletionRecord>) -> [PeriodSnapshot] {
+        [("morning", "上午"), ("noon", "中午"), ("evening", "晚上")].enumerated().map { index, period in
+            let text = values[safe: index] ?? ""
+            let isCompleted = dayID.map {
+                !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && completions.contains(PeriodCompletionRecord(dayID: $0, periodID: period.0, textHash: PeriodCompletion.textHash(for: text)))
+            } ?? false
+            return PeriodSnapshot(id: period.0, title: period.1, text: text, isCompleted: isCompleted)
+        }
+    }
+
+    private func parsePeriodCompletions(_ source: String) -> Set<PeriodCompletionRecord> {
+        guard let start = source.range(of: "studyrocket:period-completion:start"),
+              let end = source.range(of: "studyrocket:period-completion:end", range: start.upperBound..<source.endIndex) else { return [] }
+        return Set(String(source[start.upperBound..<end.lowerBound]).components(separatedBy: .newlines).compactMap { line in
+            var cells = line.split(separator: "|", omittingEmptySubsequences: false).map { String($0).trimmingCharacters(in: .whitespaces) }
+            if cells.first?.isEmpty == true { cells.removeFirst() }
+            if cells.last?.isEmpty == true { cells.removeLast() }
+            guard cells.count >= 4,
+                  isISODate(cells[0]),
+                  Self.periodIDs.contains(cells[1]),
+                  cells[2].range(of: #"^[0-9a-fA-F]{64}$"#, options: .regularExpression) != nil,
+                  parseBoolean(cells[3]) else { return nil }
+            return PeriodCompletionRecord(dayID: cells[0], periodID: cells[1], textHash: cells[2].lowercased())
+        })
+    }
+
+    private static let periodIDs: Set<String> = ["morning", "noon", "evening"]
+
+    private func isISODate(_ text: String) -> Bool {
+        guard text.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else { return false }
+        let values = text.split(separator: "-").compactMap { Int($0) }
+        guard values.count == 3,
+              let date = calendar.date(from: DateComponents(year: values[0], month: values[1], day: values[2])) else { return false }
+        return isoDate(date) == text
     }
 
     private func parseDelivery(_ line: String, reference: Date) -> DeliverySnapshot? {
@@ -347,6 +383,12 @@ final class HostSnapshotBuilder {
         let digest = SHA256.hash(data: Data(input.utf8))
         return digest.map { String(format: "%02x", $0) }.joined().prefix(24).description
     }
+}
+
+private struct PeriodCompletionRecord: Hashable {
+    let dayID: String
+    let periodID: String
+    let textHash: String
 }
 
 private extension Array {

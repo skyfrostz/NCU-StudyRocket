@@ -14,6 +14,39 @@ enum HostChatError: LocalizedError {
     }
 }
 
+/// A small, lock-protected one-shot bridge between the Host's callback-based
+/// startup deadline and its async Codex self-check.  It deliberately uses the
+/// main dispatch queue for the deadline: a stalled app-server must not depend
+/// on the cooperative Swift task executor in order to leave `.starting`.
+private final class HostStartupCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var completed = false
+
+    func install(_ continuation: CheckedContinuation<Void, Error>) {
+        lock.lock()
+        if completed {
+            lock.unlock()
+            continuation.resume(throwing: HostChatError.unavailable("Host 自检已结束。"))
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func finish(_ result: Result<Void, Error>) {
+        lock.lock()
+        guard !completed, let continuation else { lock.unlock(); return }
+        completed = true
+        self.continuation = nil
+        lock.unlock()
+        switch result {
+        case .success: continuation.resume()
+        case .failure(let error): continuation.resume(throwing: error)
+        }
+    }
+}
+
 @MainActor
 private final class HostCodexSession {
     private let executable = "/Applications/ChatGPT.app/Contents/Resources/codex"
@@ -51,7 +84,6 @@ private final class HostCodexSession {
     private func processDidTerminate() {
         idleShutdownTask?.cancel()
         idleShutdownTask = nil
-        output?.readabilityHandler = nil
         input = nil
         output = nil
         process = nil
@@ -91,12 +123,13 @@ private final class HostCodexSession {
         touchActivity()
         input = stdin.fileHandleForWriting
         output = stdout.fileHandleForReading
-        stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            Task { @MainActor in self?.consume(data) }
-        }
-        stderr.fileHandleForReading.readabilityHandler = { handle in _ = handle.availableData }
+        // Do not rely on FileHandle.readabilityHandler here.  In a packaged
+        // AppKit process it can fail to fire for a quiet child, leaving a
+        // perfectly healthy app-server response buffered forever.  A blocking
+        // reader on a utility queue keeps stdout flowing and drains stderr so
+        // neither pipe can back-pressure the child process.
+        beginReadingStdout(stdout.fileHandleForReading)
+        drain(stderr.fileHandleForReading)
 
         _ = try await request(method: "initialize", params: [
             "clientInfo": ["name": "ncu-studyrocket-host", "version": "0.1.0"],
@@ -199,7 +232,6 @@ private final class HostCodexSession {
     func shutdown() {
         idleShutdownTask?.cancel()
         idleShutdownTask = nil
-        output?.readabilityHandler = nil
         if process?.isRunning == true { process?.terminate() }
         processDidTerminate()
     }
@@ -347,10 +379,38 @@ private final class HostCodexSession {
             let id = nextID()
             pending[id] = continuation
             sendRaw(["id": id, "method": method, "params": params])
+            Task { @MainActor [weak self] in
+                // A stalled app-server must never leave the Host UI in its
+                // startup state indefinitely.  Individual RPCs get a short,
+                // explicit deadline; the bridge-level self check below also
+                // owns a total deadline for the whole startup sequence.
+                try? await Task.sleep(for: .seconds(15))
+                guard let self, let timedOut = self.pending.removeValue(forKey: id) else { return }
+                timedOut.resume(throwing: HostChatError.unavailable("Codex 请求超时（\(method)），请重新启动连接。"))
+            }
         }
     }
 
     private func nextID() -> Int { requestID += 1; return requestID }
+
+    private func beginReadingStdout(_ handle: FileHandle) {
+        DispatchQueue.global(qos: .utility).async { [weak self, weak handle] in
+            while let handle {
+                let data = handle.availableData
+                guard !data.isEmpty else { return }
+                Task { @MainActor [weak self] in self?.consume(data) }
+            }
+        }
+    }
+
+    private func drain(_ handle: FileHandle) {
+        DispatchQueue.global(qos: .utility).async { [weak handle] in
+            while let handle {
+                let data = handle.availableData
+                guard !data.isEmpty else { return }
+            }
+        }
+    }
     private func sendNotification(method: String, params: [String: Any]) { sendRaw(["method": method, "params": params]) }
     private func sendRaw(_ object: [String: Any], to handle: FileHandle? = nil) {
         guard let data = try? JSONSerialization.data(withJSONObject: object), let target = handle ?? input else { return }
@@ -426,7 +486,32 @@ final class HostChatBridge: @unchecked Sendable {
         guard StudyRocketDynamicToolContract.declarationIsValid else {
             throw HostChatError.protocolError("StudyRocket 草案工具声明校验失败。")
         }
-        _ = try await connectHistory()
+        // `connectHistory` crosses the app-server's asynchronous stdio
+        // boundary.  A process can stay alive while never returning a
+        // response (for example after a local Codex upgrade), so a per-RPC
+        // timeout alone is not enough to guarantee that startup finishes.
+        // Use the main run loop rather than a sibling Swift task for this
+        // deadline; it continues to fire even if the cooperative executor is
+        // occupied by the suspended stdio bridge.
+        let completion = HostStartupCompletion()
+        try await withCheckedThrowingContinuation { continuation in
+            completion.install(continuation)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 25) {
+                completion.finish(.failure(HostChatError.unavailable("Codex 自检超时（25 秒），Host 已停止。请重新启动连接。")))
+            }
+            Task { [weak self] in
+                guard let self else {
+                    completion.finish(.failure(HostChatError.unavailable("Host 会话不可用。")))
+                    return
+                }
+                do {
+                    _ = try await self.connectHistory()
+                    completion.finish(.success(()))
+                } catch {
+                    completion.finish(.failure(error))
+                }
+            }
+        }
         setProtocolReady(true)
         onEvent?("chat.ready")
     }
@@ -461,6 +546,9 @@ final class HostChatBridge: @unchecked Sendable {
                 succeeded = true
             } catch {
                 setProtocolReady(false)
+                if session?.isRunning == true, let value = try? await session?.loadHistory() {
+                    cache.set(value)
+                }
                 if lastTerminalTurnID == nil {
                     onStreamEvent?(ChatStreamEvent(kind: "status", text: error.localizedDescription, status: "failed"))
                 }

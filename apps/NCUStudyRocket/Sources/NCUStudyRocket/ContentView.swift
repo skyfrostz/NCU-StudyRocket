@@ -80,10 +80,15 @@ struct DashboardView: View {
                     }
                 }
                 ResponsiveColumns {
-                    TodayPlanList(tasks: dashboard.todayCells, firstTask: dashboard.firstOpenTask, unassigned: dashboard.todayUnassigned)
+                    TodayPlanList(
+                        tasks: dashboard.todayCells,
+                        firstTask: dashboard.firstOpenTask,
+                        unassigned: dashboard.todayUnassigned,
+                        toggle: { dashboard.togglePeriod($0, workspace: workspace) }
+                    )
                 } second: {
                     DeliveryOverview(
-                        deliveries: dashboard.filteredDeliveries,
+                        deliveries: dashboard.visibleDeliveries,
                         emptyMessage: dashboard.plan.deliveries.isEmpty ? "周计划中还没有交付物。" : "除今日安排外，本周暂无其他交付物。",
                         completed: dashboard.completedDeliveries,
                         total: dashboard.filteredDeliveries.count
@@ -122,6 +127,9 @@ struct DashboardView: View {
         }
         .onAppear { dashboard.load(from: workspace.rootURL) }
         .onChange(of: workspace.rootURL) { _, root in dashboard.load(from: root) }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            dashboard.load(from: workspace.rootURL)
+        }
     }
 }
 
@@ -205,9 +213,10 @@ private struct DeliveryOverviewRow: View {
 
 private struct TodayPlanList: View {
     @EnvironmentObject private var chat: StudyChatStore
-    let tasks: [(period: String, task: String)]
+    let tasks: [TodayPeriodTask]
     let firstTask: String?
     let unassigned: String
+    let toggle: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -218,19 +227,37 @@ private struct TodayPlanList: View {
                 if firstTask != nil { Image(systemName: "flag.fill").foregroundStyle(.tint).accessibilityLabel("有待完成任务") }
             }
             .padding(.bottom, 8)
-            ForEach(Array(tasks.enumerated()), id: \.offset) { index, item in
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text(item.period).font(.caption.weight(.medium)).foregroundStyle(.secondary).frame(width: 38, alignment: .leading)
-                    Circle().fill(item.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.secondary.opacity(0.28) : Color.accentColor)
-                        .frame(width: 7, height: 7)
-                    Text(item.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未安排" : item.task)
-                        .font(.system(size: StudyRocketTheme.bodySize))
-                        .foregroundStyle(item.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .secondary : .primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
+            ForEach(Array(tasks.enumerated()), id: \.element.id) { index, item in
+                Button { toggle(item.id) } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
+                            .font(.body)
+                            .foregroundStyle(item.isCompleted ? Color.teal : item.task.isEmpty ? Color.secondary.opacity(0.45) : Color.accentColor)
+                            .frame(width: 20, height: 20)
+                            .padding(.top, 1)
+                        Text(item.period)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 38, alignment: .leading)
+                            .padding(.top, 2)
+                        Text(item.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未安排" : item.task)
+                            .font(.system(size: StudyRocketTheme.bodySize))
+                            .lineSpacing(StudyRocketTheme.bodyLineSpacing)
+                            .foregroundStyle(item.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || item.isCompleted ? .secondary : .primary)
+                            .strikethrough(item.isCompleted, color: .secondary)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
-                .frame(minHeight: 44)
-                if index < tasks.count - 1 { Divider().padding(.leading, 57) }
+                .buttonStyle(.plain)
+                .disabled(item.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityLabel("\(item.period)：\(item.task.isEmpty ? "未安排" : item.task)")
+                .accessibilityValue(item.isCompleted ? "已完成" : "未完成")
+                .accessibilityHint(item.task.isEmpty ? "当前时段没有任务" : item.isCompleted ? "点按标记为未完成" : "点按标记为已完成")
+                if index < tasks.count - 1 { Divider().padding(.leading, 32) }
             }
             if !unassigned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Label("今天有待分时安排", systemImage: "exclamationmark.triangle.fill")

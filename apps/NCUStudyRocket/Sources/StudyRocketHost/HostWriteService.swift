@@ -28,15 +28,18 @@ final class HostWriteService {
     func applyWeek(_ request: PlanWriteRequest) throws -> SnapshotResponse {
         if let cached = replayedValue(for: request.metadata.idempotencyKey) { return cached }
         try ensureAPIVersion(request.metadata.apiVersion)
-        try ensureRevision(request.metadata.baseRevision)
         let relative = "工作台/下周计划.md"
         let source = try read(relative)
+        try ensureRevision(request.metadata.baseRevision)
+        let completionRecords = try parsePeriodCompletionRecords(source)
         // The mobile client edits the schedule, deliveries and fallback rules in
         // one screen.  Keep those edits in the same atomic save so a successful
         // response can never silently drop two thirds of the submitted plan.
         let scheduled = updateWeekly(source, plan: request.plan)
         let deliveries = updateDeliveries(scheduled, deliveries: request.plan.deliveries)
-        let updated = updateBuffers(deliveries, rules: request.plan.bufferRules)
+        let buffered = updateBuffers(deliveries, rules: request.plan.bufferRules)
+        let validRecords = completionRecords.intersection(periodCompletionRecords(in: request.plan))
+        let updated = try updatePeriodCompletionBlock(buffered, records: validRecords)
         try save(updated, relative: relative, expectedHash: hash(source))
         let value = snapshotBuilder.build()
         storeReplay(value, for: request.metadata.idempotencyKey)
@@ -68,6 +71,37 @@ final class HostWriteService {
         return value
     }
 
+    func togglePeriod(_ request: PeriodCompletionToggleRequest) throws -> SnapshotResponse {
+        if let cached = replayedValue(for: request.metadata.idempotencyKey) { return cached }
+        try ensureAPIVersion(request.metadata.apiVersion)
+        let relative = "工作台/下周计划.md"
+        let source = try read(relative)
+        let current = try ensureRevision(request.metadata.baseRevision)
+        guard isISODate(request.dayID), Self.periodIDs.contains(request.periodID) else {
+            throw HostWriteError(code: "invalid_period", message: "日期或时段无效，请重新加载计划。")
+        }
+        guard request.textHash.range(of: #"^[0-9a-fA-F]{64}$"#, options: .regularExpression) != nil,
+              let period = current.week.days.first(where: { $0.id == request.dayID })?.slots.first(where: { $0.id == request.periodID }),
+              !period.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw HostWriteError(code: "period_not_found", message: "找不到对应时段任务，请重新加载计划。")
+        }
+        let textHash = request.textHash.lowercased()
+        guard PeriodCompletion.textHash(for: period.text) == textHash else {
+            throw HostWriteError(code: "period_text_changed", message: "时段正文已变化，请重新加载后再操作。")
+        }
+
+        var records = try parsePeriodCompletionRecords(source).intersection(periodCompletionRecords(in: current.week))
+        records = Set(records.filter { $0.dayID != request.dayID || $0.periodID != request.periodID })
+        if request.isCompleted {
+            records.insert(PersistedPeriodCompletion(dayID: request.dayID, periodID: request.periodID, textHash: textHash))
+        }
+        let updated = try updatePeriodCompletionBlock(source, records: records)
+        if updated != source { try save(updated, relative: relative, expectedHash: hash(source)) }
+        let value = snapshotBuilder.build()
+        storeReplay(value, for: request.metadata.idempotencyKey)
+        return value
+    }
+
     func applyDaily(_ request: DailyWriteRequest) throws -> SnapshotResponse {
         if let cached = replayedValue(for: request.metadata.idempotencyKey) { return cached }
         try ensureAPIVersion(request.metadata.apiVersion)
@@ -91,11 +125,13 @@ final class HostWriteService {
         return value
     }
 
-    private func ensureRevision(_ expected: String) throws {
-        let current = snapshotBuilder.build().revision
-        guard current == expected else {
+    @discardableResult
+    private func ensureRevision(_ expected: String) throws -> SnapshotResponse {
+        let current = snapshotBuilder.build()
+        guard current.revision == expected else {
             throw HostWriteError(code: "conflict", message: "仓库内容已变化，请重新加载后再保存。")
         }
+        return current
     }
 
     private func ensureAPIVersion(_ version: Int) throws {
@@ -230,6 +266,85 @@ final class HostWriteService {
         let completed = value.contains("[x]") || value.contains("[X]")
         let text = value.replacingOccurrences(of: #"^\s*\[[ xX]\]\s*"#, with: "", options: .regularExpression)
         return (text, completed)
+    }
+
+    private static let periodIDs: Set<String> = ["morning", "noon", "evening"]
+
+    private func periodCompletionRecords(in plan: WeeklyPlanSnapshot) -> Set<PersistedPeriodCompletion> {
+        Set(plan.days.flatMap { day in
+            day.slots.compactMap { period in
+                guard Self.periodIDs.contains(period.id),
+                      !period.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                return PersistedPeriodCompletion(
+                    dayID: day.id,
+                    periodID: period.id,
+                    textHash: PeriodCompletion.textHash(for: period.text)
+                )
+            }
+        })
+    }
+
+    private func parsePeriodCompletionRecords(_ source: String) throws -> Set<PersistedPeriodCompletion> {
+        let lines = source.components(separatedBy: .newlines)
+        let starts = lines.indices.filter { lines[$0].contains("studyrocket:period-completion:start") }
+        let ends = lines.indices.filter { lines[$0].contains("studyrocket:period-completion:end") }
+        guard starts.count <= 1, ends.count <= 1, starts.count == ends.count else {
+            throw HostWriteError(code: "managed_block_invalid", message: "时段完成状态边界已损坏，请先修复计划文件。")
+        }
+        guard let start = starts.first, let end = ends.first else { return [] }
+        guard start < end else {
+            throw HostWriteError(code: "managed_block_invalid", message: "时段完成状态边界已损坏，请先修复计划文件。")
+        }
+        return Set(lines[(start + 1)..<end].compactMap { line in
+            let cells = splitTable(line)
+            guard cells.count >= 4,
+                  isISODate(cells[0]),
+                  Self.periodIDs.contains(cells[1]),
+                  cells[2].range(of: #"^[0-9a-fA-F]{64}$"#, options: .regularExpression) != nil,
+                  cells[3].trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "[x]" else { return nil }
+            return PersistedPeriodCompletion(dayID: cells[0], periodID: cells[1], textHash: cells[2].lowercased())
+        })
+    }
+
+    private func updatePeriodCompletionBlock(_ source: String, records: Set<PersistedPeriodCompletion>) throws -> String {
+        var lines = source.components(separatedBy: .newlines)
+        let starts = lines.indices.filter { lines[$0].contains("studyrocket:period-completion:start") }
+        let ends = lines.indices.filter { lines[$0].contains("studyrocket:period-completion:end") }
+        guard starts.count <= 1, ends.count <= 1, starts.count == ends.count else {
+            throw HostWriteError(code: "managed_block_invalid", message: "时段完成状态边界已损坏，请先修复计划文件。")
+        }
+        if let start = starts.first, let end = ends.first {
+            guard start < end else {
+                throw HostWriteError(code: "managed_block_invalid", message: "时段完成状态边界已损坏，请先修复计划文件。")
+            }
+            lines.removeSubrange(start...end)
+        }
+        guard let weeklyEnd = lines.firstIndex(where: { $0.contains("studyrocket:weekly:end") }) else {
+            throw HostWriteError(code: "managed_block_missing", message: "找不到周计划管理边界，未写入完成状态。")
+        }
+        let order = ["morning": 0, "noon": 1, "evening": 2]
+        let rows = records.sorted {
+            ($0.dayID, order[$0.periodID] ?? .max, $0.textHash) < ($1.dayID, order[$1.periodID] ?? .max, $1.textHash)
+        }.map { "| \($0.dayID) | \($0.periodID) | \($0.textHash) | [x] |" }
+        let block = [
+            "<!-- studyrocket:period-completion:start -->",
+            "| 日期 | 时段 | 正文 SHA-256 | 完成 |",
+            "|------|------|-------------|------|"
+        ] + rows + ["<!-- studyrocket:period-completion:end -->"]
+        lines.insert(contentsOf: block, at: weeklyEnd + 1)
+        return lines.joined(separator: "\n")
+    }
+
+    private func isISODate(_ text: String) -> Bool {
+        guard text.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else { return false }
+        let values = text.split(separator: "-").compactMap { Int($0) }
+        guard values.count == 3,
+              let date = calendar.date(from: DateComponents(year: values[0], month: values[1], day: values[2])) else { return false }
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date) == text
     }
 
     private func updateDaily(_ source: String, entry: DailySnapshot) -> String {
@@ -382,6 +497,12 @@ final class HostWriteService {
         }
         for file in matches.dropFirst(20) { try? fileManager.removeItem(at: file) }
     }
+}
+
+private struct PersistedPeriodCompletion: Hashable {
+    let dayID: String
+    let periodID: String
+    let textHash: String
 }
 
 private extension Array {
