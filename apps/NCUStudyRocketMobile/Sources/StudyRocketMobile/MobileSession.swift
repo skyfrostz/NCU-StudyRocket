@@ -1564,15 +1564,26 @@ public final class MobileSession: ObservableObject {
            let period = day.slots.first(where: { $0.id == periodID }) {
             return (day.dateLabel, period)
         }
-        if let day = snapshot.week.historicalRows.first(where: { $0.id == dayID }),
-           let period = day.slots.first(where: { $0.id == periodID }) {
-            return (day.dateLabel, period)
-        }
-        if let day = snapshot.week.futureRows.first(where: { $0.id == dayID }),
-           let period = day.slots.first(where: { $0.id == periodID }) {
-            return (day.dateLabel, period)
+        // Scheduled-row IDs are stable UI identities, not ISO day IDs. Match
+        // deferred rows by their date labels so queued historical operations
+        // remain addressable after the rolling seven-day window advances.
+        for row in snapshot.week.historicalRows + snapshot.week.futureRows {
+            guard scheduledRow(row, matchesDayID: dayID),
+                  let period = row.slots.first(where: { $0.id == periodID }) else {
+                continue
+            }
+            return (row.dateLabel, period)
         }
         return nil
+    }
+
+    private func scheduledRow(_ row: ScheduledRowSnapshot, matchesDayID dayID: String) -> Bool {
+        let target = dayID.split(separator: "-").compactMap { Int($0) }
+        guard target.count == 3 else { return false }
+        let values = row.dateLabel.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
+        guard values.count == 2 || values.count == 3 else { return false }
+        guard values.suffix(2).elementsEqual(target.suffix(2)) else { return false }
+        return values.count == 2 || values[0] == target[0]
     }
 
     private func shouldReconcileAfterWrite(_ error: Error) -> Bool {

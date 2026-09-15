@@ -170,21 +170,33 @@ private final class MobileSyncFixture: @unchecked Sendable {
             }
             let days = authoritative.week.days.map { day in
                 guard day.id == value.dayID else { return day }
-                let slots = day.slots.map { period in
-                    guard period.id == value.periodID,
-                          period.tasks.contains(where: { $0.id == taskID }) else { return period }
-                    let tasks = period.tasks.map { task in
-                        PeriodTaskSnapshot(
-                            id: task.id,
-                            text: task.text,
-                            isCompleted: task.id == taskID ? value.isCompleted : task.isCompleted
-                        )
-                    }
-                    return PeriodSnapshot(id: period.id, title: period.title, text: period.text, tasks: tasks)
-                }
+                let slots = Self.updatedSlots(day.slots, periodID: value.periodID, taskID: taskID, isCompleted: value.isCompleted)
                 return DaySnapshot(id: day.id, dateLabel: day.dateLabel, slots: slots, unassigned: day.unassigned)
             }
-            authoritative = Self.rebuild(authoritative, days: days)
+            let historicalRows = authoritative.week.historicalRows.map { row in
+                ScheduledRowSnapshot(
+                    id: row.id,
+                    dateLabel: row.dateLabel,
+                    slots: Self.updatedSlots(row.slots, periodID: value.periodID, taskID: taskID, isCompleted: value.isCompleted),
+                    unassigned: row.unassigned,
+                    isCompleted: row.isCompleted
+                )
+            }
+            let futureRows = authoritative.week.futureRows.map { row in
+                ScheduledRowSnapshot(
+                    id: row.id,
+                    dateLabel: row.dateLabel,
+                    slots: Self.updatedSlots(row.slots, periodID: value.periodID, taskID: taskID, isCompleted: value.isCompleted),
+                    unassigned: row.unassigned,
+                    isCompleted: row.isCompleted
+                )
+            }
+            authoritative = Self.rebuild(
+                authoritative,
+                days: days,
+                historicalRows: historicalRows,
+                futureRows: futureRows
+            )
             return MobileStubResponse(statusCode: 200, data: try encoder.encode(authoritative))
         default:
             return MobileStubResponse(
@@ -218,10 +230,14 @@ private final class MobileSyncFixture: @unchecked Sendable {
     private static func rebuild(
         _ source: SnapshotResponse,
         deliveries: [DeliverySnapshot]? = nil,
-        days: [DaySnapshot]? = nil
+        days: [DaySnapshot]? = nil,
+        historicalRows: [ScheduledRowSnapshot]? = nil,
+        futureRows: [ScheduledRowSnapshot]? = nil
     ) -> SnapshotResponse {
         let deliveries = deliveries ?? source.week.deliveries
         let days = days ?? source.week.days
+        let historicalRows = historicalRows ?? source.week.historicalRows
+        let futureRows = futureRows ?? source.week.futureRows
         let nextNumber = Int(source.revision.dropFirst()) ?? 0
         let revision = "r\(nextNumber + 1)"
         let periods = days.first?.slots ?? source.home.periods
@@ -240,12 +256,32 @@ private final class MobileSyncFixture: @unchecked Sendable {
                 days: days,
                 bufferRules: source.week.bufferRules,
                 deliveries: deliveries,
-                historicalRows: source.week.historicalRows,
-                futureRows: source.week.futureRows
+                historicalRows: historicalRows,
+                futureRows: futureRows
             ),
             daily: source.daily,
             summaries: source.summaries
         )
+    }
+
+    private static func updatedSlots(
+        _ slots: [PeriodSnapshot],
+        periodID: String,
+        taskID: String,
+        isCompleted: Bool
+    ) -> [PeriodSnapshot] {
+        slots.map { period in
+            guard period.id == periodID,
+                  period.tasks.contains(where: { $0.id == taskID }) else { return period }
+            let tasks = period.tasks.map { task in
+                PeriodTaskSnapshot(
+                    id: task.id,
+                    text: task.text,
+                    isCompleted: task.id == taskID ? isCompleted : task.isCompleted
+                )
+            }
+            return PeriodSnapshot(id: period.id, title: period.title, text: period.text, tasks: tasks)
+        }
     }
 }
 
@@ -318,6 +354,73 @@ final class MobileSessionSyncTests: XCTestCase {
         XCTAssertEqual(session.pendingDeliveryCount, 0)
         XCTAssertEqual(session.pendingPeriodCount, 0)
         XCTAssertFalse(session.isReplayingPendingToggles)
+        XCTAssertNil(session.pendingToggleSyncIssue)
+    }
+
+    func testKeyedHistoricalPeriodToggleMatchesDateLabelAndDoesNotBlockFollowingQueue() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let historicalTask = PeriodTaskSnapshot(id: "historical-task", text: "历史任务", isCompleted: true)
+        let historicalRows = [ScheduledRowSnapshot(
+            id: "opaque-scheduled-row-id",
+            dateLabel: "9 月 14 日",
+            slots: [
+                PeriodSnapshot(id: "morning", title: "上午", text: "历史任务", tasks: [historicalTask]),
+                PeriodSnapshot(id: "noon", title: "中午", text: ""),
+                PeriodSnapshot(id: "evening", title: "晚上", text: "")
+            ]
+        )]
+        let currentTask = PeriodTaskSnapshot(id: "current-task", text: "当前任务", isCompleted: true)
+        let currentPeriods = [
+            PeriodSnapshot(id: "morning", title: "上午", text: "当前任务", tasks: [currentTask]),
+            PeriodSnapshot(id: "noon", title: "中午", text: ""),
+            PeriodSnapshot(id: "evening", title: "晚上", text: "")
+        ]
+        let initial = makeSnapshot(periods: currentPeriods)
+        let snapshot = SnapshotResponse(
+            revision: initial.revision,
+            fetchedAt: initial.fetchedAt,
+            home: initial.home,
+            week: WeeklyPlanSnapshot(
+                days: initial.week.days,
+                bufferRules: initial.week.bufferRules,
+                deliveries: initial.week.deliveries,
+                historicalRows: historicalRows
+            ),
+            daily: initial.daily,
+            summaries: initial.summaries
+        )
+        let payload: [String: Any] = [
+            "deliveries": [],
+            "periods": [
+                [
+                    "dayID": "2026-09-14",
+                    "periodID": "morning",
+                    "taskID": "historical-task",
+                    "isCompleted": false,
+                    "idempotencyKey": "historical-key"
+                ],
+                [
+                    "dayID": "2026-08-19",
+                    "periodID": "morning",
+                    "taskID": "current-task",
+                    "isCompleted": true,
+                    "idempotencyKey": "current-key"
+                ]
+            ]
+        ]
+        try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+            .write(to: directory.appendingPathComponent("pending-drafts.json"), options: .atomic)
+        let fixture = MobileSyncFixture(snapshot: snapshot)
+        let session = makeSession(directory: directory, fixture: fixture)
+
+        await session.refresh()
+
+        XCTAssertEqual(fixture.writePaths, ["/v1/periods/toggle"])
+        XCTAssertEqual(fixture.baseRevisions, ["r0"])
+        XCTAssertEqual(session.pendingPeriodCount, 0)
+        XCTAssertFalse(session.snapshot?.week.historicalRows.first?.slots.first?.tasks.first?.isCompleted ?? true)
+        XCTAssertTrue(session.snapshot?.week.days.first?.slots.first?.tasks.first?.isCompleted ?? false)
         XCTAssertNil(session.pendingToggleSyncIssue)
     }
 
