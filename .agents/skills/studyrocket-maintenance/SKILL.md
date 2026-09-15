@@ -30,7 +30,7 @@ description: 维护和排查 NCU StudyRocket 的 macOS Desktop、Mac Host、iPho
 
 ## GitHub `main` 发布规则
 
-用户已在 2026-09-16 决定：每一次实际 StudyRocket 源码、资源、维护文档或维护 Skill 更新，均须在验证后提交并推送至 GitHub `origin/main`；只读诊断不创建空提交。
+用户已在 2026-09-15 决定：每一次实际 StudyRocket 源码、资源、维护文档或维护 Skill 更新，均须在验证后提交并推送至 GitHub `origin/main`；只读诊断不创建空提交。
 
 1. 开始和提交前均运行 `git status --short` 与 `git fetch origin main`，再用 `git rev-list --left-right --count origin/main...HEAD` 和 `git log --oneline origin/main..HEAD` 核对发布范围。
 2. 只用带路径的 `git add -- <path>` 暂存本次文件；先审核 `git diff --cached`、运行受影响检查和 `git diff --check`。绝不将既有用户 Markdown、Office 文件、构建目录、缓存、签名材料或无关改动带入提交。

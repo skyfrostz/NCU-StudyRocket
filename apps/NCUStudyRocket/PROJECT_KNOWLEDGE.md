@@ -1,6 +1,6 @@
 # NCU StudyRocket 项目知识库
 
-更新时间：2026-09-16
+更新时间：2026-09-15
 
 本文件汇总当前 Codex 项目会话中仍有维护价值的内容，并与当前源码交叉核验。它不是发布说明，也不替代 `AGENTS.md`、`README.md`、源码或测试。
 
@@ -359,7 +359,7 @@ shasum -a 256 '工作台/下周计划.md'
 - 1 秒中断动画、Reduce Motion、VoiceOver、Dynamic Type 和深浅色模式。
 - Mac 与 Host 的 Codex 单实例租约。
 
-## 8. 2026-09-16 跨端计划、离线同步与发布沉淀
+## 8. 2026-09-15 跨端计划、离线同步与发布沉淀
 
 ### 8.1 已实现的计划与界面契约
 
@@ -389,7 +389,7 @@ shasum -a 256 '工作台/下周计划.md'
 
 ### 8.4 GitHub `main` 发布规则
 
-**产品决策（2026-09-16）**：此后每一次实际修改 StudyRocket 源码、资源、维护文档或维护 Skill 的更新，都必须在相应验证通过后提交并推送到 GitHub `origin/main`。只读诊断不创建无意义提交。
+**产品决策（2026-09-15）**：此后每一次实际修改 StudyRocket 源码、资源、维护文档或维护 Skill 的更新，都必须在相应验证通过后提交并推送到 GitHub `origin/main`。只读诊断不创建无意义提交。
 
 1. 提交前运行 `git fetch origin main`，核对 `origin/main...HEAD` 的领先/落后关系和工作区状态。
 2. 只能以明确路径暂存本次文件，检查 staged diff 与 `git diff --check`；不得借本次发布带入用户的 Markdown、Office 文件、构建产物、缓存或其他无关改动。
