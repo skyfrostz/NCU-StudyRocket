@@ -144,7 +144,7 @@ struct HostDashboardView: View {
     }
 
     private var statusOverview: some View {
-        HostSection(title: "连接状态", subtitle: "手机访问前需要 Host、Codex 和私网入口均可用") {
+        HostSection(title: "连接状态", subtitle: "首页与计划功能独立于学业对话协议自检") {
             VStack(spacing: 0) {
                 HostStatusRow(icon: host.status.systemImage, title: "Host", value: host.status.title, tint: host.status.color)
                 Divider().padding(.leading, 38)

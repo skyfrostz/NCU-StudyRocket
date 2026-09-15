@@ -6,6 +6,14 @@ import SwiftUI
 import StudyRocketShared
 import StudyRocketChatCore
 
+private struct PublicHealthResponse: Encodable {
+    let apiVersion = StudyRocketAPI.version
+    let hostVersion: String
+    let repositoryBound: Bool
+    let codexReady: Bool
+    let dynamicToolsReady: Bool
+}
+
 @main
 enum StudyRocketHostApp {
     static func main() {
@@ -13,7 +21,9 @@ enum StudyRocketHostApp {
         let delegate = HostApplicationDelegate()
         application.delegate = delegate
         application.setActivationPolicy(.regular)
-        application.run()
+        withExtendedLifetime(delegate) {
+            application.run()
+        }
     }
 }
 
@@ -30,7 +40,10 @@ private final class HostApplicationDelegate: NSObject, NSApplicationDelegate, NS
         statusItem = item
         rebuildMenu()
         showDashboard(nil)
-        if ProcessInfo.processInfo.environment["STUDYROCKET_HOST_AUTOSTART"] == "1" {
+        let shouldAutostart = ProcessInfo.processInfo.environment["STUDYROCKET_HOST_AUTOSTART"] == "1"
+            || CommandLine.arguments.contains("--autostart")
+        NSLog("StudyRocket Host launched (autostart=%@)", shouldAutostart ? "yes" : "no")
+        if shouldAutostart {
             host.start()
             refreshMenuSoon()
         }
@@ -177,6 +190,7 @@ final class HostController: ObservableObject {
         case stopped
         case starting
         case running
+        case degraded
         case failed
 
         var title: String {
@@ -184,6 +198,7 @@ final class HostController: ObservableObject {
             case .stopped: "未启动"
             case .starting: "正在启动"
             case .running: "仅本机监听"
+            case .degraded: "首页可用 · 对话未就绪"
             case .failed: "启动失败"
             }
         }
@@ -193,6 +208,7 @@ final class HostController: ObservableObject {
             case .stopped: "pause.circle"
             case .starting: "ellipsis.circle"
             case .running: "lock.shield"
+            case .degraded: "house.badge.exclamationmark"
             case .failed: "exclamationmark.triangle"
             }
         }
@@ -202,6 +218,7 @@ final class HostController: ObservableObject {
             case .stopped: .secondary
             case .starting: .orange
             case .running: .green
+            case .degraded: .orange
             case .failed: .red
             }
         }
@@ -222,7 +239,7 @@ final class HostController: ObservableObject {
         return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
     }
 
-    var isRunning: Bool { status == .running || status == .starting }
+    var isRunning: Bool { status == .running || status == .starting || status == .degraded }
 
     var repositoryIsValid: Bool {
         FileManager.default.fileExists(atPath: rootURL.appendingPathComponent("AGENTS.md").path) &&
@@ -241,6 +258,7 @@ final class HostController: ObservableObject {
         guard !isRunning else { return }
         status = .starting
         errorMessage = nil
+        chatStatus = "正在自检"
         do {
             let server = try StudyRocketHTTPServer(port: StudyRocketAPI.defaultHostPort, root: rootURL)
             server.onChatEvent = { [weak self] event in
@@ -250,26 +268,45 @@ final class HostController: ObservableObject {
             pairingCode = server.generatePairingCode()
             devices = server.devices()
             armStartupDeadline(for: server)
-            server.start { [weak self] ready, message in
+            server.start(
+                onReady: { [weak self] ready, message in
                 Task { @MainActor in
-                    guard let self, self.server === server, self.status == .starting else { return }
-                    self.startupDeadline?.cancel()
-                    self.startupDeadline = nil
+                    guard let self,
+                          self.server === server,
+                          self.status == .starting || self.status == .degraded else { return }
+                    if self.status == .starting {
+                        self.startupDeadline?.cancel()
+                        self.startupDeadline = nil
+                    }
                     if ready {
                         self.status = .running
                         self.chatStatus = "已连接"
+                        self.errorMessage = nil
                         self.refreshTailscale()
                     } else {
-                        self.errorMessage = message ?? "Codex 协议自检失败。"
-                        self.stop()
-                        self.status = .failed
+                        self.status = .degraded
+                        self.chatStatus = "对话未就绪"
+                        self.errorMessage = message ?? "Codex 协议自检失败；首页仍可用，学业对话尚未就绪。"
+                        self.refreshTailscale()
                     }
                 }
-            }
+                },
+                onFailed: { [weak self] error in
+                    Task { @MainActor in
+                        guard let self, self.server === server, self.isRunning else { return }
+                        let message = "Host 监听启动失败：\(error.localizedDescription)"
+                        self.stop()
+                        self.errorMessage = message
+                        self.status = .failed
+                        NSLog("StudyRocket Host listener failed: %@", error.localizedDescription)
+                    }
+                }
+            )
             refreshTailscale()
         } catch {
             status = .failed
             errorMessage = error.localizedDescription
+            NSLog("StudyRocket Host failed to start: %@", error.localizedDescription)
         }
     }
 
@@ -286,9 +323,8 @@ final class HostController: ObservableObject {
     }
 
     /// The Host listener may be healthy while the local Codex stdio process is
-    /// wedged.  Do not leave the macOS control panel in `.starting` forever in
-    /// that case: the deadline is owned by the UI actor and always tears down
-    /// the listener, local-session token, lease, and child process together.
+    /// wedged.  Leave the listener and authenticated plan APIs available while
+    /// the server keeps retrying the chat self-check.
     private func armStartupDeadline(for expectedServer: StudyRocketHTTPServer) {
         startupDeadline?.cancel()
         let deadline = DispatchWorkItem { [weak self, weak expectedServer] in
@@ -296,9 +332,10 @@ final class HostController: ObservableObject {
                   let expectedServer,
                   self.server === expectedServer,
                   self.status == .starting else { return }
-            self.errorMessage = "Codex 自检超时（25 秒），Host 已停止。请重新启动连接。"
-            self.stop()
-            self.status = .failed
+            self.errorMessage = "Codex 自检超时（25 秒）。首页仍可用，学业对话尚未就绪；Host 会继续重试。"
+            self.chatStatus = "对话未就绪"
+            self.status = .degraded
+            self.startupDeadline = nil
         }
         startupDeadline = deadline
         DispatchQueue.main.asyncAfter(deadline: .now() + 25, execute: deadline)
@@ -316,7 +353,12 @@ final class HostController: ObservableObject {
     }
 
     func revoke(_ id: String) {
-        server?.revokeDevice(id)
+        do {
+            try server?.revokeDevice(id)
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
         refreshDevices()
     }
 
@@ -400,19 +442,22 @@ struct TailscaleStatus: Equatable {
             "/usr/bin/tailscale",
             "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
         ]
-        guard let executable = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return .unavailable }
-        let output = run(executable, arguments: ["status", "--json"])
-        guard let data = output.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let selfInfo = object["Self"] as? [String: Any],
-              let dnsName = selfInfo["DNSName"] as? String else { return TailscaleStatus(state: .notServed, address: nil) }
-        let host = dnsName.trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        guard !host.isEmpty else { return TailscaleStatus(state: .notServed, address: nil) }
-        let serve = run(executable, arguments: ["serve", "status", "--json"])
-        let served = serve.contains("https://") || serve.contains("Web")
-        // The MagicDNS hostname is stable enough to enter on iPhone before Serve is
-        // enabled. The dashboard keeps the accessibility state separate, so it
-        // never implies that an unserved address is already reachable.
-        return TailscaleStatus(state: served ? .served : .notServed, address: "https://\(host)/")
+        for executable in candidates where FileManager.default.isExecutableFile(atPath: executable) {
+            let output = run(executable, arguments: ["status", "--json"])
+            guard let data = output.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  object["BackendState"] as? String == "Running",
+                  let selfInfo = object["Self"] as? [String: Any],
+                  let dnsName = selfInfo["DNSName"] as? String else { continue }
+            let host = dnsName.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            guard !host.isEmpty else { continue }
+            let serve = run(executable, arguments: ["serve", "status", "--json"])
+            let served = serve.contains("https://") || serve.contains("Web")
+            // The MagicDNS hostname is stable enough to enter on iPhone before
+            // Serve is enabled. Keep reachability separate from discovery.
+            return TailscaleStatus(state: served ? .served : .notServed, address: "https://\(host)/")
+        }
+        return .unavailable
     }
 
     private static func run(_ executable: String, arguments: [String]) -> String {
@@ -432,14 +477,18 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
     private let pairing = HostPairingStore()
     private let localSession = HostLocalSessionStore()
     private let localSessionToken: String
-    private let codexLease: CodexLease
+    private let codexLeaseStore: CodexLeaseStore
+    private let codexLeaseLock = NSLock()
+    private var codexLease: CodexLease?
     private let root: URL
     private let snapshotBuilder: HostSnapshotBuilder
     private let writeService: HostWriteService
     private let chatBridge: HostChatBridge
-    private let eventHub = StudyRocketEventHub()
-    private let readinessLock = NSLock()
-    private var protocolReady = false
+    private let eventHub: StudyRocketEventHub
+    private let connectionLock = NSLock()
+    private var activeConnections: [ObjectIdentifier: NWConnection] = [:]
+    private let maximumConnections = 32
+    private var selfCheckTask: Task<Void, Never>?
     var onChatEvent: ((String) -> Void)?
 
     init(port: UInt16, root: URL) throws {
@@ -447,15 +496,11 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!)
         listener = try NWListener(using: parameters)
         self.root = root.standardizedFileURL
-        let lease = try CodexLeaseStore().acquire(owner: "StudyRocket Host")
-        codexLease = lease
-        do {
-            localSessionToken = try localSession.issue()
-        } catch {
-            lease.release()
-            throw error
-        }
-        snapshotBuilder = HostSnapshotBuilder(root: root.standardizedFileURL)
+        codexLeaseStore = CodexLeaseStore()
+        localSessionToken = try localSession.issue()
+        let builder = HostSnapshotBuilder(root: root.standardizedFileURL)
+        snapshotBuilder = builder
+        eventHub = StudyRocketEventHub(snapshotProvider: { builder.build() })
         writeService = HostWriteService(root: root.standardizedFileURL)
         chatBridge = HostChatBridge(root: root.standardizedFileURL)
         chatBridge.onEvent = { [weak self] event in
@@ -468,46 +513,54 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
         }
     }
 
-    var isProtocolReady: Bool {
-        readinessLock.lock(); defer { readinessLock.unlock() }
-        return protocolReady
-    }
-
-    func start(onReady: @escaping (Bool, String?) -> Void) {
+    func start(onReady: @escaping (Bool, String?) -> Void, onFailed: @escaping (NWError) -> Void) {
         listener.stateUpdateHandler = { state in
             if case .failed(let error) = state {
                 NSLog("StudyRocket Host listener failed: %@", error.localizedDescription)
+                onFailed(error)
             }
         }
         listener.newConnectionHandler = { [weak self] connection in
             self?.accept(connection)
         }
         listener.start(queue: queue)
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await chatBridge.selfCheck()
-                setProtocolReady(true)
-                onReady(true, nil)
-            } catch {
-                setProtocolReady(false)
-                onReady(false, error.localizedDescription)
+        selfCheckTask?.cancel()
+        selfCheckTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                do {
+                    try self.acquireCodexLeaseIfNeeded()
+                    try await self.chatBridge.selfCheck()
+                    onReady(true, nil)
+                    return
+                } catch {
+                    self.releaseCodexLease()
+                    NSLog("StudyRocket Host Codex self-check retry: %@", error.localizedDescription)
+                    onReady(false, error.localizedDescription)
+                }
+                try? await Task.sleep(for: .seconds(5))
             }
         }
     }
 
     func stop() {
-        setProtocolReady(false)
+        selfCheckTask?.cancel()
+        selfCheckTask = nil
         chatBridge.shutdown()
         eventHub.closeAll()
         listener.cancel()
+        connectionLock.lock()
+        let connections = activeConnections.values
+        activeConnections.removeAll()
+        connectionLock.unlock()
+        connections.forEach { $0.cancel() }
         localSession.clear()
-        codexLease.release()
+        releaseCodexLease()
     }
 
     deinit {
         localSession.clear()
-        codexLease.release()
+        releaseCodexLease()
     }
 
     func generatePairingCode() -> String {
@@ -516,14 +569,25 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
 
     func devices() -> [PairedDeviceRecord] { pairing.list() }
 
-    func revokeDevice(_ id: String) { pairing.revoke(id) }
+    func revokeDevice(_ id: String) throws { try pairing.revoke(id) }
 
     func interruptChat() {
         chatBridge.interrupt()
     }
 
-    private func setProtocolReady(_ value: Bool) {
-        readinessLock.lock(); protocolReady = value; readinessLock.unlock()
+    private func acquireCodexLeaseIfNeeded() throws {
+        codexLeaseLock.lock()
+        defer { codexLeaseLock.unlock() }
+        guard codexLease == nil else { return }
+        codexLease = try codexLeaseStore.acquire(owner: "StudyRocket Host")
+    }
+
+    private func releaseCodexLease() {
+        codexLeaseLock.lock()
+        let lease = codexLease
+        codexLease = nil
+        codexLeaseLock.unlock()
+        lease?.release()
     }
 
     private func accept(_ connection: NWConnection) {
@@ -532,86 +596,92 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
             connection.cancel()
             return
         }
-        connection.stateUpdateHandler = { state in
-            if case .failed = state { connection.cancel() }
+        let connectionID = ObjectIdentifier(connection)
+        connectionLock.lock()
+        guard activeConnections.count < maximumConnections else {
+            connectionLock.unlock()
+            connection.cancel()
+            return
+        }
+        activeConnections[connectionID] = connection
+        connectionLock.unlock()
+        connection.stateUpdateHandler = { [weak self, weak connection] state in
+            guard let connection else { return }
+            switch state {
+            case .failed, .cancelled:
+                self?.releaseConnection(connection)
+                self?.eventHub.remove(connection)
+            default:
+                break
+            }
         }
         connection.start(queue: queue)
-        receive(on: connection, buffer: Data())
+        let deadline = DispatchWorkItem { [weak connection] in connection?.cancel() }
+        queue.asyncAfter(deadline: .now() + .seconds(10), execute: deadline)
+        receive(on: connection, buffer: Data(), deadline: deadline)
     }
 
-    private func receive(on connection: NWConnection, buffer: Data) {
+    private func releaseConnection(_ connection: NWConnection) {
+        connectionLock.lock()
+        activeConnections.removeValue(forKey: ObjectIdentifier(connection))
+        connectionLock.unlock()
+    }
+
+    private func receive(on connection: NWConnection, buffer: Data, deadline: DispatchWorkItem) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             guard let self else { connection.cancel(); return }
             var next = buffer
             if let data { next.append(data) }
-            if !isComplete, error == nil, self.requestIsIncomplete(next) {
-                self.receive(on: connection, buffer: next)
-            } else {
+            switch HostHTTPRequestParser.parse(next) {
+            case .incomplete where !isComplete && error == nil:
+                self.receive(on: connection, buffer: next, deadline: deadline)
+            case .complete(let request):
+                deadline.cancel()
                 Task {
-                    if let response = await self.response(for: next) {
-                        let keepsAlive = self.isEventStreamRequest(next) && response.starts(with: Data("HTTP/1.1 200".utf8))
-                        connection.send(content: response, completion: .contentProcessed { error in
-                            if error != nil {
-                                connection.cancel()
-                            } else if keepsAlive {
-                                self.eventHub.add(connection)
-                            } else {
-                                connection.cancel()
-                            }
-                        })
-                    } else {
-                        connection.cancel()
-                    }
+                    let response = await self.response(for: request)
+                    let keepsAlive = request.method == "GET" && request.path == "/v1/events" && response.starts(with: Data("HTTP/1.1 200".utf8))
+                    connection.send(content: response, completion: .contentProcessed { error in
+                        if error != nil {
+                            connection.cancel()
+                        } else if keepsAlive {
+                            if !self.eventHub.add(connection) { connection.cancel() }
+                        } else {
+                            connection.cancel()
+                        }
+                    })
                 }
+            case .rejected(let status, let code, let message):
+                deadline.cancel()
+                let payload = (try? self.encoder.encode(APIErrorBody(code: code, message: message, retryable: false))) ?? Data("{}".utf8)
+                connection.send(content: self.makeResponse(status: status, payload: payload), completion: .contentProcessed { _ in connection.cancel() })
+            case .incomplete:
+                deadline.cancel()
+                connection.cancel()
             }
         }
     }
 
-    private func requestIsIncomplete(_ data: Data) -> Bool {
-        guard let headerEnd = data.range(of: Data("\r\n\r\n".utf8)) else { return true }
-        let headers = String(data: data[..<headerEnd.lowerBound], encoding: .utf8) ?? ""
-        let contentLength = headers.components(separatedBy: "\r\n")
-            .dropFirst()
-            .first { $0.lowercased().hasPrefix("content-length:") }
-            .flatMap { Int($0.split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) ?? "0") } ?? 0
-        return data.count < headerEnd.upperBound + contentLength
-    }
-
-    private func isEventStreamRequest(_ data: Data) -> Bool {
-        guard let headerEnd = data.range(of: Data("\r\n\r\n".utf8)),
-              let headers = String(data: data[..<headerEnd.lowerBound], encoding: .utf8),
-              let requestLine = headers.components(separatedBy: "\r\n").first else { return false }
-        let parts = requestLine.split(separator: " ")
-        guard parts.count >= 2, parts[0] == "GET" else { return false }
-        return parts[1].split(separator: "?", maxSplits: 1).first.map(String.init) == "/v1/events"
-    }
-
-    private func response(for data: Data) async -> Data? {
-        guard let headerEnd = data.range(of: Data("\r\n\r\n".utf8)) else { return nil }
-        let headerData = data[..<headerEnd.lowerBound]
-        guard let headers = String(data: headerData, encoding: .utf8),
-              let requestLine = headers.components(separatedBy: "\r\n").first,
-              let method = requestLine.split(separator: " ").first.map(String.init),
-              let rawPath = requestLine.split(separator: " ").dropFirst().first.map(String.init) else { return nil }
-        let path = rawPath.split(separator: "?", maxSplits: 1).first.map(String.init) ?? rawPath
-
-        let contentLength = headers.components(separatedBy: "\r\n")
-            .dropFirst()
-            .first { $0.lowercased().hasPrefix("content-length:") }
-            .flatMap { Int($0.split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) ?? "0") } ?? 0
-        let bodyStart = headerEnd.upperBound
-        guard data.count >= bodyStart + contentLength else { return nil }
-        let body = Data(data[bodyStart..<(bodyStart + contentLength)])
+    private func response(for request: HostHTTPRequest) async -> Data {
+        let method = request.method
+        let path = request.path
+        let headers = request.headers
+        let body = request.body
 
         let payload: Data
         let status: String
         if method == "GET", path == "/v1/health" {
             let bound = FileManager.default.fileExists(atPath: root.appendingPathComponent("AGENTS.md").path) && FileManager.default.fileExists(atPath: root.appendingPathComponent("PROFILE.md").path)
             let codexReady = FileManager.default.isExecutableFile(atPath: "/Applications/ChatGPT.app/Contents/Resources/codex")
-            let repositoryID = RequestSigning.bodyHash(Data(root.path.utf8))
-            let toolsReady = isProtocolReady && StudyRocketDynamicToolContract.declarationIsValid
-            let health = HealthResponse(hostVersion: "0.1.0", repositoryBound: bound, codexReady: codexReady, pairedDeviceCount: pairing.deviceCount, activeThreadID: chatBridge.currentThreadID, repositoryID: repositoryID, dynamicToolsReady: toolsReady)
-            payload = (try? encoder.encode(health)) ?? Data("{}".utf8)
+            let chatState = chatBridge.chatState
+            let toolsReady = chatBridge.canGenerateChat && StudyRocketDynamicToolContract.declarationIsValid
+            if isAuthorized(headers: headers, method: method, path: path, body: body) {
+                let repositoryID = RequestSigning.bodyHash(Data(root.path.utf8))
+                let health = HealthResponse(hostVersion: "0.1.0", repositoryBound: bound, codexReady: codexReady, pairedDeviceCount: pairing.deviceCount, activeThreadID: chatBridge.currentThreadID, repositoryID: repositoryID, dynamicToolsReady: toolsReady, chatState: chatState.rawValue, chatIssueCode: chatBridge.chatIssueCode)
+                payload = (try? encoder.encode(health)) ?? Data("{}".utf8)
+            } else {
+                let health = PublicHealthResponse(hostVersion: "0.1.0", repositoryBound: bound, codexReady: codexReady, dynamicToolsReady: toolsReady)
+                payload = (try? encoder.encode(health)) ?? Data("{}".utf8)
+            }
             status = "200 OK"
         } else if method == "POST", path == "/v1/pair" {
             do {
@@ -642,16 +712,13 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
                 status = "401 Unauthorized"
                 return makeResponse(status: status, payload: payload)
             }
-            guard isProtocolReady else {
-                payload = (try? encoder.encode(APIErrorBody(code: "codex_starting", message: "StudyRocket Host 正在完成 Codex 协议自检，请稍后重试。", retryable: true))) ?? Data("{}".utf8)
-                status = "503 Service Unavailable"
-                return makeResponse(status: status, payload: payload)
-            }
             do {
-                payload = try encoder.encode(await chatBridge.connectHistory())
+                let history = chatBridge.chatState == .authFailed ? chatBridge.history() : try await chatBridge.connectHistory()
+                payload = try encoder.encode(history)
                 status = "200 OK"
             } catch {
-                payload = (try? encoder.encode(APIErrorBody(code: "codex_unavailable", message: error.localizedDescription, retryable: true))) ?? Data("{}".utf8)
+                let authFailed = StudyRocketCodexErrorPresentation.isAuthenticationFailure(error.localizedDescription)
+                payload = (try? encoder.encode(APIErrorBody(code: authFailed ? "provider_auth_failed" : "codex_unavailable", message: StudyRocketCodexErrorPresentation.message(for: error.localizedDescription, fallback: "Codex 历史暂时不可用。"), retryable: !authFailed))) ?? Data("{}".utf8)
                 status = "503 Service Unavailable"
             }
         } else if method == "GET", path == "/v1/events" {
@@ -661,6 +728,7 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
                 return makeResponse(status: status, payload: payload)
             }
             let snapshot = snapshotBuilder.build()
+            eventHub.remember(snapshot)
             let envelope = HostEventEnvelope(kind: "snapshot", snapshot: snapshot)
             let json = (try? encoder.encode(envelope)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
             payload = Data("event: snapshot\ndata: \(json)\n\n".utf8)
@@ -715,19 +783,9 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
                 status = "401 Unauthorized"
                 return makeResponse(status: status, payload: payload)
             }
-            guard isProtocolReady else {
-                payload = (try? encoder.encode(APIErrorBody(code: "codex_starting", message: "StudyRocket Host 正在完成 Codex 协议自检，请稍后重试。", retryable: true))) ?? Data("{}".utf8)
-                status = "503 Service Unavailable"
-                return makeResponse(status: status, payload: payload)
-            }
             payload = (try? encoder.encode(chatBridge.proposals())) ?? Data("{}".utf8)
             status = "200 OK"
         } else if method == "GET", path == "/v1/proposals/challenge" {
-            guard isProtocolReady else {
-                payload = (try? encoder.encode(APIErrorBody(code: "codex_starting", message: "StudyRocket Host 正在完成 Codex 协议自检，请稍后重试。", retryable: true))) ?? Data("{}".utf8)
-                status = "503 Service Unavailable"
-                return makeResponse(status: status, payload: payload)
-            }
             guard let deviceID = authenticatedDeviceID(headers: headers, method: method, path: path, body: body) else {
                 payload = (try? encoder.encode(APIErrorBody(code: "biometric_required", message: "草案确认需要已配对设备的 Face ID 授权。", retryable: false))) ?? Data("{}".utf8)
                 status = "401 Unauthorized"
@@ -741,11 +799,6 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
                 status = "403 Forbidden"
             }
         } else if method == "POST", path == "/v1/proposals/apply" {
-            guard isProtocolReady else {
-                payload = (try? encoder.encode(APIErrorBody(code: "codex_starting", message: "StudyRocket Host 正在完成 Codex 协议自检，请稍后重试。", retryable: true))) ?? Data("{}".utf8)
-                status = "503 Service Unavailable"
-                return makeResponse(status: status, payload: payload)
-            }
             let localAuthorized = headerValue("X-StudyRocket-Local-Session", in: headers) == localSessionToken
             let deviceID = localAuthorized ? nil : authenticatedDeviceID(headers: headers, method: method, path: path, body: body)
             guard localAuthorized || deviceID != nil else {
@@ -774,14 +827,15 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
                 status = "400 Bad Request"
             }
         } else if method == "POST", path == "/v1/chat/send" {
-            guard isProtocolReady else {
-                payload = (try? encoder.encode(APIErrorBody(code: "codex_starting", message: "StudyRocket Host 正在完成 Codex 协议自检，请稍后重试。", retryable: true))) ?? Data("{}".utf8)
-                status = "503 Service Unavailable"
-                return makeResponse(status: status, payload: payload)
-            }
             guard isAuthorized(headers: headers, method: method, path: path, body: body) else {
                 payload = (try? encoder.encode(APIErrorBody(code: "unauthorized", message: "设备尚未配对或请求签名已失效。", retryable: false))) ?? Data("{}".utf8)
                 status = "401 Unauthorized"
+                return makeResponse(status: status, payload: payload)
+            }
+            guard chatBridge.canGenerateChat else {
+                let authFailed = chatBridge.chatState == .authFailed
+                payload = (try? encoder.encode(APIErrorBody(code: authFailed ? "provider_auth_failed" : "codex_starting", message: authFailed ? StudyRocketCodexErrorPresentation.authenticationFailureMessage : "StudyRocket Host 正在完成 Codex 协议自检，请稍后重试。", retryable: !authFailed))) ?? Data("{}".utf8)
+                status = "503 Service Unavailable"
                 return makeResponse(status: status, payload: payload)
             }
             do {
@@ -797,14 +851,15 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
                 status = "400 Bad Request"
             }
         } else if method == "POST", path == "/v1/chat/interrupt" {
-            guard isProtocolReady else {
-                payload = (try? encoder.encode(APIErrorBody(code: "codex_starting", message: "StudyRocket Host 正在完成 Codex 协议自检，请稍后重试。", retryable: true))) ?? Data("{}".utf8)
-                status = "503 Service Unavailable"
-                return makeResponse(status: status, payload: payload)
-            }
             guard isAuthorized(headers: headers, method: method, path: path, body: body) else {
                 payload = (try? encoder.encode(APIErrorBody(code: "unauthorized", message: "设备尚未配对或请求签名已失效。", retryable: false))) ?? Data("{}".utf8)
                 status = "401 Unauthorized"
+                return makeResponse(status: status, payload: payload)
+            }
+            guard chatBridge.canGenerateChat else {
+                let authFailed = chatBridge.chatState == .authFailed
+                payload = (try? encoder.encode(APIErrorBody(code: authFailed ? "provider_auth_failed" : "codex_starting", message: authFailed ? StudyRocketCodexErrorPresentation.authenticationFailureMessage : "StudyRocket Host 正在完成 Codex 协议自检，请稍后重试。", retryable: !authFailed))) ?? Data("{}".utf8)
+                status = "503 Service Unavailable"
                 return makeResponse(status: status, payload: payload)
             }
             do {
@@ -907,28 +962,27 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
 
 private final class StudyRocketEventHub: @unchecked Sendable {
     private let lock = NSLock()
-    private var connections: [UUID: NWConnection] = [:]
+    private var connections: [ObjectIdentifier: NWConnection] = [:]
     private let heartbeatTimer: DispatchSourceTimer
+    private let snapshotProvider: (() -> SnapshotResponse)?
+    private var lastSnapshotRevision: String?
 
-    init() {
+    init(snapshotProvider: (() -> SnapshotResponse)? = nil) {
+        self.snapshotProvider = snapshotProvider
         heartbeatTimer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         heartbeatTimer.schedule(deadline: .now() + .seconds(20), repeating: .seconds(20))
         heartbeatTimer.setEventHandler { [weak self] in self?.publishHeartbeat() }
         heartbeatTimer.resume()
     }
 
-    func add(_ connection: NWConnection) {
-        let id = UUID()
-        lock.lock(); connections[id] = connection; lock.unlock()
-        connection.stateUpdateHandler = { [weak self, weak connection] state in
-            switch state {
-            case .failed, .cancelled:
-                self?.remove(id)
-                connection?.cancel()
-            default:
-                break
-            }
-        }
+    @discardableResult
+    func add(_ connection: NWConnection) -> Bool {
+        let id = ObjectIdentifier(connection)
+        lock.lock()
+        guard connections.count < 16 else { lock.unlock(); return false }
+        connections[id] = connection
+        lock.unlock()
+        return true
     }
 
     func publish(_ snapshot: SnapshotResponse) {
@@ -936,21 +990,39 @@ private final class StudyRocketEventHub: @unchecked Sendable {
     }
 
     func publish(event: String, snapshot: SnapshotResponse) {
+        remember(snapshot)
         publish(event: event, envelope: HostEventEnvelope(kind: event, snapshot: snapshot))
+    }
+
+    func remember(_ snapshot: SnapshotResponse) {
+        lock.lock()
+        lastSnapshotRevision = snapshot.revision
+        lock.unlock()
     }
 
     func publish(event: String, envelope: HostEventEnvelope) {
         guard let data = try? JSONEncoder().encode(envelope), let json = String(data: data, encoding: .utf8) else { return }
         let payload = Self.chunk(Data("event: \(event)\ndata: \(json)\n\n".utf8))
         lock.lock(); let current = connections; lock.unlock()
-        for (id, connection) in current {
+        for connection in current.values {
             connection.send(content: payload, completion: .contentProcessed { [weak self, weak connection] error in
-                if error != nil { self?.remove(id); connection?.cancel() }
+                if error != nil, let connection { self?.remove(connection); connection.cancel() }
             })
         }
     }
 
     private func publishHeartbeat() {
+        if let snapshotProvider {
+            let snapshot = snapshotProvider()
+            lock.lock()
+            let changed = lastSnapshotRevision != snapshot.revision
+            lastSnapshotRevision = snapshot.revision
+            lock.unlock()
+            if changed {
+                publish(event: "snapshot", envelope: HostEventEnvelope(kind: "snapshot", snapshot: snapshot))
+                return
+            }
+        }
         publish(event: "heartbeat", envelope: HostEventEnvelope(kind: "heartbeat"))
     }
 
@@ -962,7 +1034,8 @@ private final class StudyRocketEventHub: @unchecked Sendable {
 
     deinit { heartbeatTimer.cancel() }
 
-    private func remove(_ id: UUID) {
+    func remove(_ connection: NWConnection) {
+        let id = ObjectIdentifier(connection)
         lock.lock(); connections.removeValue(forKey: id); lock.unlock()
     }
 

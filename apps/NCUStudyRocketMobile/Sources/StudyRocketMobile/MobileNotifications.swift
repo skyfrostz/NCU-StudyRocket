@@ -63,7 +63,7 @@ public final class MobileReminderScheduler: NSObject, UNUserNotificationCenterDe
     public func scheduleNextMonthEnd(now: Date = .now) async {
         await remove("studyrocket.monthly")
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
         let current = calendar.startOfDay(for: now)
         let currentEnd = calendar.dateInterval(of: .month, for: current).flatMap { calendar.date(byAdding: .day, value: -1, to: $0.end) }
         let candidate = currentEnd.flatMap { calendar.date(bySettingHour: 19, minute: 30, second: 0, of: $0) }

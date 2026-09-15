@@ -8,6 +8,17 @@
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
 <key>CFBundleVersion</key><string>1</string>
+<key>CFBundleURLTypes</key><array><dict>
+<key>CFBundleURLName</key><string>com.skyfrost.ncustudyrocket</string>
+<key>CFBundleURLSchemes</key><array><string>ncustudyrocket</string></array>
+</dict></array>
 <key>NSFaceIDUsageDescription</key><string>使用 Face ID 确认将已选择的学业草案写入 Mac 仓库。</string>
+<key>NSAppTransportSecurity</key><dict>
+<key>NSExceptionDomains</key><dict>
+<key>localhost</key><dict>
+<key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+</dict>
+</dict>
+</dict>
 <key>UILaunchScreen</key><dict/>
 </dict></plist>

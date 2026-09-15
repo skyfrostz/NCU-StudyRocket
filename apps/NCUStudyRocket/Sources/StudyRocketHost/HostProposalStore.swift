@@ -5,6 +5,7 @@ import StudyRocketShared
 final class HostProposalStore: @unchecked Sendable {
     private let root: URL
     private let lock = NSLock()
+    private let mutationLock = NSLock()
     private var values: [String: ProposalDTO] = [:]
     private var appliedReplays: [String: ProposalListResponse] = [:]
     private let skillNames = Set(["daily-checkin", "knowledge-ingest", "ncu-planner", "node-countdown", "retro-monthly", "retro-weekly", "term-roadmap", "weekly-reslot"])
@@ -26,11 +27,14 @@ final class HostProposalStore: @unchecked Sendable {
         let resolvedRoot = root.resolvingSymlinksInPath()
         let resolvedURL = url.resolvingSymlinksInPath()
         guard resolvedURL.path.hasPrefix(resolvedRoot.path + "/"), !isSymlink(url), let original = try? String(contentsOf: url, encoding: .utf8) else { return failure("无法读取草案目标文件。") }
+        let proposedContent = path == "工作台/下周计划.md" && tool == "propose_changes"
+            ? WeeklyPlanTaskNormalizer.normalizedMarkdown(content)
+            : content
         if tool == "propose_skill_update" {
-            let lines = content.components(separatedBy: .newlines)
-            guard lines.count <= 300, lines.first == "---", lines.dropFirst().contains("---"), content.contains("name:"), content.contains("description:") else { return failure("Skill 草案的 frontmatter 或长度不符合要求。") }
+            let lines = proposedContent.components(separatedBy: .newlines)
+            guard lines.count <= 300, lines.first == "---", lines.dropFirst().contains("---"), proposedContent.contains("name:"), proposedContent.contains("description:") else { return failure("Skill 草案的 frontmatter 或长度不符合要求。") }
         }
-        let proposal = ProposalDTO(id: UUID().uuidString, turnID: turnID, relativePath: path, originalContent: original, proposedContent: content, reason: reason, baseHash: hash(original), kind: tool == "propose_skill_update" ? "skill" : "markdown")
+        let proposal = ProposalDTO(id: UUID().uuidString, turnID: turnID, relativePath: path, originalContent: original, proposedContent: proposedContent, reason: reason, baseHash: hash(original), kind: tool == "propose_skill_update" ? "skill" : "markdown")
         lock.lock()
         values = values.filter { !($0.value.turnID == turnID && $0.value.relativePath == path) }
         values[proposal.id] = proposal
@@ -39,6 +43,7 @@ final class HostProposalStore: @unchecked Sendable {
     }
 
     func apply(_ request: ProposalApplyRequest) throws -> ProposalListResponse {
+        mutationLock.lock(); defer { mutationLock.unlock() }
         guard !request.proposalIDs.isEmpty, !request.authorization.isEmpty else { throw HostWriteError(code: "authorization_required", message: "应用草案需要确认授权。") }
         guard request.metadata.apiVersion == StudyRocketAPI.version else { throw HostWriteError(code: "unsupported_version", message: "客户端版本不兼容，请更新 StudyRocket。") }
         lock.lock()

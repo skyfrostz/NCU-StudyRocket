@@ -1,5 +1,6 @@
 #if STUDYROCKET_MODEL_TESTS
 import Foundation
+import StudyRocketShared
 
 @main
 struct WeeklyPlanModelChecks {
@@ -74,6 +75,93 @@ struct WeeklyPlanModelChecks {
         check(!changedParsed.periodCompletion[0][0], "editing a period body resets its completion state")
         check(!changedSource.contains("| 2026-08-13 | morning |"), "stale completion hashes are pruned on save")
 
+        let linkedDeliveryText = "8 月 13 日：完成第 3 章网课并跟学例题"
+        let linkedPeriodText = "第 3 章：继续网课并跟学例题"
+        let linkSource = """
+        <!-- studyrocket:weekly:start -->
+        | 日期 | 上午 | 中午 | 晚上 | 待分配 | 完成 |
+        |------|------|------|------|----------|------|
+        | 8 月 13 日 | \(linkedPeriodText) |  |  |  | [ ] |
+        <!-- studyrocket:weekly:end -->
+
+        ## 交付物清单
+        - [ ] \(linkedDeliveryText)
+
+        ## 缓冲
+        - 原缓冲
+        """
+        let manualLinkSource = try MarkdownParser.replacePeriodCompletion(
+            in: linkSource,
+            dayID: "2026-08-13",
+            periodID: "morning",
+            text: linkedPeriodText,
+            isCompleted: true
+        )
+        var linkedPlan = MarkdownParser.weekly(manualLinkSource, referenceDate: today)
+        let linkedDelivery = linkedPlan.deliveries[0]
+        linkedPlan.deliveries[0].isCompleted = true
+        let linkedSource = try MarkdownParser.replaceDeliveryCompletion(
+            in: manualLinkSource,
+            with: linkedPlan,
+            delivery: linkedDelivery,
+            isCompleted: true
+        )
+        let linkedSourceKey = DeliveryPeriodMatcher.sourceKey(for: linkedDeliveryText)
+        check(linkedSource.contains(linkedSourceKey), "desktop delivery completion writes a delivery source")
+        check(linkedSource.contains("| 2026-08-13 | morning | \(PeriodCompletion.textHash(for: linkedPeriodText)) | [x] |  |"), "desktop delivery link preserves an existing manual source")
+        var unlinkedPlan = MarkdownParser.weekly(linkedSource, referenceDate: today)
+        let completedLinkedDelivery = unlinkedPlan.deliveries[0]
+        unlinkedPlan.deliveries[0].isCompleted = false
+        let unlinkedSource = try MarkdownParser.replaceDeliveryCompletion(
+            in: linkedSource,
+            with: unlinkedPlan,
+            delivery: completedLinkedDelivery,
+            isCompleted: false
+        )
+        check(!unlinkedSource.contains(linkedSourceKey), "desktop delivery cancellation removes only its source")
+        check(MarkdownParser.weekly(unlinkedSource, referenceDate: today).periodCompletion[0][0], "manual period completion survives delivery cancellation")
+
+        var renamedPlan = MarkdownParser.weekly(linkedSource, referenceDate: today)
+        let renamedDeliveryText = "8 月 13 日：完成第 3 章网课并跟学例题，整理一页总结"
+        renamedPlan.deliveries[0].text = renamedDeliveryText
+        let renamedSource = MarkdownParser.replaceWeekly(
+            linkedSource,
+            with: renamedPlan,
+            deliverySourceMigrations: [linkedSourceKey: DeliveryPeriodMatcher.sourceKey(for: renamedDeliveryText)]
+        )
+        check(!renamedSource.contains(linkedSourceKey), "desktop delivery rename removes the previous source key")
+        check(renamedSource.contains(DeliveryPeriodMatcher.sourceKey(for: renamedDeliveryText)), "desktop delivery rename migrates its source key")
+
+        let historicalText = "历史任务"
+        let futureText = "未来任务"
+        let archivedSource = """
+        <!-- studyrocket:weekly:start -->
+        | 日期 | 上午 | 中午 | 晚上 | 待分配 | 完成 |
+        |------|------|------|------|----------|------|
+        | 8 月 13 日 | 当前任务 |  |  |  | [ ] |
+        <!-- studyrocket:weekly:history:start -->
+        | 日期 | 上午 | 中午 | 晚上 | 待分配 | 完成 |
+        |------|------|------|------|----------|------|
+        | 8 月 12 日 | \(historicalText) |  |  |  | [ ] |
+        <!-- studyrocket:weekly:history:end -->
+        <!-- studyrocket:weekly:future:start -->
+        | 日期 | 上午 | 中午 | 晚上 | 待分配 | 完成 |
+        |------|------|------|------|----------|------|
+        | 8 月 21 日 | \(futureText) |  |  |  | [ ] |
+        <!-- studyrocket:weekly:future:end -->
+        <!-- studyrocket:weekly:end -->
+        <!-- studyrocket:period-completion:start -->
+        | 日期 | 时段 | 正文 SHA-256 | 完成 |
+        |------|------|-------------|------|
+        | 2026-08-12 | morning | \(PeriodCompletion.textHash(for: historicalText)) | [x] |
+        | 2026-08-21 | morning | \(PeriodCompletion.textHash(for: futureText)) | [x] |
+        <!-- studyrocket:period-completion:end -->
+        """
+        let archivedPlan = MarkdownParser.weekly(archivedSource, referenceDate: today)
+        let archivedRoundTrip = MarkdownParser.replaceWeekly(archivedSource, with: archivedPlan)
+        check(archivedRoundTrip.contains("| 2026-08-12 | morning | \(PeriodCompletion.textHash(for: historicalText)) | [x] |"), "desktop save preserves historical period completion")
+        check(archivedRoundTrip.contains("| 2026-08-21 | morning | \(PeriodCompletion.textHash(for: futureText)) | [x] |"), "desktop save preserves future period completion")
+
         let legacyBuffer = """
         ## 缓冲
         - 每天保留 90 分钟弹性
@@ -128,6 +216,77 @@ struct WeeklyPlanModelChecks {
         check(todayCells.count == 3 && todayCells.map(\.period) == ["上午", "中午", "晚上"], "dashboard always exposes three periods")
         check(todayCells.map(\.task) == ["上午一；上午二", "中午一；中午二", "晚上一"], "dashboard resolves the selected day slots")
         check(dashboard.firstOpenTask == nil || !dashboard.firstOpenTask!.contains("明日任务"), "first task never falls back to weekly deliveries")
+
+        let multiTaskText = "20:00 邮件系统英方培训\n问李训灏：专业考勤系统选用问题"
+        let multiTaskSource = """
+        <!-- studyrocket:weekly:start -->
+        | 日期 | 上午 | 中午 | 晚上 | 待分配 | 完成 |
+        |------|------|------|------|----------|------|
+        | 8 月 13 日 |  |  | \(multiTaskText.replacingOccurrences(of: "\n", with: "<br>")) |  | [ ] |
+        <!-- studyrocket:weekly:end -->
+
+        ## 交付物清单
+        - [ ] 8 月 13 日：邮件系统英方培训
+        """
+        let multiPlan = MarkdownParser.weekly(multiTaskSource, referenceDate: today)
+        let eveningTasks = PeriodTaskParser.tasks(from: multiPlan.cells[2][0])
+        check(eveningTasks.count == 2, "a period with two lines is split into two independent tasks")
+
+        let promotedSource = """
+        <!-- studyrocket:weekly:start -->
+        | 日期 | 上午 | 中午 | 晚上 | 待分配 | 完成 |
+        |------|------|------|------|----------|------|
+        | 8 月 13 日 | 08:30 见面会 | 12:00 大扫除 |  | - [ ] 14:00 领取 Bar Code<br>- [ ] 16:00 领取银行卡<br>地点待确认 | [ ] |
+        <!-- studyrocket:weekly:end -->
+        """
+        let promotedPlan = MarkdownParser.weekly(promotedSource, referenceDate: today)
+        check(
+            PeriodTaskParser.tasks(from: promotedPlan.cells[1][0]).map(\.text)
+                == ["12:00 大扫除", "14:00 领取 Bar Code", "16:00 领取银行卡"],
+            "desktop parser promotes timed unassigned items into independent noon tasks"
+        )
+        check(promotedPlan.unassignedByDay[0] == "地点待确认", "desktop parser keeps only unresolved text unassigned")
+
+        let legacyCompletedMulti = try MarkdownParser.replacePeriodCompletion(
+            in: multiTaskSource,
+            dayID: "2026-08-13",
+            periodID: "evening",
+            text: multiPlan.cells[2][0],
+            isCompleted: true
+        )
+        check(MarkdownParser.weekly(legacyCompletedMulti, referenceDate: today).periodCompletion[2][0], "legacy whole-period records complete every child task")
+
+        let independentlyUpdated = try MarkdownParser.replacePeriodTaskCompletion(
+            in: legacyCompletedMulti,
+            dayID: "2026-08-13",
+            periodID: "evening",
+            periodText: multiPlan.cells[2][0],
+            taskID: eveningTasks[0].id,
+            isCompleted: false
+        )
+        let multiRoot = FileManager.default.temporaryDirectory.appendingPathComponent("StudyRocketWeeklyTasks-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: multiRoot.appendingPathComponent("工作台"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: multiRoot) }
+        try Data(independentlyUpdated.utf8).write(to: multiRoot.appendingPathComponent("工作台/下周计划.md"), options: .atomic)
+        let taskDashboard = DashboardModel()
+        taskDashboard.load(from: multiRoot, referenceDate: today)
+        let eveningCells = taskDashboard.todayCells(on: today).filter { $0.periodID == "evening" }
+        check(eveningCells.count == 2, "desktop today panel renders one row for each child task")
+        check(!eveningCells[0].isCompleted && eveningCells[1].isCompleted, "desktop task completion is independent after legacy migration")
+
+        var deliveryMultiPlan = MarkdownParser.weekly(multiTaskSource, referenceDate: today)
+        let delivery = deliveryMultiPlan.deliveries[0]
+        deliveryMultiPlan.deliveries[0].isCompleted = true
+        let deliveryUpdated = try MarkdownParser.replaceDeliveryCompletion(
+            in: multiTaskSource,
+            with: deliveryMultiPlan,
+            delivery: delivery,
+            isCompleted: true
+        )
+        try Data(deliveryUpdated.utf8).write(to: multiRoot.appendingPathComponent("工作台/下周计划.md"), options: .atomic)
+        taskDashboard.load(from: multiRoot, referenceDate: today)
+        let deliveryCells = taskDashboard.todayCells(on: today).filter { $0.periodID == "evening" }
+        check(deliveryCells[0].isCompleted && !deliveryCells[1].isCompleted, "delivery completion only links its matching child task")
 
         let rolling = """
         <!-- studyrocket:weekly:start -->

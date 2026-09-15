@@ -18,6 +18,7 @@ let package = Package(
             name: "NCUStudyRocket",
             dependencies: [
                 "StudyRocketChatCore",
+                "StudyRocketTimetableImport",
                 .product(name: "StudyRocketShared", package: "NCUStudyRocketShared"),
                 .product(name: "MarkdownUI", package: "swift-markdown-ui")
             ]
@@ -38,10 +39,22 @@ let package = Package(
                 .product(name: "cmark-gfm-extensions", package: "swift-cmark")
             ]
         ),
+        .target(
+            name: "StudyRocketTimetableImport",
+            dependencies: [
+                .product(name: "StudyRocketShared", package: "NCUStudyRocketShared")
+            ],
+            path: "Sources/StudyRocketTimetableImport"
+        ),
         .executableTarget(
             name: "NCUStudyRocketTests",
             dependencies: ["StudyRocketChatCore"],
             path: "Tests/NCUStudyRocketTests"
+        ),
+        .executableTarget(
+            name: "TimetableImportChecks",
+            dependencies: ["StudyRocketTimetableImport"],
+            path: "Tests/TimetableImportChecks"
         )
     ]
 )

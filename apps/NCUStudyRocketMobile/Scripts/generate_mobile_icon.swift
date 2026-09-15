@@ -1,24 +1,34 @@
 import AppKit
 
 guard CommandLine.arguments.count == 3 else {
-    fputs("usage: generate_mobile_icon.swift <source.icns> <output.png>\n", stderr)
+    fputs("usage: generate_mobile_icon.swift <source-image> <output.png>\n", stderr)
     exit(64)
 }
 
 let sourceURL = URL(fileURLWithPath: CommandLine.arguments[1])
 let outputURL = URL(fileURLWithPath: CommandLine.arguments[2])
-guard let source = NSImage(contentsOf: sourceURL),
-      let sourceRep = source.representations.compactMap({ $0 as? NSBitmapImageRep }).first else {
+guard let source = NSImage(contentsOf: sourceURL) else {
     throw NSError(domain: "NCUStudyRocketMobileIcon", code: 1)
 }
 
-// The original icon uses this solid blue behind its rounded artwork. Filling
-// the transparent corners with the same color keeps the iOS asset opaque
-// without introducing a visible halo around the source icon.
+// App icons must be opaque. The supplied product mark already carries its
+// background, and this fallback also keeps future transparent sources valid.
 let background = NSColor(srgbRed: 40 / 255, green: 78 / 255, blue: 109 / 255, alpha: 1)
 let pixelSize = 1024
-let image = NSImage(size: NSSize(width: pixelSize, height: pixelSize))
-image.lockFocus()
+guard let context = CGContext(
+    data: nil,
+    width: pixelSize,
+    height: pixelSize,
+    bitsPerComponent: 8,
+    bytesPerRow: 0,
+    space: CGColorSpaceCreateDeviceRGB(),
+    bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+) else {
+    throw NSError(domain: "NCUStudyRocketMobileIcon", code: 2)
+}
+let graphicsContext = NSGraphicsContext(cgContext: context, flipped: false)
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = graphicsContext
 background.setFill()
 NSRect(x: 0, y: 0, width: pixelSize, height: pixelSize).fill()
 source.draw(
@@ -27,12 +37,11 @@ source.draw(
     operation: .sourceOver,
     fraction: 1
 )
-image.unlockFocus()
+NSGraphicsContext.restoreGraphicsState()
 
 try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-guard let tiff = image.tiffRepresentation,
-      let bitmap = NSBitmapImageRep(data: tiff),
-      let png = bitmap.representation(using: NSBitmapImageRep.FileType.png, properties: [:]) else {
-    throw NSError(domain: "NCUStudyRocketMobileIcon", code: 2)
+guard let image = context.makeImage(),
+      let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
+    throw NSError(domain: "NCUStudyRocketMobileIcon", code: 3)
 }
 try png.write(to: outputURL)

@@ -15,9 +15,9 @@ enum HostChatError: LocalizedError {
 }
 
 /// A small, lock-protected one-shot bridge between the Host's callback-based
-/// startup deadline and its async Codex self-check.  It deliberately uses the
-/// main dispatch queue for the deadline: a stalled app-server must not depend
-/// on the cooperative Swift task executor in order to leave `.starting`.
+/// startup deadline and its async Codex self-check.  It deliberately uses a
+/// utility dispatch queue for the deadline: a stalled app-server must not
+/// depend on the main run loop or cooperative Swift task executor.
 private final class HostStartupCompletion: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Error>?
@@ -36,15 +36,23 @@ private final class HostStartupCompletion: @unchecked Sendable {
 
     func finish(_ result: Result<Void, Error>) {
         lock.lock()
-        guard !completed, let continuation else { lock.unlock(); return }
+        guard !completed else { lock.unlock(); return }
         completed = true
+        let continuation = self.continuation
         self.continuation = nil
         lock.unlock()
+        guard let continuation else { return }
         switch result {
         case .success: continuation.resume()
         case .failure(let error): continuation.resume(throwing: error)
         }
     }
+}
+
+private enum HostCodexSessionExit {
+    case idle
+    case retired
+    case unexpected
 }
 
 @MainActor
@@ -66,12 +74,14 @@ private final class HostCodexSession {
     private var replyItems: [String: String] = [:]
     private var completedItemIDs = Set<String>()
     private var history: [ChatMessageDTO] = []
+    private var terminalTurns: [ChatTurnTerminalDTO] = []
     private var idleShutdownTask: Task<Void, Never>?
+    private var requestedExit: HostCodexSessionExit?
     var onToolCall: (([String: Any]) -> [String: Any])?
-    var onProcessExit: (() -> Void)?
+    var onProcessExit: ((HostCodexSessionExit) -> Void)?
     var onReplyDelta: ((String, String, String, String?) -> Void)?
     var onItemCompleted: ((String, String, String, String?) -> Void)?
-    var onTurnStatus: ((String, String, String?) -> Void)?
+    var onTurnStatus: ((String, String, String?, String?, Date?) -> Void)?
 
     init(root: URL, threadID: String = StudyRocketThreadProtocol.legacyHostThreadID) {
         self.root = root.standardizedFileURL
@@ -82,6 +92,9 @@ private final class HostCodexSession {
     var currentThreadID: String { threadID }
 
     private func processDidTerminate() {
+        guard process != nil || input != nil || output != nil else { return }
+        let exit = requestedExit ?? .unexpected
+        requestedExit = nil
         idleShutdownTask?.cancel()
         idleShutdownTask = nil
         input = nil
@@ -98,8 +111,8 @@ private final class HostCodexSession {
             continuation.resume(throwing: error)
         }
         pendingTurnResult = nil
-        if let interruptedTurnID { onTurnStatus?(interruptedTurnID, "failed", error.localizedDescription) }
-        onProcessExit?()
+        if let interruptedTurnID { onTurnStatus?(interruptedTurnID, "failed", error.localizedDescription, nil, .now) }
+        onProcessExit?(exit)
     }
 
     func connect() async throws {
@@ -113,6 +126,7 @@ private final class HostCodexSession {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = ["app-server", "--stdio"]
+        process.environment = StudyRocketCodexErrorPresentation.childProcessEnvironment()
         let stdin = Pipe(); let stdout = Pipe(); let stderr = Pipe()
         process.standardInput = stdin; process.standardOutput = stdout; process.standardError = stderr
         process.terminationHandler = { [weak self] _ in
@@ -136,6 +150,10 @@ private final class HostCodexSession {
             "capabilities": ["experimentalApi": true]
         ])
         sendNotification(method: "initialized", params: [:])
+        let config = try await request(method: "config/read", params: ["cwd": root.path])
+        guard let selection = StudyRocketModelSelection.configReadResult(config) else {
+            throw HostChatError.protocolError("Codex 未返回当前模型配置，请在 Mac 重新登录后重启 Host。")
+        }
         let descriptor = descriptorStore.load(for: root)
         let compatibleThreadID = descriptor?.protocolVersion == StudyRocketThreadProtocol.currentVersion ? descriptor?.threadID : nil
         let legacyThreadID = compatibleThreadID == nil ? (descriptor?.threadID ?? threadID) : nil
@@ -147,31 +165,24 @@ private final class HostCodexSession {
         }
         if let compatibleThreadID {
             threadID = compatibleThreadID
-            _ = try await request(method: "thread/resume", params: [
+            let resumed = try await request(method: "thread/resume", params: [
                 "threadId": threadID,
                 "includeTurns": true,
                 "cwd": root.path,
                 "sandbox": "read-only",
                 "approvalPolicy": "never",
                 "runtimeWorkspaceRoots": [root.path],
-                "developerInstructions": Self.developerInstructions
+                "developerInstructions": Self.developerInstructions(),
+                "model": selection.model,
+                "modelProvider": selection.modelProvider
             ])
-        } else {
-            let response = try await request(method: "thread/start", params: [
-                "cwd": root.path,
-                "sandbox": "read-only",
-                "approvalPolicy": "never",
-                "runtimeWorkspaceRoots": [root.path],
-                "threadSource": "studyrocket",
-                "developerInstructions": Self.developerInstructions(legacyHistory: migratedHistory),
-                "dynamicTools": StudyRocketDynamicToolContract.declaration
-            ])
-            guard let newID = (try resultObject(response)["thread"] as? [String: Any])?["id"] as? String else {
-                throw HostChatError.protocolError("Codex 没有返回学业任务 ID。")
+            if StudyRocketModelSelection.threadResult(resumed) != selection {
+                let resumedHistory = parseHistory((resumed["thread"] as? [String: Any]) ?? resumed)
+                migratedHistory = Array((migratedHistory + resumedHistory).suffix(40))
+                threadID = try await startFixedThread(selection: selection, legacyHistory: migratedHistory)
             }
-            threadID = newID
-            try? descriptorStore.save(StudyRocketTaskDescriptor(threadID: newID), for: root)
-            _ = try? await request(method: "thread/name/set", params: ["threadId": newID, "name": "StudyRocket 学业助理"])
+        } else {
+            threadID = try await startFixedThread(selection: selection, legacyHistory: migratedHistory)
         }
         guard StudyRocketDynamicToolContract.declarationIsValid else {
             throw HostChatError.protocolError("StudyRocket 草案工具声明校验失败。")
@@ -187,7 +198,8 @@ private final class HostCodexSession {
         var byID = Dictionary(uniqueKeysWithValues: migratedHistory.map { ($0.id, $0) })
         for message in currentHistory { byID[message.id] = message }
         history = Array(byID.values.sorted { $0.date < $1.date }.suffix(30))
-        return ChatHistoryResponse(revision: String(history.count), messages: history)
+        terminalTurns = parseTerminalTurns(result)
+        return ChatHistoryResponse(revision: String(history.count), messages: history, terminalTurns: terminalTurns)
     }
 
     func send(_ text: String) async throws {
@@ -208,7 +220,7 @@ private final class HostCodexSession {
             throw HostChatError.protocolError("Codex 没有返回本轮 turn ID。")
         }
         activeTurnID = turnID
-        onTurnStatus?(turnID, "inProgress", nil)
+        onTurnStatus?(turnID, "inProgress", nil, nil, nil)
         try await withCheckedThrowingContinuation { continuation in
             if let pendingTurnResult {
                 self.pendingTurnResult = nil
@@ -229,11 +241,15 @@ private final class HostCodexSession {
         sendRaw(["id": nextID(), "method": "turn/interrupt", "params": ["threadId": threadID, "turnId": activeTurnID]], to: input)
     }
 
-    func shutdown() {
+    func shutdown(exit: HostCodexSessionExit = .retired) {
+        requestedExit = exit
         idleShutdownTask?.cancel()
         idleShutdownTask = nil
-        if process?.isRunning == true { process?.terminate() }
-        processDidTerminate()
+        guard process?.isRunning == true else {
+            processDidTerminate()
+            return
+        }
+        process?.terminate()
     }
 
     private func touchActivity() {
@@ -245,7 +261,7 @@ private final class HostCodexSession {
                 self.touchActivity()
                 return
             }
-            self.shutdown()
+            self.shutdown(exit: .idle)
         }
     }
 
@@ -262,7 +278,7 @@ private final class HostCodexSession {
     private func handle(_ object: [String: Any]) {
         if let id = object["id"] as? Int, let continuation = pending.removeValue(forKey: id) {
             if let error = object["error"] as? [String: Any], let message = error["message"] as? String {
-                continuation.resume(throwing: HostChatError.protocolError(message))
+                continuation.resume(throwing: HostChatError.protocolError(StudyRocketCodexErrorPresentation.message(for: message)))
             } else {
                 continuation.resume(returning: (object["result"] as? [String: Any]) ?? [:])
             }
@@ -317,8 +333,10 @@ private final class HostCodexSession {
                   completedTurnID == activeTurnID else { return }
             let status = turn["status"] as? String ?? "failed"
             activeTurnID = nil
-            let error = (turn["error"] as? [String: Any])?["message"] as? String
-            onTurnStatus?(completedTurnID, status, error)
+            let error = ((turn["error"] as? [String: Any])?["message"] as? String)
+                .map { StudyRocketCodexErrorPresentation.message(for: $0) }
+            let issueCode = StudyRocketCodexErrorPresentation.isAuthenticationFailure(error) ? "provider_auth_failed" : nil
+            onTurnStatus?(completedTurnID, status, error, issueCode, date(from: turn["completedAt"]) ?? .now)
             if status == "completed" || status == "interrupted" {
                 finishTurn(.success(()))
             } else {
@@ -330,8 +348,12 @@ private final class HostCodexSession {
             guard let activeTurnID,
                   (params["turnId"] as? String ?? activeTurnID) == activeTurnID else { return }
             if params["willRetry"] as? Bool == true { return }
-            let message = (params["error"] as? [String: Any])?["message"] as? String ?? "Codex 返回错误。"
-            onTurnStatus?(activeTurnID, "failed", message)
+            let message = StudyRocketCodexErrorPresentation.message(
+                for: (params["error"] as? [String: Any])?["message"] as? String,
+                fallback: "Codex 返回错误。"
+            )
+            let issueCode = StudyRocketCodexErrorPresentation.isAuthenticationFailure((params["error"] as? [String: Any])?["message"] as? String) ? "provider_auth_failed" : nil
+            onTurnStatus?(activeTurnID, "failed", message, issueCode, .now)
             finishTurn(.failure(HostChatError.protocolError(message)))
         default: break
         }
@@ -348,6 +370,28 @@ private final class HostCodexSession {
         } else {
             pendingTurnResult = result
         }
+    }
+
+    private func startFixedThread(selection: StudyRocketModelSelection, legacyHistory: [ChatMessageDTO]) async throws -> String {
+        let response = try await request(method: "thread/start", params: [
+            "cwd": root.path,
+            "sandbox": "read-only",
+            "approvalPolicy": "never",
+            "runtimeWorkspaceRoots": [root.path],
+            "threadSource": "studyrocket",
+            "developerInstructions": Self.developerInstructions(legacyHistory: legacyHistory),
+            "dynamicTools": StudyRocketDynamicToolContract.declaration,
+            "model": selection.model,
+            "modelProvider": selection.modelProvider
+        ])
+        guard let newID = (try resultObject(response)["thread"] as? [String: Any])?["id"] as? String else {
+            throw HostChatError.protocolError("Codex 没有返回学业任务 ID。")
+        }
+        // Descriptor persistence is atomic; only switch the live task after it
+        // succeeds so a failed write cannot strand the fixed task reference.
+        try descriptorStore.save(StudyRocketTaskDescriptor(threadID: newID), for: root)
+        _ = try? await request(method: "thread/name/set", params: ["threadId": newID, "name": "StudyRocket 学业助理"])
+        return newID
     }
 
     private func parseHistory(_ thread: [String: Any]) -> [ChatMessageDTO] {
@@ -369,6 +413,19 @@ private final class HostCodexSession {
         return messages
     }
 
+    private func parseTerminalTurns(_ thread: [String: Any]) -> [ChatTurnTerminalDTO] {
+        guard let turns = thread["turns"] as? [[String: Any]] else { return [] }
+        return turns.suffix(40).compactMap { turn in
+            guard let turnID = turn["id"] as? String,
+                  let status = turn["status"] as? String,
+                  ["completed", "interrupted", "failed"].contains(status) else { return nil }
+            let raw = (turn["error"] as? [String: Any])?["message"] as? String
+            let issueCode = StudyRocketCodexErrorPresentation.isAuthenticationFailure(raw) ? "provider_auth_failed" : nil
+            let message = raw.map { StudyRocketCodexErrorPresentation.message(for: $0) }
+            return ChatTurnTerminalDTO(turnID: turnID, status: status, issueCode: issueCode, message: message, completedAt: date(from: turn["completedAt"]))
+        }
+    }
+
     private func date(from value: Any?) -> Date? {
         guard let seconds = value as? TimeInterval else { return nil }
         return Date(timeIntervalSince1970: seconds)
@@ -379,14 +436,15 @@ private final class HostCodexSession {
             let id = nextID()
             pending[id] = continuation
             sendRaw(["id": id, "method": method, "params": params])
-            Task { @MainActor [weak self] in
-                // A stalled app-server must never leave the Host UI in its
-                // startup state indefinitely.  Individual RPCs get a short,
-                // explicit deadline; the bridge-level self check below also
-                // owns a total deadline for the whole startup sequence.
-                try? await Task.sleep(for: .seconds(15))
-                guard let self, let timedOut = self.pending.removeValue(forKey: id) else { return }
-                timedOut.resume(throwing: HostChatError.unavailable("Codex 请求超时（\(method)），请重新启动连接。"))
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 15) { [weak self] in
+                Task { @MainActor [weak self] in
+                    // A stalled app-server must never leave the Host UI in its
+                    // startup state indefinitely.  Individual RPCs get a short,
+                    // explicit deadline; the bridge-level self check below also
+                    // owns a total deadline for the whole startup sequence.
+                    guard let self, let timedOut = self.pending.removeValue(forKey: id) else { return }
+                    timedOut.resume(throwing: HostChatError.unavailable("Codex 请求超时（\(method)），请重新启动连接。"))
+                }
             }
         }
     }
@@ -413,7 +471,12 @@ private final class HostCodexSession {
     }
     private func sendNotification(method: String, params: [String: Any]) { sendRaw(["method": method, "params": params]) }
     private func sendRaw(_ object: [String: Any], to handle: FileHandle? = nil) {
-        guard let data = try? JSONSerialization.data(withJSONObject: object), let target = handle ?? input else { return }
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object),
+              let target = handle ?? input else {
+            NSLog("StudyRocket Host refused an invalid Codex JSON payload")
+            return
+        }
         target.write(data); target.write(Data([10]))
     }
 
@@ -440,7 +503,7 @@ private final class HostCodexSession {
         """
         }
         return """
-    你是 StudyRocket 学业助理，只处理课程答疑、学习规划、复盘、科研、竞赛和保研问题。先读 AGENTS.md、PROFILE.md 和相关学业 Markdown；未知信息标记【待核实】，不编造 GPA、排名、名额、日期或推免比例。手机请求不得处理应用开发、源码维护、Git 操作，也不得读取或引用 apps/、脚本、PDF、PDF提取文本/ 或其他开发资料。你运行在只读任务中，绝不直接写文件；需要更新时只能调用 studyrocket.propose_changes 或 studyrocket.propose_skill_update，由应用确认后写入。保持平衡型关怀：明确表达困难时先用一两句具体承接，再给最小下一步；不记录情绪原话。
+    你是 StudyRocket 学业助理，只处理课程答疑、学习规划、复盘、科研、竞赛和保研问题。先读 AGENTS.md、PROFILE.md 和相关学业 Markdown；未知信息标记【待核实】，不编造 GPA、排名、名额、日期或推免比例。手机请求不得处理应用开发、源码维护、Git 操作，也不得读取或引用 apps/、脚本、PDF、PDF提取文本/ 或其他开发资料。你运行在只读任务中，绝不直接写文件；需要更新时只能调用 studyrocket.propose_changes 或 studyrocket.propose_skill_update，由应用确认后写入。编辑工作台/下周计划.md 时，同一时段的多个事项用 <br> 分隔且不要在时段单元格内写 Markdown 复选框；带明确开始时间的事项必须归入上午（12:00 前）、中午（12:00-17:59）或晚上（18:00 起），只有无法判断时段的事项才能放入待分配。保持平衡型关怀：明确表达困难时先用一两句具体承接，再给最小下一步；不记录情绪原话。
     \(continuity)
     """
     }
@@ -457,18 +520,26 @@ final class HostChatBridge: @unchecked Sendable {
     private var acceptedRequestIDs = Set<String>()
     private var lastTerminalTurnID: String?
     private var _activeThreadID: String?
+    private var _chatState: StudyRocketChatState = .starting
+    private var _chatIssueCode: String?
     var onEvent: ((String) -> Void)?
     var onStreamEvent: ((ChatStreamEvent) -> Void)?
 
-    var protocolReady: Bool {
+    var chatState: StudyRocketChatState {
         readinessLock.lock(); defer { readinessLock.unlock() }
-        return _protocolReady
+        return _chatState
+    }
+    var chatIssueCode: String? {
+        readinessLock.lock(); defer { readinessLock.unlock() }
+        return _chatIssueCode
+    }
+    var canGenerateChat: Bool {
+        chatState.canGenerate
     }
     var currentThreadID: String? {
         readinessLock.lock(); defer { readinessLock.unlock() }
         return _activeThreadID
     }
-    private var _protocolReady = false
 
     init(root: URL) {
         self.root = root.standardizedFileURL
@@ -483,6 +554,7 @@ final class HostChatBridge: @unchecked Sendable {
     /// This makes a malformed dynamic-tool declaration fail at Host startup rather
     /// than surfacing later as a `namespace: null` tool error on the phone.
     func selfCheck() async throws {
+        setChatState(.starting)
         guard StudyRocketDynamicToolContract.declarationIsValid else {
             throw HostChatError.protocolError("StudyRocket 草案工具声明校验失败。")
         }
@@ -490,30 +562,41 @@ final class HostChatBridge: @unchecked Sendable {
         // boundary.  A process can stay alive while never returning a
         // response (for example after a local Codex upgrade), so a per-RPC
         // timeout alone is not enough to guarantee that startup finishes.
-        // Use the main run loop rather than a sibling Swift task for this
-        // deadline; it continues to fire even if the cooperative executor is
-        // occupied by the suspended stdio bridge.
+        // Use a utility queue rather than the main run loop or a sibling Swift
+        // task; it continues to fire even if the stdio bridge is suspended.
         let completion = HostStartupCompletion()
-        try await withCheckedThrowingContinuation { continuation in
-            completion.install(continuation)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 25) {
-                completion.finish(.failure(HostChatError.unavailable("Codex 自检超时（25 秒），Host 已停止。请重新启动连接。")))
-            }
-            Task { [weak self] in
-                guard let self else {
-                    completion.finish(.failure(HostChatError.unavailable("Host 会话不可用。")))
-                    return
-                }
-                do {
-                    _ = try await self.connectHistory()
-                    completion.finish(.success(()))
-                } catch {
-                    completion.finish(.failure(error))
-                }
-            }
+        let timeout = DispatchWorkItem {
+            NSLog("StudyRocket Host Codex self-check reached its 25-second deadline")
+            completion.finish(.failure(HostChatError.unavailable("Codex 自检超时（25 秒），首页仍可用；学业对话尚未就绪。")))
         }
-        setProtocolReady(true)
-        onEvent?("chat.ready")
+        let timeoutQueue = DispatchQueue(label: "com.skyfrost.ncustudyrocket.self-check-timeout", qos: .utility)
+        do {
+            try await withCheckedThrowingContinuation { continuation in
+                completion.install(continuation)
+                timeoutQueue.asyncAfter(deadline: .now() + 25, execute: timeout)
+                Task { [weak self] in
+                    guard let self else {
+                        completion.finish(.failure(HostChatError.unavailable("Host 会话不可用。")))
+                        return
+                    }
+                    do {
+                        _ = try await self.connectHistory()
+                        completion.finish(.success(()))
+                    } catch {
+                        completion.finish(.failure(error))
+                    }
+                }
+            }
+        } catch {
+            timeout.cancel()
+            NSLog("StudyRocket Host Codex self-check failed: %@", error.localizedDescription)
+            setChatState(.unavailable)
+            await retireSession()
+            throw error
+        }
+        timeout.cancel()
+        setChatState(.protocolReadyAuthUnknown)
+        onEvent?("chat.protocolReady")
     }
 
     @discardableResult
@@ -542,18 +625,22 @@ final class HostChatBridge: @unchecked Sendable {
                 if let value = try await session?.loadHistory() {
                     cache.set(value)
                 }
-                setProtocolReady(true)
+                setChatState(.ready)
                 succeeded = true
             } catch {
-                setProtocolReady(false)
+                let message = StudyRocketCodexErrorPresentation.message(for: error.localizedDescription)
+                let isAuthFailure = StudyRocketCodexErrorPresentation.isAuthenticationFailure(error.localizedDescription)
+                setChatState(isAuthFailure ? .authFailed : .unavailable, issueCode: isAuthFailure ? "provider_auth_failed" : nil)
                 if session?.isRunning == true, let value = try? await session?.loadHistory() {
                     cache.set(value)
                 }
                 if lastTerminalTurnID == nil {
-                    onStreamEvent?(ChatStreamEvent(kind: "status", text: error.localizedDescription, status: "failed"))
+                    let terminal = ChatTurnTerminalDTO(turnID: "host-\(requestID)", status: "failed", issueCode: isAuthFailure ? "provider_auth_failed" : nil, message: message, completedAt: .now)
+                    cache.record(terminal)
+                    onStreamEvent?(ChatStreamEvent(kind: "status", turnID: terminal.turnID, text: message, status: "failed", issueCode: terminal.issueCode, completedAt: terminal.completedAt))
                 }
                 releaseRequestID(requestID)
-                NSLog("StudyRocket Host chat error: %@", error.localizedDescription)
+                NSLog("StudyRocket Host chat error: %@", message)
             }
             onEvent?(succeeded ? "chat.completed" : "chat.failed")
         }
@@ -568,14 +655,21 @@ final class HostChatBridge: @unchecked Sendable {
     }
 
     func shutdown() {
-        setProtocolReady(false)
-        readinessLock.lock(); _activeThreadID = nil; readinessLock.unlock()
-        // Retain the session until its app-server receives the termination signal.
-        // A weak capture could be released with the HTTP server before this task ran,
-        // leaving a fixed-thread writer alive across a Host restart.
-        let retiringSession = session
-        session = nil
-        Task { @MainActor in
+        Task { await retireSession() }
+    }
+
+    /// A failed self-check must release only the Codex child.  The HTTP server,
+    /// pairing records, local session and plan APIs stay alive so a later retry
+    /// can recover the chat path without making the phone reconnect.
+    private func retireSession() async {
+        setChatState(.unavailable)
+        setActiveThreadID(nil)
+        await MainActor.run {
+            // HostCodexSession is main-actor isolated.  Retire it on the same
+            // actor as ensureSession so the next self-check observes nil and
+            // starts a fresh app-server instead of racing the failed session.
+            let retiringSession = session
+            session = nil
             retiringSession?.shutdown()
         }
     }
@@ -594,10 +688,10 @@ final class HostChatBridge: @unchecked Sendable {
                         setActiveThreadID(threadID)
                     }
                     cache.set(value)
-                    setProtocolReady(true)
+                    if chatState == .starting { setChatState(.protocolReadyAuthUnknown) }
                     continuation.resume(returning: value)
                 } catch {
-                    setProtocolReady(false)
+                    setChatState(.unavailable)
                     continuation.resume(throwing: error)
                 }
             }
@@ -618,9 +712,21 @@ final class HostChatBridge: @unchecked Sendable {
     private func ensureSession() {
         guard session == nil else { return }
         let value = HostCodexSession(root: root)
-        value.onProcessExit = { [weak self] in
-            self?.setProtocolReady(false)
-            self?.onEvent?("chat.failed")
+        value.onProcessExit = { [weak self] exit in
+            guard let self else { return }
+            switch exit {
+            case .idle:
+                // The next real message reconnects the child process.  Keep
+                // this gate open so an intentional resource release cannot
+                // strand an otherwise healthy Host in an unavailable state.
+                self.setChatState(.protocolReadyAuthUnknown)
+                self.onEvent?("chat.protocolReady")
+            case .retired:
+                break
+            case .unexpected:
+                self.setChatState(.unavailable)
+                self.onEvent?("chat.failed")
+            }
         }
         value.onReplyDelta = { [weak self] turnID, itemID, text, phase in
             self?.onStreamEvent?(ChatStreamEvent(kind: "delta", turnID: turnID, itemID: itemID, text: text, phase: phase))
@@ -628,12 +734,13 @@ final class HostChatBridge: @unchecked Sendable {
         value.onItemCompleted = { [weak self] turnID, itemID, text, phase in
             self?.onStreamEvent?(ChatStreamEvent(kind: "item_completed", turnID: turnID, itemID: itemID, text: text, phase: phase))
         }
-        value.onTurnStatus = { [weak self] turnID, status, text in
+        value.onTurnStatus = { [weak self] turnID, status, text, issueCode, completedAt in
             guard let self else { return }
             if status == "completed" || status == "interrupted" || status == "failed" {
                 self.lastTerminalTurnID = turnID
+                self.cache.record(ChatTurnTerminalDTO(turnID: turnID, status: status, issueCode: issueCode, message: text, completedAt: completedAt))
             }
-            self.onStreamEvent?(ChatStreamEvent(kind: "status", turnID: turnID, text: text, status: status))
+            self.onStreamEvent?(ChatStreamEvent(kind: "status", turnID: turnID, text: text, status: status, issueCode: issueCode, completedAt: completedAt))
         }
         value.onToolCall = { [weak self] params in
             self?.registerToolCall(params) ?? ["success": false, "contentItems": [["type": "inputText", "text": "草案存储不可用。"]]]
@@ -650,15 +757,21 @@ final class HostChatBridge: @unchecked Sendable {
                 let data = string.data(using: .utf8),
                 let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { args = object }
         else { args = [:] }
-        guard let tool, StudyRocketDynamicToolContract.accepts(namespace: namespace, tool: tool) else {
+        guard let tool,
+              let normalized = StudyRocketDynamicToolContract.normalizedCall(namespace: namespace, tool: tool) else {
             return ["success": false, "contentItems": [["type": "inputText", "text": "草案工具必须使用 studyrocket 命名空间。"]]]
         }
-        let turnID = (params["turnId"] as? String) ?? "unknown-turn"
-        return proposalStore.register(arguments: args, tool: tool, turnID: turnID)
+        guard let turnID = params["turnId"] as? String, !turnID.isEmpty else {
+            return ["success": false, "contentItems": [["type": "inputText", "text": "草案缺少回合 ID。"]]]
+        }
+        return proposalStore.register(arguments: args, tool: normalized.tool, turnID: turnID)
     }
 
-    private func setProtocolReady(_ value: Bool) {
-        readinessLock.lock(); _protocolReady = value; readinessLock.unlock()
+    private func setChatState(_ state: StudyRocketChatState, issueCode: String? = nil) {
+        readinessLock.lock()
+        _chatState = state
+        _chatIssueCode = issueCode
+        readinessLock.unlock()
     }
 
     private func releaseRequestID(_ requestID: String) {
@@ -668,7 +781,7 @@ final class HostChatBridge: @unchecked Sendable {
 
 private final class HostChatCache: @unchecked Sendable {
     private let lock = NSLock()
-    private var stored = ChatHistoryResponse(revision: "0", messages: [])
+    private var stored = ChatHistoryResponse(revision: "0", messages: [], terminalTurns: [])
 
     var value: ChatHistoryResponse {
         lock.lock(); defer { lock.unlock() }
@@ -677,5 +790,13 @@ private final class HostChatCache: @unchecked Sendable {
 
     func set(_ value: ChatHistoryResponse) {
         lock.lock(); stored = value; lock.unlock()
+    }
+
+    func record(_ terminal: ChatTurnTerminalDTO) {
+        lock.lock(); defer { lock.unlock() }
+        var terminals = stored.terminalTurns ?? []
+        terminals.removeAll { $0.turnID == terminal.turnID }
+        terminals.append(terminal)
+        stored = ChatHistoryResponse(revision: stored.revision, messages: stored.messages, terminalTurns: Array(terminals.suffix(40)))
     }
 }

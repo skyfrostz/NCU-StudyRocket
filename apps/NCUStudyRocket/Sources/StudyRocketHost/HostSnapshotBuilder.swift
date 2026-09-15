@@ -10,7 +10,7 @@ final class HostSnapshotBuilder {
         self.root = root
         var calendar = Calendar(identifier: .gregorian)
         calendar.locale = Locale(identifier: "zh_CN")
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
         self.calendar = calendar
     }
 
@@ -18,21 +18,36 @@ final class HostSnapshotBuilder {
         let planText = read("工作台/下周计划.md")
         let plan = parsePlan(planText, now: now, completions: parsePeriodCompletions(planText))
         let daily = parseDaily(now: now)
-        let visibleDeliveries = plan.deliveries.filter { delivery in
-            guard let label = delivery.dateLabel, let date = parseDate(label, relativeTo: now) else { return true }
-            return !calendar.isDate(date, inSameDayAs: now)
-        }
-        let today = plan.days.first { calendar.isDate(parseDate($0.dateLabel, relativeTo: now) ?? .distantPast, inSameDayAs: now) }
+        let timetable = StudyRocketTimetableParser.snapshot(
+            from: readOptional(StudyRocketTimetableParser.sourceFile),
+            now: now
+        )
+        let today = plan.days.first { $0.id == isoDate(calendar.startOfDay(for: now)) }
+        let deliveries = plan.deliveries
         let home = HomeSnapshot(
             dateLabel: dateLabel(now),
             periods: today?.slots ?? Self.emptyPeriods,
-            firstOpenTask: today?.slots.first(where: { !$0.isCompleted && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.text,
-            visibleDeliveries: visibleDeliveries,
-            completedDeliveries: visibleDeliveries.filter { $0.isCompleted }.count,
-            totalDeliveries: visibleDeliveries.count
+            firstOpenTask: today?.slots.lazy
+                .flatMap(\.tasks)
+                .first(where: { !$0.isCompleted })?
+                .text,
+            visibleDeliveries: deliveries,
+            completedDeliveries: deliveries.filter { $0.isCompleted }.count,
+            totalDeliveries: deliveries.count,
+            timetable: timetable
         )
         let month = DateFormatter.monthFile.string(from: now)
-        let revision = revision(for: ["工作台/下周计划.md", "工作台/每日记录/\(month).md", "工作台/进度日志.md", "工作台/航线/课程.md", "工作台/航线/科研.md", "工作台/航线/保研.md", "工作台/航线/生活.md", "智库/学校文件/来源索引.md"])
+        let revision = revision(for: [
+            "工作台/下周计划.md",
+            "工作台/每日记录/\(month).md",
+            "工作台/进度日志.md",
+            "工作台/航线/课程.md",
+            "工作台/航线/科研.md",
+            "工作台/航线/保研.md",
+            "工作台/航线/生活.md",
+            "智库/学校文件/来源索引.md",
+            StudyRocketTimetableParser.sourceFile
+        ])
         return SnapshotResponse(revision: revision, home: home, week: plan, daily: daily, summaries: summaries())
     }
 
@@ -52,13 +67,13 @@ final class HostSnapshotBuilder {
         var inDeliveries = false
         var tableRows: [[String]] = []
         for line in source.components(separatedBy: .newlines) {
-            if line.contains("studyrocket:weekly:start") { inWeekly = true; continue }
-            if line.contains("studyrocket:weekly:end") { inWeekly = false; continue }
-            if line.contains("studyrocket:weekly:history:start") || line.contains("studyrocket:weekly:future:start") {
+            if isMarker(line, "studyrocket:weekly:start") { inWeekly = true; continue }
+            if isMarker(line, "studyrocket:weekly:end") { inWeekly = false; continue }
+            if isMarker(line, "studyrocket:weekly:history:start") || isMarker(line, "studyrocket:weekly:future:start") {
                 inHiddenWeeklySection = true
                 continue
             }
-            if line.contains("studyrocket:weekly:history:end") || line.contains("studyrocket:weekly:future:end") {
+            if isMarker(line, "studyrocket:weekly:history:end") || isMarker(line, "studyrocket:weekly:future:end") {
                 inHiddenWeeklySection = false
                 continue
             }
@@ -122,23 +137,49 @@ final class HostSnapshotBuilder {
             }
         }
 
-        let days = window.map { date -> DaySnapshot in
-            let values = dayValues[calendar.startOfDay(for: date)] ?? ["", "", ""]
-            let dayID = isoDate(date)
-            return DaySnapshot(id: dayID, dateLabel: dateLabel(date), slots: makePeriods(dayID: dayID, values: values, completions: completions))
-        }
         let hiddenRows = parseHiddenRows(source, reference: now, completions: completions)
         let start = calendar.startOfDay(for: now)
         let end = calendar.date(byAdding: .day, value: 7, to: start) ?? start
+        let scheduledRows = visibleRows.map { makeScheduledRow($0, reference: now, completions: completions) } + hiddenRows
+        var windowRows: [Date: ScheduledRowSnapshot] = [:]
         var historicalRows: [ScheduledRowSnapshot] = []
         var futureRows: [ScheduledRowSnapshot] = []
-        for row in visibleRows.map({ makeScheduledRow($0, reference: now, completions: completions) }) + hiddenRows {
+        for row in scheduledRows {
             guard let date = parseDate(row.dateLabel, relativeTo: now) else {
                 futureRows.append(row)
                 continue
             }
-            if date < start { historicalRows.append(row) }
-            else if date >= end { futureRows.append(row) }
+            let day = calendar.startOfDay(for: date)
+            if day < start {
+                historicalRows.append(row)
+            } else if day >= end {
+                futureRows.append(row)
+            } else {
+                // Match the desktop parser: later managed rows for the same
+                // date replace earlier rows, including rows promoted out of
+                // the historical or future sections.
+                windowRows[day] = row
+            }
+        }
+        let days = window.map { date -> DaySnapshot in
+            let day = calendar.startOfDay(for: date)
+            let dayID = isoDate(day)
+            if let row = windowRows[day] {
+                return DaySnapshot(id: dayID, dateLabel: dateLabel(day), slots: row.slots, unassigned: row.unassigned)
+            }
+            return DaySnapshot(
+                id: dayID,
+                dateLabel: dateLabel(day),
+                slots: makePeriods(dayID: dayID, values: ["", "", ""], completions: completions)
+            )
+        }
+        historicalRows.sort {
+            (parseDate($0.dateLabel, relativeTo: now) ?? .distantPast)
+                < (parseDate($1.dateLabel, relativeTo: now) ?? .distantPast)
+        }
+        futureRows.sort {
+            (parseDate($0.dateLabel, relativeTo: now) ?? .distantFuture)
+                < (parseDate($1.dateLabel, relativeTo: now) ?? .distantFuture)
         }
         return WeeklyPlanSnapshot(days: days, bufferRules: parseBuffers(source), deliveries: deliveries, historicalRows: historicalRows, futureRows: futureRows)
     }
@@ -149,11 +190,15 @@ final class HostSnapshotBuilder {
         completions: Set<PeriodCompletionRecord>
     ) -> ScheduledRowSnapshot {
         let dayID = parseDate(row.label, relativeTo: reference).map(isoDate)
+        let layout = WeeklyPlanTaskNormalizer.normalized(
+            periods: makePeriods(dayID: dayID, values: row.slots, completions: completions),
+            unassigned: row.unassigned
+        )
         return ScheduledRowSnapshot(
             id: stableID("schedule", row.label, row.slots.joined(separator: "\u{1f}"), row.unassigned),
             dateLabel: row.label,
-            slots: makePeriods(dayID: dayID, values: row.slots, completions: completions),
-            unassigned: row.unassigned,
+            slots: layout.periods,
+            unassigned: layout.unassigned,
             isCompleted: row.completed
         )
     }
@@ -164,10 +209,11 @@ final class HostSnapshotBuilder {
             ("studyrocket:weekly:future:start", "studyrocket:weekly:future:end")
         ]
         var result: [ScheduledRowSnapshot] = []
+        let lines = source.components(separatedBy: .newlines)
         for (startMarker, endMarker) in markers {
-            guard let start = source.range(of: startMarker),
-                  let end = source.range(of: endMarker, range: start.upperBound..<source.endIndex) else { continue }
-            for line in String(source[start.upperBound..<end.lowerBound]).components(separatedBy: .newlines) {
+            guard let start = lines.firstIndex(where: { isMarker($0, startMarker) }),
+                  let end = lines[(start + 1)..<lines.count].firstIndex(where: { isMarker($0, endMarker) }) else { continue }
+            for line in lines[(start + 1)..<end] {
                 var cells = line.split(separator: "|", omittingEmptySubsequences: false).map { String($0).trimmingCharacters(in: .whitespaces) }
                 if cells.first?.isEmpty == true { cells.removeFirst() }
                 if cells.last?.isEmpty == true { cells.removeLast() }
@@ -187,25 +233,32 @@ final class HostSnapshotBuilder {
     private func makePeriods(dayID: String?, values: [String], completions: Set<PeriodCompletionRecord>) -> [PeriodSnapshot] {
         [("morning", "上午"), ("noon", "中午"), ("evening", "晚上")].enumerated().map { index, period in
             let text = values[safe: index] ?? ""
-            let isCompleted = dayID.map {
-                !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    && completions.contains(PeriodCompletionRecord(dayID: $0, periodID: period.0, textHash: PeriodCompletion.textHash(for: text)))
+            let legacyKey = PeriodCompletion.textHash(for: text)
+            let legacyCompletion = dayID.map {
+                completions.contains(PeriodCompletionRecord(dayID: $0, periodID: period.0, textHash: legacyKey))
             } ?? false
-            return PeriodSnapshot(id: period.0, title: period.1, text: text, isCompleted: isCompleted)
+            let tasks = PeriodTaskParser.tasks(from: text).map { task in
+                let isCompleted = legacyCompletion || (dayID.map {
+                    completions.contains(PeriodCompletionRecord(dayID: $0, periodID: period.0, textHash: task.id))
+                } ?? false)
+                return PeriodTaskSnapshot(id: task.id, text: task.text, isCompleted: isCompleted)
+            }
+            return PeriodSnapshot(id: period.0, title: period.1, text: text, tasks: tasks)
         }
     }
 
     private func parsePeriodCompletions(_ source: String) -> Set<PeriodCompletionRecord> {
-        guard let start = source.range(of: "studyrocket:period-completion:start"),
-              let end = source.range(of: "studyrocket:period-completion:end", range: start.upperBound..<source.endIndex) else { return [] }
-        return Set(String(source[start.upperBound..<end.lowerBound]).components(separatedBy: .newlines).compactMap { line in
+        let lines = source.components(separatedBy: .newlines)
+        guard let start = lines.firstIndex(where: { isMarker($0, "studyrocket:period-completion:start") }),
+              let end = lines[(start + 1)..<lines.count].firstIndex(where: { isMarker($0, "studyrocket:period-completion:end") }) else { return [] }
+        return Set(lines[(start + 1)..<end].compactMap { line in
             var cells = line.split(separator: "|", omittingEmptySubsequences: false).map { String($0).trimmingCharacters(in: .whitespaces) }
             if cells.first?.isEmpty == true { cells.removeFirst() }
             if cells.last?.isEmpty == true { cells.removeLast() }
             guard cells.count >= 4,
                   isISODate(cells[0]),
                   Self.periodIDs.contains(cells[1]),
-                  cells[2].range(of: #"^[0-9a-fA-F]{64}$"#, options: .regularExpression) != nil,
+                  PeriodCompletion.isValidRecordKey(cells[2]),
                   parseBoolean(cells[3]) else { return nil }
             return PeriodCompletionRecord(dayID: cells[0], periodID: cells[1], textHash: cells[2].lowercased())
         })
@@ -282,6 +335,7 @@ final class HostSnapshotBuilder {
     /// map here prevents a network caller from choosing an arbitrary file.
     static let documentMap: [String: (title: String, path: String)] = [
         "course": ("课程", "工作台/航线/课程.md"),
+        "timetable": ("课表", StudyRocketTimetableParser.sourceFile),
         "research": ("科研", "工作台/航线/科研.md"),
         "recommendation": ("保研", "工作台/航线/保研.md"),
         "life": ("生活", "工作台/航线/生活.md"),
@@ -305,7 +359,7 @@ final class HostSnapshotBuilder {
             return SummaryCard(id: key, title: entry.title, detail: detail, updatedAt: document.fetchedAt, documentKey: key)
         }
         .sorted { lhs, rhs in
-            let order = ["course", "research", "recommendation", "life", "library"]
+            let order = ["course", "timetable", "research", "recommendation", "life", "library"]
             return (order.firstIndex(of: lhs.documentKey ?? "") ?? .max) < (order.firstIndex(of: rhs.documentKey ?? "") ?? .max)
         }
     }
@@ -353,7 +407,29 @@ final class HostSnapshotBuilder {
     }
 
     private func read(_ relative: String) -> String {
-        (try? String(contentsOf: root.appendingPathComponent(relative), encoding: .utf8)) ?? ""
+        guard let target = validatedURL(relative) else { return "" }
+        return (try? String(contentsOf: target, encoding: .utf8)) ?? ""
+    }
+
+    private func readOptional(_ relative: String) -> String? {
+        guard let target = validatedURL(relative),
+              FileManager.default.fileExists(atPath: target.path) else { return nil }
+        // An existing but unreadable/empty source is different from a missing
+        // source: the shared parser will surface it as an invalid timetable.
+        return (try? String(contentsOf: target, encoding: .utf8)) ?? ""
+    }
+
+    private func validatedURL(_ relative: String) -> URL? {
+        let target = root.appendingPathComponent(relative).standardizedFileURL
+        let resolvedRoot = root.resolvingSymlinksInPath()
+        let resolvedTarget = target.resolvingSymlinksInPath()
+        guard resolvedTarget.path.hasPrefix(resolvedRoot.path + "/"),
+              !((try? target.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) ?? false) else { return nil }
+        return resolvedTarget
+    }
+
+    private func isMarker(_ line: String, _ marker: String) -> Bool {
+        line.trimmingCharacters(in: .whitespaces) == "<!-- \(marker) -->"
     }
 
     private func revision(for paths: [String]) -> String {
@@ -399,7 +475,7 @@ private extension DateFormatter {
     static let monthFile: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
         formatter.dateFormat = "yyyy-MM"
         return formatter
     }()

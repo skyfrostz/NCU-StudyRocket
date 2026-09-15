@@ -11,7 +11,7 @@ ICONSET="$ROOT/.build/HostIcon.iconset"
 rm -rf "$ICONSET"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/arm64-apple-macosx/release/StudyRocketHost "$APP/Contents/MacOS/StudyRocketHost"
-swift "$ROOT/Scripts/generate_host_icon.swift" "$ICONSET"
+swift "$ROOT/Scripts/generate_host_icon.swift" "$ROOT/Assets/NCUStudyRocketLogo.png" "$ICONSET"
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/HostIcon.icns"
 MAIN_ICON="/Applications/NCU StudyRocket.app/Contents/Resources/NCUStudyRocket.icns"
 if [[ ! -f "$MAIN_ICON" ]]; then

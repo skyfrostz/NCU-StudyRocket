@@ -15,18 +15,35 @@ public enum MobileIdentityError: LocalizedError {
 }
 
 public final class MobileDeviceIdentity {
+    private static let lock = NSLock()
     private let service = "com.skyfrost.ncustudyrocket.mobile"
-    private let account = "device-signing-key"
+    // Keep the simulator fixture isolated from the physical-device key. This
+    // also prevents a pre-fallback Secure Enclave reference in an existing
+    // Simulator keychain from being decoded as a software key.
+    private let account: String = {
+        #if targetEnvironment(simulator)
+        "simulator-device-signing-key"
+        #else
+        "device-signing-key"
+        #endif
+    }()
 
     public init() {}
 
-    #if os(iOS)
+    // Secure Enclave does not exist in an iOS Simulator. Simulator-only
+    // debugging still needs a stable signing identity to exercise pairing and
+    // request verification; physical iPhones never enter this branch.
+    #if os(iOS) && !targetEnvironment(simulator)
     public func secureEnclaveKey() throws -> SecureEnclave.P256.Signing.PrivateKey {
-        if let stored = load(), let key = try? SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: stored) {
+        Self.lock.lock(); defer { Self.lock.unlock() }
+        if let stored = try load() {
+            guard let key = try? SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: stored) else {
+                throw MobileIdentityError.invalidKey
+            }
             return key
         }
         let key = try SecureEnclave.P256.Signing.PrivateKey()
-        save(key.dataRepresentation)
+        try add(key.dataRepresentation)
         return key
     }
 
@@ -35,11 +52,15 @@ public final class MobileDeviceIdentity {
     }
     #else
     public func softwareKey() throws -> P256.Signing.PrivateKey {
-        if let stored = load(), let key = try? P256.Signing.PrivateKey(rawRepresentation: stored) {
+        Self.lock.lock(); defer { Self.lock.unlock() }
+        if let stored = try load() {
+            guard let key = try? P256.Signing.PrivateKey(rawRepresentation: stored) else {
+                throw MobileIdentityError.invalidKey
+            }
             return key
         }
         let key = P256.Signing.PrivateKey()
-        save(key.rawRepresentation)
+        try add(key.rawRepresentation)
         return key
     }
 
@@ -48,7 +69,7 @@ public final class MobileDeviceIdentity {
     }
     #endif
 
-    private func load() -> Data? {
+    private func load() throws -> Data? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -56,21 +77,30 @@ public final class MobileDeviceIdentity {
             kSecReturnData as String: true
         ]
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
-        return result as? Data
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = result as? Data else { throw MobileIdentityError.unavailable }
+        return data
     }
 
-    private func save(_ data: Data) {
+    private func add(_ data: Data) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(query as CFDictionary)
         let item = query.merging([
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         ]) { _, new in new }
-        SecItemAdd(item as CFDictionary, nil)
+        let status = SecItemAdd(item as CFDictionary, nil)
+        #if targetEnvironment(simulator)
+        if status != errSecSuccess {
+            NSLog("StudyRocket Simulator keychain write failed: %d", status)
+        }
+        #endif
+        guard status == errSecSuccess else {
+            throw MobileIdentityError.unavailable
+        }
     }
 }

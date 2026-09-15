@@ -8,7 +8,7 @@ public enum StudyRocketAPI {
     public static let version = 1
     /// Version of the persisted academic-task/dynamic-tool contract.
     /// Bump this when a resumed task cannot safely reuse its tool registry.
-    public static let academicTaskProtocolVersion = 3
+    public static let academicTaskProtocolVersion = 4
     public static let prefix = "/v1"
     public static let defaultHostPort: UInt16 = 43817
 }
@@ -203,8 +203,12 @@ public struct HealthResponse: Codable, Equatable, Sendable {
     public let activeThreadID: String?
     public let repositoryID: String?
     public let dynamicToolsReady: Bool?
+    /// The Host's authoritative chat readiness. `dynamicToolsReady` remains
+    /// for older clients that only understand the original protocol gate.
+    public let chatState: String?
+    public let chatIssueCode: String?
 
-    public init(apiVersion: Int = StudyRocketAPI.version, hostVersion: String, repositoryBound: Bool, codexReady: Bool, pairedDeviceCount: Int, activeThreadID: String?, repositoryID: String? = nil, dynamicToolsReady: Bool? = nil) {
+    public init(apiVersion: Int = StudyRocketAPI.version, hostVersion: String, repositoryBound: Bool, codexReady: Bool, pairedDeviceCount: Int, activeThreadID: String?, repositoryID: String? = nil, dynamicToolsReady: Bool? = nil, chatState: String? = nil, chatIssueCode: String? = nil) {
         self.apiVersion = apiVersion
         self.hostVersion = hostVersion
         self.repositoryBound = repositoryBound
@@ -213,6 +217,8 @@ public struct HealthResponse: Codable, Equatable, Sendable {
         self.activeThreadID = activeThreadID
         self.repositoryID = repositoryID
         self.dynamicToolsReady = dynamicToolsReady
+        self.chatState = chatState
+        self.chatIssueCode = chatIssueCode
     }
 }
 
@@ -306,14 +312,18 @@ public struct ChatStreamEvent: Codable, Equatable, Sendable {
     public let text: String?
     public let phase: String?
     public let status: String?
+    public let issueCode: String?
+    public let completedAt: Date?
 
-    public init(kind: String, turnID: String? = nil, itemID: String? = nil, text: String? = nil, phase: String? = nil, status: String? = nil) {
+    public init(kind: String, turnID: String? = nil, itemID: String? = nil, text: String? = nil, phase: String? = nil, status: String? = nil, issueCode: String? = nil, completedAt: Date? = nil) {
         self.kind = kind
         self.turnID = turnID
         self.itemID = itemID
         self.text = text
         self.phase = phase
         self.status = status
+        self.issueCode = issueCode
+        self.completedAt = completedAt
     }
 }
 
@@ -324,14 +334,97 @@ public struct HomeSnapshot: Codable, Equatable, Sendable {
     public let visibleDeliveries: [DeliverySnapshot]
     public let completedDeliveries: Int
     public let totalDeliveries: Int
+    public let timetable: TimetableSnapshot?
 
-    public init(dateLabel: String, periods: [PeriodSnapshot], firstOpenTask: String?, visibleDeliveries: [DeliverySnapshot], completedDeliveries: Int, totalDeliveries: Int) {
+    public init(dateLabel: String, periods: [PeriodSnapshot], firstOpenTask: String?, visibleDeliveries: [DeliverySnapshot], completedDeliveries: Int, totalDeliveries: Int, timetable: TimetableSnapshot? = nil) {
         self.dateLabel = dateLabel
         self.periods = periods
         self.firstOpenTask = firstOpenTask
         self.visibleDeliveries = visibleDeliveries
         self.completedDeliveries = completedDeliveries
         self.totalDeliveries = totalDeliveries
+        self.timetable = timetable
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case dateLabel, periods, firstOpenTask, visibleDeliveries, completedDeliveries, totalDeliveries, timetable
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        dateLabel = try values.decode(String.self, forKey: .dateLabel)
+        periods = try values.decode([PeriodSnapshot].self, forKey: .periods)
+        firstOpenTask = try values.decodeIfPresent(String.self, forKey: .firstOpenTask)
+        visibleDeliveries = try values.decode([DeliverySnapshot].self, forKey: .visibleDeliveries)
+        completedDeliveries = try values.decode(Int.self, forKey: .completedDeliveries)
+        totalDeliveries = try values.decode(Int.self, forKey: .totalDeliveries)
+        timetable = try values.decodeIfPresent(TimetableSnapshot.self, forKey: .timetable)
+    }
+}
+
+public struct PeriodTaskSnapshot: Codable, Equatable, Sendable, Identifiable {
+    public let id: String
+    public let text: String
+    public let isCompleted: Bool
+
+    public init(id: String, text: String, isCompleted: Bool = false) {
+        self.id = id
+        self.text = text
+        self.isCompleted = isCompleted
+    }
+}
+
+/// Splits the explicit task-list notation stored inside a weekly-plan table
+/// cell. Plain punctuation remains part of a task so ordinary Chinese prose is
+/// never accidentally converted into several independently completable items.
+public enum PeriodTaskParser {
+    public static func tasks(from text: String, isCompleted: Bool = false) -> [PeriodTaskSnapshot] {
+        let lineSeparated = text.replacingOccurrences(
+            of: #"<br\s*/?>"#,
+            with: "\n",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        let taskTexts = lineSeparated
+            .components(separatedBy: .newlines)
+            .map(cleanedTaskText)
+            .filter { !$0.isEmpty }
+
+        var occurrences: [String: Int] = [:]
+        return taskTexts.map { taskText in
+            let identityText = normalizedIdentityText(taskText)
+            let occurrence = (occurrences[identityText] ?? 0) + 1
+            occurrences[identityText] = occurrence
+            return PeriodTaskSnapshot(
+                id: PeriodCompletion.taskKey(for: identityText, occurrence: occurrence),
+                text: taskText,
+                isCompleted: isCompleted
+            )
+        }
+    }
+
+    public static func displayText(from text: String) -> String {
+        tasks(from: text).map(\.text).joined(separator: "\n")
+    }
+
+    private static func cleanedTaskText(_ value: String) -> String {
+        let withoutCheckbox = value.replacingOccurrences(
+            of: #"^\s*(?:[-*]\s+)?\[[ xX]\]\s*"#,
+            with: "",
+            options: .regularExpression
+        )
+        return withoutCheckbox
+            .replacingOccurrences(
+                of: #"^\s*[-*]\s+"#,
+                with: "",
+                options: .regularExpression
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func normalizedIdentityText(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -339,29 +432,120 @@ public struct PeriodSnapshot: Codable, Equatable, Sendable, Identifiable {
     public let id: String
     public let title: String
     public let text: String
+    public let tasks: [PeriodTaskSnapshot]
     public let isCompleted: Bool
 
-    public init(id: String, title: String, text: String, isCompleted: Bool = false) {
+    public init(
+        id: String,
+        title: String,
+        text: String,
+        isCompleted: Bool = false,
+        tasks: [PeriodTaskSnapshot]? = nil
+    ) {
         self.id = id
         self.title = title
         self.text = text
-        self.isCompleted = isCompleted
+        let resolvedTasks = tasks ?? PeriodTaskParser.tasks(from: text, isCompleted: isCompleted)
+        self.tasks = resolvedTasks
+        self.isCompleted = !resolvedTasks.isEmpty && resolvedTasks.allSatisfy(\.isCompleted)
     }
 
-    private enum CodingKeys: String, CodingKey { case id, title, text, isCompleted }
+    private enum CodingKeys: String, CodingKey { case id, title, text, tasks, isCompleted }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
         title = try values.decode(String.self, forKey: .title)
         text = try values.decode(String.self, forKey: .text)
-        isCompleted = try values.decodeIfPresent(Bool.self, forKey: .isCompleted) ?? false
+        let legacyCompletion = try values.decodeIfPresent(Bool.self, forKey: .isCompleted) ?? false
+        tasks = try values.decodeIfPresent([PeriodTaskSnapshot].self, forKey: .tasks)
+            ?? PeriodTaskParser.tasks(from: text, isCompleted: legacyCompletion)
+        isCompleted = !tasks.isEmpty && tasks.allSatisfy(\.isCompleted)
     }
 }
 
 public enum PeriodCompletion {
     public static func textHash(for text: String) -> String {
         SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    public static func taskKey(for text: String, occurrence: Int) -> String {
+        "task:\(textHash(for: text)):\(max(occurrence, 1))"
+    }
+
+    public static func isLegacyTextHash(_ value: String) -> Bool {
+        value.range(of: #"^[0-9a-fA-F]{64}$"#, options: .regularExpression) != nil
+    }
+
+    public static func isTaskKey(_ value: String) -> Bool {
+        value.range(of: #"^task:[0-9a-fA-F]{64}:[1-9][0-9]*$"#, options: .regularExpression) != nil
+    }
+
+    public static func isValidRecordKey(_ value: String) -> Bool {
+        isLegacyTextHash(value) || isTaskKey(value)
+    }
+}
+
+public enum DeliveryPeriodMatcher {
+    private static let statusWords = ["完成", "开始", "继续", "当天", "本轮", "进度"]
+
+    public static func sourceKey(for deliveryText: String) -> String {
+        let value = deliveryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let digest = SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+        return "delivery:\(digest)"
+    }
+
+    public static func matches(deliveryText: String, periodText: String) -> Bool {
+        let deliveryChapter = chapter(in: deliveryText)
+        let delivery = normalized(deliveryText)
+        guard !delivery.isEmpty else { return false }
+
+        return periodText.components(separatedBy: CharacterSet(charactersIn: "；;\n"))
+            .contains { segment in
+                if let deliveryChapter, chapter(in: segment) != deliveryChapter { return false }
+                let period = normalized(segment)
+                guard !period.isEmpty else { return false }
+                let shorterCount = min(delivery.count, period.count)
+                if shorterCount >= 6, delivery.contains(period) || period.contains(delivery) { return true }
+                return diceCoefficient(delivery, period) >= 0.72
+            }
+    }
+
+    private static func normalized(_ text: String) -> String {
+        var value = text.precomposedStringWithCompatibilityMapping
+        value = value.replacingOccurrences(
+            of: #"^\s*(?:(?:\d{4})\s*[-年]\s*)?\d{1,2}\s*月\s*\d{1,2}\s*日?(?:\s*[·•]\s*周[一二三四五六日天])?\s*[：:]?\s*"#,
+            with: "",
+            options: .regularExpression
+        )
+        value = value.replacingOccurrences(of: #"《[^》]*》"#, with: "", options: .regularExpression)
+        for word in statusWords { value = value.replacingOccurrences(of: word, with: "") }
+        return String(value.lowercased().unicodeScalars.filter(CharacterSet.alphanumerics.contains))
+    }
+
+    private static func chapter(in text: String) -> String? {
+        guard let range = text.range(of: #"第\s*[0-9一二三四五六七八九十百]+\s*章"#, options: .regularExpression) else { return nil }
+        return String(text[range]).replacingOccurrences(of: " ", with: "")
+    }
+
+    private static func diceCoefficient(_ lhs: String, _ rhs: String) -> Double {
+        let left = bigrams(lhs)
+        let right = bigrams(rhs)
+        guard !left.isEmpty, !right.isEmpty else { return lhs == rhs ? 1 : 0 }
+        var remaining = right
+        var overlap = 0
+        for value in left {
+            guard let index = remaining.firstIndex(of: value) else { continue }
+            overlap += 1
+            remaining.remove(at: index)
+        }
+        return Double(2 * overlap) / Double(left.count + right.count)
+    }
+
+    private static func bigrams(_ value: String) -> [String] {
+        let characters = Array(value)
+        guard characters.count > 1 else { return [] }
+        return zip(characters, characters.dropFirst()).map { String([$0, $1]) }
     }
 }
 
@@ -435,6 +619,200 @@ public struct DaySnapshot: Codable, Equatable, Sendable, Identifiable {
         self.dateLabel = dateLabel
         self.slots = slots
         self.unassigned = unassigned
+    }
+}
+
+/// Keeps scheduled tasks inside the three completable periods. The
+/// `unassigned` column is reserved for items whose period cannot be inferred;
+/// otherwise those items would be visible only as read-only explanatory text.
+public enum WeeklyPlanTaskNormalizer {
+    public static func normalized(
+        periods: [PeriodSnapshot],
+        unassigned: String
+    ) -> (periods: [PeriodSnapshot], unassigned: String) {
+        var taskTexts = periods.map { PeriodTaskParser.tasks(from: $0.text).map(\.text) }
+        var unresolved: [String] = []
+
+        for task in PeriodTaskParser.tasks(from: unassigned) {
+            guard let periodID = periodID(for: task.text),
+                  let index = periods.firstIndex(where: { $0.id == periodID }) else {
+                unresolved.append(task.text)
+                continue
+            }
+            taskTexts[index].append(task.text)
+        }
+
+        let resolvedPeriods = periods.enumerated().map { index, period in
+            var completionByID: [String: Bool] = [:]
+            for task in period.tasks {
+                completionByID[task.id] = (completionByID[task.id] ?? false) || task.isCompleted
+            }
+            let text = taskTexts[index].joined(separator: "\n")
+            let tasks = PeriodTaskParser.tasks(from: text).map { task in
+                PeriodTaskSnapshot(
+                    id: task.id,
+                    text: task.text,
+                    isCompleted: completionByID[task.id] ?? false
+                )
+            }
+            return PeriodSnapshot(
+                id: period.id,
+                title: period.title,
+                text: text,
+                tasks: tasks
+            )
+        }
+
+        return (resolvedPeriods, unresolved.joined(separator: "\n"))
+    }
+
+    public static func normalized(_ plan: WeeklyPlanSnapshot) -> WeeklyPlanSnapshot {
+        WeeklyPlanSnapshot(
+            days: plan.days.map { day in
+                let layout = normalized(periods: day.slots, unassigned: day.unassigned)
+                return DaySnapshot(
+                    id: day.id,
+                    dateLabel: day.dateLabel,
+                    slots: layout.periods,
+                    unassigned: layout.unassigned
+                )
+            },
+            bufferRules: plan.bufferRules,
+            deliveries: plan.deliveries,
+            historicalRows: plan.historicalRows.map { row in
+                let layout = normalized(periods: row.slots, unassigned: row.unassigned)
+                return ScheduledRowSnapshot(
+                    id: row.id,
+                    dateLabel: row.dateLabel,
+                    slots: layout.periods,
+                    unassigned: layout.unassigned,
+                    isCompleted: row.isCompleted
+                )
+            },
+            futureRows: plan.futureRows.map { row in
+                let layout = normalized(periods: row.slots, unassigned: row.unassigned)
+                return ScheduledRowSnapshot(
+                    id: row.id,
+                    dateLabel: row.dateLabel,
+                    slots: layout.periods,
+                    unassigned: layout.unassigned,
+                    isCompleted: row.isCompleted
+                )
+            }
+        )
+    }
+
+    /// Normalizes the structured weekly table before a proposal is shown, so
+    /// the approved diff and the eventual file write remain identical.
+    public static func normalizedMarkdown(_ source: String) -> String {
+        var lines = source.components(separatedBy: .newlines)
+        let starts = lines.indices.filter { isMarker(lines[$0], "studyrocket:weekly:start") }
+        let ends = lines.indices.filter { isMarker(lines[$0], "studyrocket:weekly:end") }
+        guard starts.count == 1, ends.count == 1,
+              let start = starts.first, let end = ends.first, start < end else { return source }
+
+        for index in (start + 1)..<end {
+            guard var cells = splitTableRow(lines[index]), cells.count >= 6 else { continue }
+            let first = cells[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !first.contains("日期"),
+                  !first.allSatisfy({ $0 == "-" || $0 == ":" || $0 == " " }) else { continue }
+
+            let periodIDs = ["morning", "noon", "evening"]
+            let periodTitles = ["上午", "中午", "晚上"]
+            let periods = periodIDs.enumerated().map { offset, id in
+                PeriodSnapshot(
+                    id: id,
+                    title: periodTitles[offset],
+                    text: decodeCell(cells[offset + 1])
+                )
+            }
+            let layout = normalized(periods: periods, unassigned: decodeCell(cells[4]))
+            for offset in 0..<3 { cells[offset + 1] = encodeCell(layout.periods[offset].text) }
+            cells[4] = encodeCell(layout.unassigned)
+            lines[index] = renderTableRow(cells)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static let leadingTime = try! NSRegularExpression(
+        pattern: #"^\s*(?:(清晨|早上|上午|中午|下午|傍晚|晚上|晚间)\s*)?([0-2]?\d)\s*(?:[:：]\s*([0-5]?\d)|点(?:\s*([0-5]?\d)\s*分?)?)"#
+    )
+
+    private static func periodID(for text: String) -> String? {
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = leadingTime.firstMatch(in: text, range: range),
+              let hourText = capture(match, group: 2, in: text),
+              var hour = Int(hourText), (0...23).contains(hour) else { return nil }
+
+        switch capture(match, group: 1, in: text) {
+        case "下午", "傍晚", "晚上", "晚间":
+            if hour < 12 { hour += 12 }
+        case "中午":
+            if (1..<11).contains(hour) { hour += 12 }
+        case "清晨", "早上", "上午":
+            if hour == 12 { hour = 0 }
+        default:
+            break
+        }
+
+        switch hour {
+        case 0..<12: return "morning"
+        case 12..<18: return "noon"
+        default: return "evening"
+        }
+    }
+
+    private static func capture(_ match: NSTextCheckingResult, group: Int, in text: String) -> String? {
+        let range = match.range(at: group)
+        guard range.location != NSNotFound, let swiftRange = Range(range, in: text) else { return nil }
+        return String(text[swiftRange])
+    }
+
+    private static func isMarker(_ line: String, _ marker: String) -> Bool {
+        line.trimmingCharacters(in: .whitespacesAndNewlines) == "<!-- \(marker) -->"
+    }
+
+    private static func splitTableRow(_ line: String) -> [String]? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.first == "|", trimmed.last == "|" else { return nil }
+        var cells: [String] = []
+        var current = ""
+        var escaped = false
+        for character in trimmed.dropFirst().dropLast() {
+            if character == "|", !escaped {
+                cells.append(current.trimmingCharacters(in: .whitespaces))
+                current = ""
+            } else {
+                current.append(character)
+            }
+            if character == "\\" {
+                escaped.toggle()
+            } else {
+                escaped = false
+            }
+        }
+        cells.append(current.trimmingCharacters(in: .whitespaces))
+        return cells
+    }
+
+    private static func decodeCell(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\\|", with: "|")
+            .replacingOccurrences(
+                of: #"<br\s*/?>"#,
+                with: "\n",
+                options: [.regularExpression, .caseInsensitive]
+            )
+    }
+
+    private static func encodeCell(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "|", with: "\\|")
+            .replacingOccurrences(of: "\n", with: "<br>")
+    }
+
+    private static func renderTableRow(_ cells: [String]) -> String {
+        "| " + cells.joined(separator: " | ") + " |"
     }
 }
 
@@ -629,10 +1007,72 @@ public struct ChatMessageDTO: Codable, Equatable, Sendable, Identifiable {
 public struct ChatHistoryResponse: Codable, Equatable, Sendable {
     public let revision: String
     public let messages: [ChatMessageDTO]
+    /// Terminal turns are separate so an upstream failure with no assistant
+    /// item still stops a restored mobile spinner.
+    public let terminalTurns: [ChatTurnTerminalDTO]?
 
-    public init(revision: String, messages: [ChatMessageDTO]) {
+    public init(revision: String, messages: [ChatMessageDTO], terminalTurns: [ChatTurnTerminalDTO]? = nil) {
         self.revision = revision
         self.messages = messages
+        self.terminalTurns = terminalTurns
+    }
+}
+
+public struct ChatTurnTerminalDTO: Codable, Equatable, Sendable, Identifiable {
+    public let turnID: String
+    public let status: String
+    public let issueCode: String?
+    public let message: String?
+    public let completedAt: Date?
+
+    public var id: String { turnID }
+
+    public init(turnID: String, status: String, issueCode: String? = nil, message: String? = nil, completedAt: Date? = nil) {
+        self.turnID = turnID
+        self.status = status
+        self.issueCode = issueCode
+        self.message = message
+        self.completedAt = completedAt
+    }
+}
+
+public enum StudyRocketChatState: String, Codable, Equatable, Sendable {
+    case starting
+    case protocolReadyAuthUnknown
+    case ready
+    case authFailed
+    case unavailable
+
+    public var canGenerate: Bool {
+        self == .protocolReadyAuthUnknown || self == .ready
+    }
+}
+
+/// Only the two thread-setting fields that may safely cross the app-server
+/// boundary. Do not persist, log, or expose the complete `config/read` result.
+public struct StudyRocketModelSelection: Equatable, Sendable {
+    public let model: String
+    public let modelProvider: String
+
+    public init(model: String, modelProvider: String) {
+        self.model = model
+        self.modelProvider = modelProvider
+    }
+
+    public static func configReadResult(_ value: [String: Any]) -> StudyRocketModelSelection? {
+        selection(in: (value["config"] as? [String: Any]) ?? value, providerKey: "model_provider")
+    }
+
+    public static func threadResult(_ value: [String: Any]) -> StudyRocketModelSelection? {
+        selection(in: (value["thread"] as? [String: Any]) ?? value, providerKey: "modelProvider")
+    }
+
+    private static func selection(in value: [String: Any], providerKey: String) -> StudyRocketModelSelection? {
+        guard let model = value["model"] as? String,
+              !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let provider = value[providerKey] as? String,
+              !provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return StudyRocketModelSelection(model: model, modelProvider: provider)
     }
 }
 
@@ -765,13 +1205,28 @@ public struct DeliveryToggleRequest: Codable, Equatable, Sendable {
 public struct PeriodCompletionToggleRequest: Codable, Equatable, Sendable {
     public let dayID: String
     public let periodID: String
-    public let textHash: String
+    /// Present for current clients. The ID is derived from the task text and
+    /// its occurrence inside a period, which makes duplicate task text safe.
+    public let taskID: String?
+    /// Retained only to decode and safely reject or replay legacy whole-period
+    /// requests that may still be stored on an older phone.
+    public let textHash: String?
     public let isCompleted: Bool
     public let metadata: WriteMetadata
+
+    public init(dayID: String, periodID: String, taskID: String, isCompleted: Bool, metadata: WriteMetadata) {
+        self.dayID = dayID
+        self.periodID = periodID
+        self.taskID = taskID
+        self.textHash = nil
+        self.isCompleted = isCompleted
+        self.metadata = metadata
+    }
 
     public init(dayID: String, periodID: String, textHash: String, isCompleted: Bool, metadata: WriteMetadata) {
         self.dayID = dayID
         self.periodID = periodID
+        self.taskID = nil
         self.textHash = textHash
         self.isCompleted = isCompleted
         self.metadata = metadata
@@ -791,24 +1246,24 @@ public enum RequestSigning {
         Data("studyrocket-face-id-v1\n\(challenge)".utf8)
     }
 
-    public static func sign(privateKey: P256.Signing.PrivateKey, method: String, path: String, timestamp: Int64, nonce: String, bodyHash: String) -> String {
-        let signature = try! privateKey.signature(for: canonicalData(method: method, path: path, timestamp: timestamp, nonce: nonce, bodyHash: bodyHash))
+    public static func sign(privateKey: P256.Signing.PrivateKey, method: String, path: String, timestamp: Int64, nonce: String, bodyHash: String) throws -> String {
+        let signature = try privateKey.signature(for: canonicalData(method: method, path: path, timestamp: timestamp, nonce: nonce, bodyHash: bodyHash))
         return signature.rawRepresentation.base64EncodedString()
     }
 
-    public static func signAuthorization(privateKey: P256.Signing.PrivateKey, challenge: String) -> String {
-        let signature = try! privateKey.signature(for: authorizationData(challenge: challenge))
+    public static func signAuthorization(privateKey: P256.Signing.PrivateKey, challenge: String) throws -> String {
+        let signature = try privateKey.signature(for: authorizationData(challenge: challenge))
         return signature.rawRepresentation.base64EncodedString()
     }
 
 #if os(iOS)
-    public static func sign(privateKey: SecureEnclave.P256.Signing.PrivateKey, method: String, path: String, timestamp: Int64, nonce: String, bodyHash: String) -> String {
-        let signature = try! privateKey.signature(for: canonicalData(method: method, path: path, timestamp: timestamp, nonce: nonce, bodyHash: bodyHash))
+    public static func sign(privateKey: SecureEnclave.P256.Signing.PrivateKey, method: String, path: String, timestamp: Int64, nonce: String, bodyHash: String) throws -> String {
+        let signature = try privateKey.signature(for: canonicalData(method: method, path: path, timestamp: timestamp, nonce: nonce, bodyHash: bodyHash))
         return signature.rawRepresentation.base64EncodedString()
     }
 
-    public static func signAuthorization(privateKey: SecureEnclave.P256.Signing.PrivateKey, challenge: String) -> String {
-        let signature = try! privateKey.signature(for: authorizationData(challenge: challenge))
+    public static func signAuthorization(privateKey: SecureEnclave.P256.Signing.PrivateKey, challenge: String) throws -> String {
+        let signature = try privateKey.signature(for: authorizationData(challenge: challenge))
         return signature.rawRepresentation.base64EncodedString()
     }
 #endif

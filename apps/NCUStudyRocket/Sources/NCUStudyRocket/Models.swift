@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import CryptoKit
+import StudyRocketShared
 
 struct WeeklyCell: Identifiable, Hashable {
     let id = UUID()
@@ -92,6 +93,7 @@ struct WeeklyPlan {
     var unassignedByDay: [String] = Array(repeating: "", count: 7)
     var dayCompletion: [Bool] = Array(repeating: false, count: 7)
     var periodCompletion: [[Bool]] = Array(repeating: Array(repeating: false, count: 7), count: 3)
+    var periodTaskCompletion: [String: Bool] = [:]
     var historicalRows: [WeeklyScheduledRow] = []
     var futureRows: [WeeklyScheduledRow] = []
     var migrationNotice: String?
@@ -118,6 +120,9 @@ struct WeeklyPlan {
 
 struct TodayPeriodTask: Identifiable, Equatable {
     let id: String
+    let dayID: String?
+    let periodID: String
+    let taskID: String?
     let period: String
     let task: String
     let isCompleted: Bool
@@ -136,6 +141,7 @@ struct DailyEntry: Identifiable {
 @MainActor
 final class DashboardModel: ObservableObject {
     @Published private(set) var plan = WeeklyPlan()
+    @Published private(set) var timetable = StudyRocketTimetableParser.snapshot(from: nil)
     @Published private(set) var original = ""
     @Published private(set) var loadedHash = ""
     @Published private(set) var errorMessage: String?
@@ -152,18 +158,47 @@ final class DashboardModel: ObservableObject {
 
     func todayCells(on date: Date) -> [TodayPeriodTask] {
         let index = dayIndex(for: date)
-        return WeeklyPlan.periods.enumerated().map { periodIndex, period in
-            let task = index.flatMap { day in
+        let dayID = index.flatMap { day in
+            plan.dayDateLabels.indices.contains(day)
+                ? Self.isoDate(from: plan.dayDateLabels[day], relativeTo: date)
+                : nil
+        }
+        return WeeklyPlan.periods.enumerated().flatMap { periodIndex, period in
+            let text = index.flatMap { day in
                 plan.cells.indices.contains(periodIndex) && plan.cells[periodIndex].indices.contains(day)
                     ? plan.cells[periodIndex][day]
                     : nil
-            }
-            let completed = index.map { day in
+            } ?? ""
+            let fallbackCompletion = index.map { day in
                 plan.periodCompletion.indices.contains(periodIndex)
                     && plan.periodCompletion[periodIndex].indices.contains(day)
                     && plan.periodCompletion[periodIndex][day]
             } ?? false
-            return TodayPeriodTask(id: WeeklyPlan.periodIDs[periodIndex], period: period, task: task ?? "", isCompleted: completed)
+            let periodID = WeeklyPlan.periodIDs[periodIndex]
+            let tasks = PeriodTaskParser.tasks(from: text)
+            guard !tasks.isEmpty else {
+                return [TodayPeriodTask(
+                    id: "\(dayID ?? "unplanned")|\(periodID)|empty",
+                    dayID: dayID,
+                    periodID: periodID,
+                    taskID: nil,
+                    period: period,
+                    task: "",
+                    isCompleted: false
+                )]
+            }
+            return tasks.map { task in
+                let taskKey = dayID.map { Self.periodTaskKey(dayID: $0, periodID: periodID, taskID: task.id) }
+                return TodayPeriodTask(
+                    id: taskKey ?? "\(periodID)|\(task.id)",
+                    dayID: dayID,
+                    periodID: periodID,
+                    taskID: task.id,
+                    period: period,
+                    task: task.text,
+                    isCompleted: taskKey.flatMap { plan.periodTaskCompletion[$0] } ?? fallbackCompletion
+                )
+            }
         }
     }
 
@@ -172,9 +207,9 @@ final class DashboardModel: ObservableObject {
         return plan.unassignedByDay.indices.contains(index) ? plan.unassignedByDay[index] : ""
     }
 
-    var filteredDeliveries: [WeeklyDelivery] { plan.deliveriesExcluding(.now) }
+    var filteredDeliveries: [WeeklyDelivery] { plan.deliveries }
     var visibleDeliveries: [WeeklyDelivery] {
-        filteredDeliveries.sorted { left, right in
+        filteredDeliveries.filter { !$0.isCompleted }.sorted { left, right in
             let lhs = deliverySortKey(left)
             let rhs = deliverySortKey(right)
             if lhs.group != rhs.group { return lhs.group < rhs.group }
@@ -206,6 +241,10 @@ final class DashboardModel: ObservableObject {
     func load(from root: URL, referenceDate: Date = .now) {
         self.root = root
         let repository = MarkdownRepository(root: root)
+        timetable = StudyRocketTimetableParser.snapshot(
+            from: try? repository.read(StudyRocketTimetableParser.sourceFile),
+            now: referenceDate
+        )
         do {
             let text = try repository.read(file)
             original = text
@@ -215,51 +254,79 @@ final class DashboardModel: ObservableObject {
         } catch { errorMessage = "无法读取周计划：\(error.localizedDescription)" }
     }
 
-    func toggleDelivery(_ id: UUID, workspace: WorkspaceStore) {
-        guard let index = plan.deliveries.firstIndex(where: { $0.id == id }) else { return }
+    @discardableResult
+    func toggleDelivery(_ id: UUID, workspace: WorkspaceStore) -> Bool {
+        guard let index = plan.deliveries.firstIndex(where: { $0.id == id }) else { return false }
+        let delivery = plan.deliveries[index]
         plan.deliveries[index].isCompleted.toggle()
-        guard let root else { return }
-        let repository = MarkdownRepository(root: root)
-        do {
-            let replacement = MarkdownParser.replaceWeekly(original, with: plan)
-            try repository.save(replacement, relative: file, loadedHash: loadedHash)
-            original = replacement
-            loadedHash = repository.hash(replacement)
-            errorMessage = nil
-            workspace.refreshGitStatus()
-        } catch {
+        guard let root else {
             plan.deliveries[index].isCompleted.toggle()
-            errorMessage = error.localizedDescription
+            errorMessage = "周计划尚未加载，请稍后重试。"
+            return false
         }
-    }
-
-    func togglePeriod(_ periodID: String, workspace: WorkspaceStore) {
-        guard let day = dayIndex(for: .now),
-              let period = WeeklyPlan.periodIDs.firstIndex(of: periodID),
-              plan.cells.indices.contains(period), plan.cells[period].indices.contains(day) else { return }
-        let text = plan.cells[period][day]
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let dayID = Self.isoDate(from: plan.dayDateLabels[day]) else { return }
-        let current = plan.periodCompletion[period][day]
-        guard let root else { return }
         let repository = MarkdownRepository(root: root)
         do {
-            let replacement = try MarkdownParser.replacePeriodCompletion(
+            let replacement = try MarkdownParser.replaceDeliveryCompletion(
                 in: original,
-                dayID: dayID,
-                periodID: periodID,
-                text: text,
-                isCompleted: !current
+                with: plan,
+                delivery: delivery,
+                isCompleted: plan.deliveries[index].isCompleted
             )
             try repository.save(replacement, relative: file, loadedHash: loadedHash)
             original = replacement
             loadedHash = repository.hash(replacement)
-            plan.periodCompletion[period][day] = !current
+            plan = MarkdownParser.weekly(replacement)
+            errorMessage = nil
+            workspace.refreshGitStatus()
+            return true
+        } catch {
+            plan.deliveries[index].isCompleted.toggle()
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func setPeriodTaskCompletion(
+        _ task: TodayPeriodTask,
+        isCompleted: Bool,
+        on date: Date = .now,
+        workspace: WorkspaceStore
+    ) {
+        guard let dayID = task.dayID,
+              let taskID = task.taskID,
+              let day = dayIndex(for: date),
+              let period = WeeklyPlan.periodIDs.firstIndex(of: task.periodID),
+              plan.cells.indices.contains(period), plan.cells[period].indices.contains(day) else { return }
+        let text = plan.cells[period][day]
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              PeriodTaskParser.tasks(from: text).contains(where: { $0.id == taskID }) else { return }
+        guard let root else {
+            errorMessage = "周计划尚未加载，请稍后重试。"
+            return
+        }
+        let repository = MarkdownRepository(root: root)
+        do {
+            let replacement = try MarkdownParser.replacePeriodTaskCompletion(
+                in: original,
+                dayID: dayID,
+                periodID: task.periodID,
+                periodText: text,
+                taskID: taskID,
+                isCompleted: isCompleted
+            )
+            try repository.save(replacement, relative: file, loadedHash: loadedHash)
+            original = replacement
+            loadedHash = repository.hash(replacement)
+            plan = MarkdownParser.weekly(replacement)
             errorMessage = nil
             workspace.refreshGitStatus()
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private static func periodTaskKey(dayID: String, periodID: String, taskID: String) -> String {
+        "\(dayID)|\(periodID)|\(taskID)"
     }
 
     private func deliverySortKey(_ delivery: WeeklyDelivery) -> (group: Int, date: Date) {
@@ -270,8 +337,8 @@ final class DashboardModel: ObservableObject {
         return (date < MarkdownParser.studyCalendar.startOfDay(for: .now) ? 0 : 1, date)
     }
 
-    private static func isoDate(from label: String) -> String? {
-        guard let date = MarkdownParser.leadingDate(in: label, relativeTo: .now) else { return nil }
+    private static func isoDate(from label: String, relativeTo reference: Date) -> String? {
+        guard let date = MarkdownParser.leadingDate(in: label, relativeTo: reference) else { return nil }
         let formatter = DateFormatter()
         formatter.calendar = MarkdownParser.studyCalendar
         formatter.timeZone = MarkdownParser.studyCalendar.timeZone
@@ -322,13 +389,13 @@ enum HabitProfileUpdater {
 }
 
 enum AppSection: String, CaseIterable, Identifiable {
-    case home, chat, week, daily, routes, baoyan, library, settings
+    case home, timetable, chat, week, daily, routes, baoyan, library, settings
     var id: String { rawValue }
     var title: String {
-        switch self { case .home: "首页"; case .chat: "学业对话"; case .week: "周计划"; case .daily: "每日复盘"; case .routes: "四条航线"; case .baoyan: "保研"; case .library: "资料库"; case .settings: "设置" }
+        switch self { case .home: "首页"; case .timetable: "课表"; case .chat: "学业对话"; case .week: "周计划"; case .daily: "每日复盘"; case .routes: "四条航线"; case .baoyan: "保研"; case .library: "资料库"; case .settings: "设置" }
     }
     var icon: String {
-        switch self { case .home: "rectangle.grid.2x2"; case .chat: "bubble.left.and.bubble.right"; case .week: "calendar"; case .daily: "checkmark.circle"; case .routes: "point.3.connected.trianglepath.dotted"; case .baoyan: "arrow.up.right.circle"; case .library: "books.vertical"; case .settings: "gearshape" }
+        switch self { case .home: "rectangle.grid.2x2"; case .timetable: "calendar.badge.clock"; case .chat: "bubble.left.and.bubble.right"; case .week: "calendar"; case .daily: "checkmark.circle"; case .routes: "point.3.connected.trianglepath.dotted"; case .baoyan: "arrow.up.right.circle"; case .library: "books.vertical"; case .settings: "gearshape" }
     }
 }
 
@@ -353,6 +420,10 @@ final class WorkspaceStore: ObservableObject {
 
     func bind(to url: URL) {
         guard FileManager.default.fileExists(atPath: url.appendingPathComponent("AGENTS.md").path), FileManager.default.fileExists(atPath: url.appendingPathComponent("PROFILE.md").path) else { errorMessage = "所选目录不是 StudyRocket 仓库：缺少 AGENTS.md 或 PROFILE.md。"; return }
+        gitRefreshTask?.cancel()
+        gitRefreshTask = nil
+        indexTask?.cancel()
+        indexTask = nil
         rootURL = url.standardizedFileURL
         UserDefaults.standard.set(rootURL.path, forKey: "workspaceRoot")
         refreshGitStatus()
@@ -364,7 +435,14 @@ final class WorkspaceStore: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in Task { @MainActor in self?.refreshGitStatus() } }
     }
 
-    func stopMonitoring() { timer?.invalidate(); timer = nil; gitRefreshTask?.cancel(); indexTask?.cancel() }
+    func stopMonitoring() {
+        timer?.invalidate()
+        timer = nil
+        gitRefreshTask?.cancel()
+        gitRefreshTask = nil
+        indexTask?.cancel()
+        indexTask = nil
+    }
 
     func refreshGitStatus() {
         guard gitRefreshTask == nil else { return }
@@ -384,6 +462,7 @@ final class WorkspaceStore: ObservableObject {
             let index = await Task.detached(priority: .utility) { MarkdownRepository(root: root).markdownFiles() }.value
             guard !Task.isCancelled, let self, self.rootURL == root else { return }
             self.markdownIndex = index
+            self.indexTask = nil
         }
     }
 
@@ -412,18 +491,15 @@ final class MarkdownRepository {
     let root: URL
     init(root: URL) { self.root = root.standardizedFileURL }
     func url(_ relative: String) -> URL { root.appendingPathComponent(relative) }
-    func read(_ relative: String) throws -> String { try String(contentsOf: url(relative), encoding: .utf8) }
+    func read(_ relative: String) throws -> String {
+        try String(contentsOf: validatedMarkdownURL(relative), encoding: .utf8)
+    }
     func hash(_ content: String) -> String {
         SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     func save(_ content: String, relative: String, loadedHash: String) throws {
-        let target = url(relative).standardizedFileURL
-        let resolvedRoot = root.resolvingSymlinksInPath()
-        let resolvedTarget = target.resolvingSymlinksInPath()
-        guard resolvedTarget.path.hasPrefix(resolvedRoot.path + "/") else { throw MarkdownError.outsideWorkspace }
-        guard target.pathExtension.lowercased() == "md" else { throw MarkdownError.nonMarkdown }
-        guard !Self.isSymbolicLink(target) else { throw MarkdownError.outsideWorkspace }
-        let current = (try? read(relative)) ?? ""
+        let target = try validatedMarkdownURL(relative)
+        let current = (try? String(contentsOf: target, encoding: .utf8)) ?? ""
         guard hash(current) == loadedHash else { throw MarkdownError.conflict }
         let backupDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/NCU StudyRocket/Backups", isDirectory: true)
         try FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
@@ -431,6 +507,17 @@ final class MarkdownRepository {
         try Data(content.utf8).write(to: target, options: .atomic)
         pruneBackups(in: backupDir, prefix: relative.replacingOccurrences(of: "/", with: "_") + ".")
     }
+
+    private func validatedMarkdownURL(_ relative: String) throws -> URL {
+        let target = url(relative).standardizedFileURL
+        let resolvedRoot = root.resolvingSymlinksInPath()
+        let resolvedTarget = target.resolvingSymlinksInPath()
+        guard resolvedTarget.path.hasPrefix(resolvedRoot.path + "/") else { throw MarkdownError.outsideWorkspace }
+        guard target.pathExtension.lowercased() == "md" else { throw MarkdownError.nonMarkdown }
+        guard !Self.isSymbolicLink(target) else { throw MarkdownError.outsideWorkspace }
+        return target
+    }
+
     private func pruneBackups(in dir: URL, prefix: String) { let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey]))?.filter { $0.lastPathComponent.hasPrefix(prefix) }.sorted { $0.lastPathComponent > $1.lastPathComponent } ?? []; for file in files.dropFirst(20) { try? FileManager.default.removeItem(at: file) } }
     func markdownFiles() -> [String] {
         let excluded = Set([".git", ".build", "PDF提取文本", "Backups"])
@@ -504,10 +591,21 @@ final class MarkdownDocumentModel: ObservableObject {
     }
 }
 
+private struct PeriodCompletionKey: Hashable {
+    let dayID: String
+    let periodID: String
+    let textHash: String
+}
+
 private struct PeriodCompletionEntry: Hashable {
     let dayID: String
     let periodID: String
     let textHash: String
+    let source: String?
+
+    var key: PeriodCompletionKey {
+        PeriodCompletionKey(dayID: dayID, periodID: periodID, textHash: textHash)
+    }
 }
 
 enum MarkdownParser {
@@ -554,7 +652,11 @@ enum MarkdownParser {
         return plan
     }
 
-    static func replaceWeekly(_ old: String, with plan: WeeklyPlan) -> String {
+    static func replaceWeekly(
+        _ old: String,
+        with plan: WeeklyPlan,
+        deliverySourceMigrations: [String: String] = [:]
+    ) -> String {
         var lines = old.components(separatedBy: .newlines)
         let table = structuredWeekTable(for: plan)
             + hiddenRowsTable(plan.historicalRows, markers: ("studyrocket:weekly:history:start", "studyrocket:weekly:history:end"))
@@ -593,7 +695,39 @@ enum MarkdownParser {
                 lines.replaceSubrange(section.content, with: ["<!-- studyrocket:buffer:start -->"] + bufferLines + ["<!-- studyrocket:buffer:end -->"])
             }
         }
-        return reconcilePeriodCompletions(in: lines.joined(separator: "\n"), with: plan)
+        return reconcilePeriodCompletions(
+            in: lines.joined(separator: "\n"),
+            with: plan,
+            deliverySourceMigrations: deliverySourceMigrations
+        )
+    }
+
+    static func replaceDeliveryCompletion(
+        in source: String,
+        with plan: WeeklyPlan,
+        delivery: WeeklyDelivery,
+        isCompleted: Bool
+    ) throws -> String {
+        let updated = replaceWeekly(source, with: plan)
+        var records = Set(try periodCompletionRecords(in: updated))
+        let deliverySource = DeliveryPeriodMatcher.sourceKey(for: delivery.text)
+        if isCompleted, let dayID = deliveryDayID(delivery.text) {
+            for period in periods(on: dayID, in: plan)
+                where !period.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                for task in PeriodTaskParser.tasks(from: period.text)
+                    where DeliveryPeriodMatcher.matches(deliveryText: delivery.text, periodText: task.text) {
+                    records.insert(PeriodCompletionEntry(
+                        dayID: dayID,
+                        periodID: period.id,
+                        textHash: task.id,
+                        source: deliverySource
+                    ))
+                }
+            }
+        } else if !isCompleted {
+            records = Set(records.filter { $0.source != deliverySource })
+        }
+        return try replacingPeriodCompletionBlock(in: updated, records: Array(records))
     }
 
     static func replacePeriodCompletion(
@@ -607,48 +741,98 @@ enum MarkdownParser {
         var records = try periodCompletionRecords(in: source)
         records.removeAll { $0.dayID == dayID && $0.periodID == periodID }
         if isCompleted {
-            records.append(PeriodCompletionEntry(dayID: dayID, periodID: periodID, textHash: periodTextHash(text)))
+            records.append(PeriodCompletionEntry(dayID: dayID, periodID: periodID, textHash: periodTextHash(text), source: nil))
+        }
+        return try replacingPeriodCompletionBlock(in: source, records: records)
+    }
+
+    static func replacePeriodTaskCompletion(
+        in source: String,
+        dayID: String,
+        periodID: String,
+        periodText: String,
+        taskID: String,
+        isCompleted: Bool
+    ) throws -> String {
+        guard WeeklyPlan.periodIDs.contains(periodID),
+              isoDate(dayID) != nil,
+              PeriodCompletion.isTaskKey(taskID) else { throw MarkdownError.invalidManagedBlock }
+        let tasks = PeriodTaskParser.tasks(from: periodText)
+        guard tasks.contains(where: { $0.id == taskID }) else { throw MarkdownError.invalidManagedBlock }
+
+        var records = try periodCompletionRecords(in: source)
+        let legacyHash = periodTextHash(periodText)
+        let legacyRecords = records.filter {
+            $0.dayID == dayID && $0.periodID == periodID && $0.textHash == legacyHash
+        }
+        records.removeAll {
+            $0.dayID == dayID && $0.periodID == periodID && $0.textHash == legacyHash
+        }
+        for legacy in legacyRecords {
+            for task in tasks {
+                records.append(PeriodCompletionEntry(
+                    dayID: dayID,
+                    periodID: periodID,
+                    textHash: task.id,
+                    source: legacy.source
+                ))
+            }
+        }
+        records.removeAll {
+            $0.dayID == dayID && $0.periodID == periodID && $0.textHash == taskID
+        }
+        if isCompleted {
+            records.append(PeriodCompletionEntry(dayID: dayID, periodID: periodID, textHash: taskID, source: nil))
         }
         return try replacingPeriodCompletionBlock(in: source, records: records)
     }
 
     private static func applyPeriodCompletions(in lines: [String], referenceDate: Date, to plan: inout WeeklyPlan) {
         guard let records = try? periodCompletionRecords(in: lines.joined(separator: "\n")) else { return }
-        let recordSet = Set(records)
+        let completedKeys = Set(records.map(\.key))
         for day in 0..<min(plan.dayDateLabels.count, 7) {
             guard let date = leadingDate(in: plan.dayDateLabels[day], relativeTo: referenceDate) else { continue }
             let dayID = isoDateString(date)
             for period in 0..<min(plan.cells.count, WeeklyPlan.periodIDs.count) where plan.cells[period].indices.contains(day) {
                 let text = plan.cells[period][day]
                 guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-                let record = PeriodCompletionEntry(
+                let periodID = WeeklyPlan.periodIDs[period]
+                let legacy = PeriodCompletionEntry(
                     dayID: dayID,
-                    periodID: WeeklyPlan.periodIDs[period],
-                    textHash: periodTextHash(text)
+                    periodID: periodID,
+                    textHash: periodTextHash(text),
+                    source: nil
                 )
-                plan.periodCompletion[period][day] = recordSet.contains(record)
+                let legacyCompleted = completedKeys.contains(legacy.key)
+                let tasks = PeriodTaskParser.tasks(from: text)
+                let taskStates = tasks.map { task -> Bool in
+                    let completed = legacyCompleted || completedKeys.contains(PeriodCompletionEntry(
+                        dayID: dayID,
+                        periodID: periodID,
+                        textHash: task.id,
+                        source: nil
+                    ).key)
+                    plan.periodTaskCompletion[periodTaskKey(dayID: dayID, periodID: periodID, taskID: task.id)] = completed
+                    return completed
+                }
+                plan.periodCompletion[period][day] = !taskStates.isEmpty && taskStates.allSatisfy { $0 }
             }
         }
     }
 
-    private static func reconcilePeriodCompletions(in source: String, with plan: WeeklyPlan) -> String {
+    private static func reconcilePeriodCompletions(
+        in source: String,
+        with plan: WeeklyPlan,
+        deliverySourceMigrations: [String: String]
+    ) -> String {
         guard source.contains("studyrocket:period-completion:start"),
               let records = try? periodCompletionRecords(in: source) else { return source }
-        var valid = Set<PeriodCompletionEntry>()
-        for day in 0..<min(plan.dayDateLabels.count, 7) {
-            guard let date = leadingDate(in: plan.dayDateLabels[day], relativeTo: .now) else { continue }
-            let dayID = isoDateString(date)
-            for period in 0..<min(plan.cells.count, WeeklyPlan.periodIDs.count) where plan.cells[period].indices.contains(day) {
-                let text = plan.cells[period][day]
-                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-                valid.insert(PeriodCompletionEntry(
-                    dayID: dayID,
-                    periodID: WeeklyPlan.periodIDs[period],
-                    textHash: periodTextHash(text)
-                ))
-            }
+        let migrated = records.map { record -> PeriodCompletionEntry in
+            guard let oldSource = record.source, let newSource = deliverySourceMigrations[oldSource] else { return record }
+            return PeriodCompletionEntry(dayID: record.dayID, periodID: record.periodID, textHash: record.textHash, source: newSource)
         }
-        return (try? replacingPeriodCompletionBlock(in: source, records: records.filter(valid.contains))) ?? source
+        let valid = periodCompletionKeys(in: plan)
+        return (try? replacingPeriodCompletionBlock(in: source, records: migrated.filter { valid.contains($0.key) })) ?? source
     }
 
     private static func periodCompletionRecords(in source: String) throws -> [PeriodCompletionEntry] {
@@ -662,9 +846,16 @@ enum MarkdownParser {
             guard let cells = splitTableRow(line), cells.count >= 4,
                   isoDate(cells[0]) != nil,
                   WeeklyPlan.periodIDs.contains(cells[1]),
-                  cells[2].range(of: #"^[0-9a-fA-F]{64}$"#, options: .regularExpression) != nil,
+                  PeriodCompletion.isValidRecordKey(cells[2]),
                   parseBoolean(cells[3]) else { return nil }
-            return PeriodCompletionEntry(dayID: cells[0], periodID: cells[1], textHash: cells[2].lowercased())
+            let source = cells.indices.contains(4) ? cells[4].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+            guard source.isEmpty || source.range(of: #"^delivery:[0-9a-f]{64}$"#, options: .regularExpression) != nil else { return nil }
+            return PeriodCompletionEntry(
+                dayID: cells[0],
+                periodID: cells[1],
+                textHash: cells[2].lowercased(),
+                source: source.isEmpty ? nil : source
+            )
         }
     }
 
@@ -680,16 +871,76 @@ enum MarkdownParser {
         guard let weeklyEnd = lines.firstIndex(where: { $0.contains("studyrocket:weekly:end") }) else { throw MarkdownError.invalidManagedBlock }
         let order = ["morning": 0, "noon": 1, "evening": 2]
         let unique = Array(Set(records)).sorted {
-            ($0.dayID, order[$0.periodID] ?? .max, $0.textHash) < ($1.dayID, order[$1.periodID] ?? .max, $1.textHash)
+            ($0.dayID, order[$0.periodID] ?? .max, $0.textHash, $0.source ?? "")
+                < ($1.dayID, order[$1.periodID] ?? .max, $1.textHash, $1.source ?? "")
         }
         let block = [
             "<!-- studyrocket:period-completion:start -->",
-            "| 日期 | 时段 | 正文 SHA-256 | 完成 |",
-            "|------|------|-------------|------|"
-        ] + unique.map { "| \($0.dayID) | \($0.periodID) | \($0.textHash) | [x] |" }
+            "| 日期 | 时段 | 任务标识 | 完成 | 来源 |",
+            "|------|------|----------|------|------|"
+        ] + unique.map { "| \($0.dayID) | \($0.periodID) | \($0.textHash) | [x] | \($0.source ?? "") |" }
             + ["<!-- studyrocket:period-completion:end -->"]
         lines.insert(contentsOf: block, at: weeklyEnd + 1)
         return lines.joined(separator: "\n")
+    }
+
+    private static func periodCompletionKeys(in plan: WeeklyPlan) -> Set<PeriodCompletionKey> {
+        var keys = Set<PeriodCompletionKey>()
+        for day in 0..<min(plan.dayDateLabels.count, 7) {
+            guard let date = leadingDate(in: plan.dayDateLabels[day], relativeTo: .now) else { continue }
+            let dayID = isoDateString(date)
+            for period in 0..<min(plan.cells.count, WeeklyPlan.periodIDs.count) where plan.cells[period].indices.contains(day) {
+                let text = plan.cells[period][day]
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                let periodID = WeeklyPlan.periodIDs[period]
+                keys.insert(PeriodCompletionKey(dayID: dayID, periodID: periodID, textHash: periodTextHash(text)))
+                for task in PeriodTaskParser.tasks(from: text) {
+                    keys.insert(PeriodCompletionKey(dayID: dayID, periodID: periodID, textHash: task.id))
+                }
+            }
+        }
+        for row in plan.historicalRows + plan.futureRows {
+            guard let date = leadingDate(in: row.dateLabel, relativeTo: .now) else { continue }
+            let dayID = isoDateString(date)
+            for (index, text) in row.slots.prefix(WeeklyPlan.periodIDs.count).enumerated()
+                where !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let periodID = WeeklyPlan.periodIDs[index]
+                keys.insert(PeriodCompletionKey(dayID: dayID, periodID: periodID, textHash: periodTextHash(text)))
+                for task in PeriodTaskParser.tasks(from: text) {
+                    keys.insert(PeriodCompletionKey(dayID: dayID, periodID: periodID, textHash: task.id))
+                }
+            }
+        }
+        return keys
+    }
+
+    private static func deliveryDayID(_ text: String) -> String? {
+        leadingDate(in: text, relativeTo: .now).map(isoDateString)
+    }
+
+    private static func periods(on dayID: String, in plan: WeeklyPlan) -> [(id: String, text: String)] {
+        for day in 0..<min(plan.dayDateLabels.count, 7) {
+            guard let date = leadingDate(in: plan.dayDateLabels[day], relativeTo: .now), isoDateString(date) == dayID else { continue }
+            return WeeklyPlan.periodIDs.enumerated().map { index, id in
+                let text = plan.cells.indices.contains(index) && plan.cells[index].indices.contains(day)
+                    ? plan.cells[index][day]
+                    : ""
+                return (id, text)
+            }
+        }
+        if let row = (plan.historicalRows + plan.futureRows).first(where: {
+            guard let date = leadingDate(in: $0.dateLabel, relativeTo: .now) else { return false }
+            return isoDateString(date) == dayID
+        }) {
+            return WeeklyPlan.periodIDs.enumerated().map { index, id in
+                (id, row.slots.indices.contains(index) ? row.slots[index] : "")
+            }
+        }
+        return []
+    }
+
+    private static func periodTaskKey(dayID: String, periodID: String, taskID: String) -> String {
+        "\(dayID)|\(periodID)|\(taskID)"
     }
 
     private static func isoDate(_ value: String) -> Date? {
@@ -840,7 +1091,8 @@ enum MarkdownParser {
         let end = calendar.date(byAdding: .day, value: 7, to: start) ?? start
         plan.historicalRows.removeAll()
         plan.futureRows.removeAll()
-        for row in rows {
+        for sourceRow in rows {
+            let row = normalizedScheduledRow(sourceRow)
             guard let date = leadingDate(in: row.label, relativeTo: reference) else {
                 plan.futureRows.append(WeeklyScheduledRow(dateLabel: row.label, slots: row.slots, unassigned: row.unassigned, isCompleted: row.completed))
                 continue
@@ -862,6 +1114,22 @@ enum MarkdownParser {
         }
         plan.historicalRows.sort { leadingDate(in: $0.dateLabel, relativeTo: reference) ?? .distantPast < leadingDate(in: $1.dateLabel, relativeTo: reference) ?? .distantPast }
         plan.futureRows.sort { leadingDate(in: $0.dateLabel, relativeTo: reference) ?? .distantFuture < leadingDate(in: $1.dateLabel, relativeTo: reference) ?? .distantFuture }
+    }
+
+    private static func normalizedScheduledRow(
+        _ row: (label: String, slots: [String], unassigned: String, completed: Bool)
+    ) -> (label: String, slots: [String], unassigned: String, completed: Bool) {
+        let ids = ["morning", "noon", "evening"]
+        let titles = WeeklyPlan.periods
+        let periods = ids.enumerated().map { index, id in
+            PeriodSnapshot(
+                id: id,
+                title: titles[index],
+                text: row.slots.indices.contains(index) ? row.slots[index] : ""
+            )
+        }
+        let layout = WeeklyPlanTaskNormalizer.normalized(periods: periods, unassigned: row.unassigned)
+        return (row.label, layout.periods.map(\.text), layout.unassigned, row.completed)
     }
 
     private static func fillDateLabels(relativeTo date: Date, into plan: inout WeeklyPlan) {

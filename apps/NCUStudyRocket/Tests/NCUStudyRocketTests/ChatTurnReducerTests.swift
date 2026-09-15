@@ -11,6 +11,7 @@ struct ChatTurnReducerTests {
         testInterruptedTurnIsNotReportedAsFailure()
         testFailedTurnUsesNestedTurnError()
         testNonRetryableErrorTerminatesImmediately()
+        testCodexAuthenticationErrorsAreSafeForUI()
         testNamespacedProposalContract()
         testNestedProposalRoutesToVisibleTurn()
         testLegacyThreadRequiresOneTimeMigration()
@@ -21,7 +22,7 @@ struct ChatTurnReducerTests {
         testStreamAccumulatorKeepsStableItemIDs()
         testScrollHysteresis()
         await testChatMarkdownParserAndCache()
-        print("ChatTurnReducerTests: 17 passed")
+        print("ChatTurnReducerTests: 18 passed")
     }
 
     private static func expect<T: Equatable>(_ actual: T, _ expected: T, _ message: String) {
@@ -155,6 +156,26 @@ struct ChatTurnReducerTests {
         expect(reducer.isTerminal, true, "non-retryable errors should be terminal")
     }
 
+    private static func testCodexAuthenticationErrorsAreSafeForUI() {
+        let presented = StudyRocketCodexErrorPresentation.message(
+            for: "unexpected status 401 Unauthorized: invalid_api_key sk-test-credential-12345"
+        )
+        expect(
+            presented,
+            StudyRocketCodexErrorPresentation.authenticationFailureMessage,
+            "authentication failures must use the recovery guidance instead of the upstream response"
+        )
+        let environment = StudyRocketCodexErrorPresentation.childProcessEnvironment(from: [
+            "OPENAI_API_KEY": "test",
+            "OPENAI_BASE_URL": "https://example.invalid",
+            "CODEX_ACCESS_TOKEN": "valid-session",
+            "PATH": "/usr/bin"
+        ])
+        expect(environment["OPENAI_API_KEY"], nil, "direct API keys must not enter the Codex child process")
+        expect(environment["OPENAI_BASE_URL"], nil, "endpoint overrides must not enter the Codex child process")
+        expect(environment["CODEX_ACCESS_TOKEN"], "valid-session", "normal Codex login sessions must remain available")
+    }
+
     private static func testNamespacedProposalContract() {
         expect(
             StudyRocketDynamicToolContract.accepts(namespace: "studyrocket", tool: "propose_changes"),
@@ -162,14 +183,40 @@ struct ChatTurnReducerTests {
             "proposal tools must use the studyrocket namespace"
         )
         expect(
+            StudyRocketDynamicToolContract.accepts(namespace: "studyrocket", tool: "propose_skill_update"),
+            true,
+            "canonical skill proposal tools must remain accepted"
+        )
+        expect(
+            StudyRocketDynamicToolContract.normalizedCall(namespace: nil, tool: "studyrocket_propose_changes")?.tool,
+            "propose_changes",
+            "the one observed legacy flat proposal name should normalize to the canonical tool"
+        )
+        expect(
             StudyRocketDynamicToolContract.accepts(namespace: nil, tool: "propose_changes"),
             false,
             "legacy unnamespaced tool calls must not be accepted"
         )
+        expect(
+            StudyRocketDynamicToolContract.accepts(namespace: nil, tool: "studyrocket.propose_changes"),
+            false,
+            "legacy dot-form proposal calls must not be accepted"
+        )
+        expect(
+            StudyRocketDynamicToolContract.accepts(namespace: nil, tool: "studyrocket_propose_skill_update"),
+            false,
+            "unnamespaced skill updates must not be accepted"
+        )
+        expect(
+            StudyRocketDynamicToolContract.accepts(namespace: "foreign", tool: "propose_changes"),
+            false,
+            "proposal tools from foreign namespaces must not be accepted"
+        )
     }
 
     private static func testLegacyThreadRequiresOneTimeMigration() {
-        expect(StudyRocketThreadProtocol.requiresMigration(storedThreadID: "legacy", storedVersion: 0), true, "legacy persisted threads must migrate")
+        expect(StudyRocketThreadProtocol.currentVersion, 4, "the dynamic-tool task contract must be v4")
+        expect(StudyRocketThreadProtocol.requiresMigration(storedThreadID: "legacy", storedVersion: 3), true, "v3 persisted threads must migrate once")
         expect(StudyRocketThreadProtocol.requiresMigration(storedThreadID: "current", storedVersion: StudyRocketThreadProtocol.currentVersion), false, "current protocol threads must resume in place")
         expect(StudyRocketThreadProtocol.requiresMigration(storedThreadID: nil, storedVersion: 0), false, "a missing thread should be created without migration")
     }

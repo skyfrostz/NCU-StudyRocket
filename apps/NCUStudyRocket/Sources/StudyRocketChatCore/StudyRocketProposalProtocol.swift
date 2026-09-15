@@ -54,7 +54,20 @@ public enum StudyRocketDynamicToolContract {
     }
 
     public static func accepts(namespace: String?, tool: String) -> Bool {
-        namespace == Self.namespace && [proposalTool, skillProposalTool].contains(tool)
+        normalizedCall(namespace: namespace, tool: tool) != nil
+    }
+
+    /// Recent app-server builds emit canonical namespace calls, while an older
+    /// persisted StudyRocket thread can emit the legacy flat function name
+    /// (`studyrocket_propose_changes`) with `namespace: null`.  Normalize both
+    /// wire shapes before the app applies its strict path and confirmation
+    /// checks; no arbitrary namespace is accepted.
+    public static func normalizedCall(namespace: String?, tool: String) -> (namespace: String, tool: String)? {
+        if namespace == Self.namespace, [proposalTool, skillProposalTool].contains(tool) {
+            return (Self.namespace, tool)
+        }
+        guard namespace == nil else { return nil }
+        return tool == "studyrocket_\(proposalTool)" ? (Self.namespace, proposalTool) : nil
     }
 
     public static func routedTurnID(eventThreadID: String?, currentThreadID: String?, activeTurnID: String?) -> String? {

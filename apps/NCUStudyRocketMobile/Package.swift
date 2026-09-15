@@ -8,7 +8,8 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .library(name: "StudyRocketMobile", targets: ["StudyRocketMobile"])
+        .library(name: "StudyRocketMobile", targets: ["StudyRocketMobile"]),
+        .library(name: "StudyRocketWidgetSupport", targets: ["StudyRocketWidgetSupport"])
     ],
     dependencies: [
         .package(path: "../NCUStudyRocketShared"),
@@ -18,9 +19,15 @@ let package = Package(
         .target(
             name: "StudyRocketMobile",
             dependencies: [
+                "StudyRocketWidgetSupport",
                 .product(name: "StudyRocketShared", package: "NCUStudyRocketShared"),
                 .product(name: "MarkdownUI", package: "swift-markdown-ui")
             ]
+        ),
+        .target(name: "StudyRocketWidgetSupport"),
+        .testTarget(
+            name: "StudyRocketMobileTests",
+            dependencies: ["StudyRocketMobile"]
         )
     ]
 )

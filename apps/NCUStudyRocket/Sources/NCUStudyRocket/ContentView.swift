@@ -2,6 +2,7 @@ import SwiftUI
 import MarkdownUI
 import AppKit
 import StudyRocketChatCore
+import StudyRocketShared
 
 struct ContentView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
@@ -12,6 +13,7 @@ struct ContentView: View {
     @State private var pendingSection: AppSection?
     @State private var showBinder = false
     @State private var showUnsavedSectionDialog = false
+    @State private var showUnsavedBindingAlert = false
     var body: some View {
         NavigationSplitView {
             List(AppSection.allCases, selection: Binding(get: { selection }, set: { requestSection($0) })) { section in
@@ -25,7 +27,10 @@ struct ContentView: View {
                     Divider()
                     Label(workspace.gitStatus, systemImage: workspace.gitStatus == "已同步" ? "checkmark.seal" : "circle.dotted")
                         .font(.caption).foregroundStyle(workspace.gitStatus == "已同步" ? .teal : .orange)
-                    Button("重新绑定仓库", systemImage: "folder") { showBinder = true }
+                    Button("重新绑定仓库", systemImage: "folder") {
+                        if document.isDirty { showUnsavedBindingAlert = true }
+                        else { showBinder = true }
+                    }
                         .font(.caption)
                 }.padding(12)
             }
@@ -33,6 +38,7 @@ struct ContentView: View {
             Group {
                 switch selection ?? .home {
                 case .home: DashboardView()
+                case .timetable: TimetableView()
                 case .chat: StudyChatView()
                 case .week: WeeklyPlanView()
                 case .daily: DailyCheckinView()
@@ -53,6 +59,11 @@ struct ContentView: View {
             chat.prepare(prompt: route.prompt); requestSection(.chat)
         }
         .alert("无法绑定仓库", isPresented: Binding(get: { workspace.errorMessage != nil }, set: { if !$0 { workspace.errorMessage = nil } })) { Button("好", role: .cancel) {} } message: { Text(workspace.errorMessage ?? "") }
+        .alert("先处理未保存修改", isPresented: $showUnsavedBindingAlert) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("请先保存或放弃当前 Markdown 修改，再重新绑定仓库。")
+        }
         .confirmationDialog("未保存的 Markdown 修改", isPresented: $showUnsavedSectionDialog, titleVisibility: .visible) {
             Button("保存并切换") { if document.save(), let pendingSection { selection = pendingSection; self.pendingSection = nil; workspace.refreshGitStatus() } }
             Button("放弃修改并切换", role: .destructive) { if let pendingSection { selection = pendingSection; self.pendingSection = nil } }
@@ -69,7 +80,15 @@ struct ContentView: View {
 struct DashboardView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var chat: StudyChatStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var dashboard = DashboardModel()
+    @State private var deliveryTargets: [UUID: Bool] = [:]
+    @State private var deliveryTasks: [UUID: Task<Void, Never>] = [:]
+    @State private var writingDeliveryIDs = Set<UUID>()
+    @State private var deliverySealSource: [WeeklyDelivery]?
+    @State private var deliverySealPresented = true
+    @State private var periodTargets: [String: Bool] = [:]
+    @State private var periodTasks: [String: Task<Void, Never>] = [:]
     var body: some View {
         PageScaffold {
             VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
@@ -79,18 +98,37 @@ struct DashboardView: View {
                             .font(.subheadline.weight(.semibold)).foregroundStyle(.teal)
                     }
                 }
+                TimetableOverview(snapshot: dashboard.timetable)
                 ResponsiveColumns {
+                    let todayTasks = dashboard.todayCells.map { item in
+                        TodayPeriodTask(
+                            id: item.id,
+                            dayID: item.dayID,
+                            periodID: item.periodID,
+                            taskID: item.taskID,
+                            period: item.period,
+                            task: item.task,
+                            isCompleted: periodTargets[item.id] ?? item.isCompleted
+                        )
+                    }
+                    let todayFocus = DesktopTodayFocus.resolve(tasks: todayTasks)
                     TodayPlanList(
-                        tasks: dashboard.todayCells,
-                        firstTask: dashboard.firstOpenTask,
+                        tasks: todayTasks,
+                        focus: todayFocus,
                         unassigned: dashboard.todayUnassigned,
-                        toggle: { dashboard.togglePeriod($0, workspace: workspace) }
+                        toggle: requestPeriodToggle
                     )
                 } second: {
                     DeliveryOverview(
                         deliveries: dashboard.visibleDeliveries,
-                        emptyMessage: dashboard.plan.deliveries.isEmpty ? "周计划中还没有交付物。" : "除今日安排外，本周暂无其他交付物。",
-                        completed: dashboard.completedDeliveries,
+                        sealSource: deliverySealSource,
+                        sealPresented: deliverySealPresented,
+                        completion: { deliveryTargets[$0.id] ?? $0.isCompleted },
+                        isPending: { deliveryTargets[$0.id] != nil && !writingDeliveryIDs.contains($0.id) },
+                        isWriting: { writingDeliveryIDs.contains($0.id) },
+                        toggle: requestDeliveryToggle,
+                        emptyMessage: dashboard.plan.deliveries.isEmpty ? "周计划中还没有交付物。" : "本周交付物已完成",
+                        completed: dashboard.filteredDeliveries.filter { deliveryTargets[$0.id] ?? $0.isCompleted }.count,
                         total: dashboard.filteredDeliveries.count
                     )
                 }
@@ -125,22 +163,357 @@ struct DashboardView: View {
                 }
             }
         }
-        .onAppear { dashboard.load(from: workspace.rootURL) }
-        .onChange(of: workspace.rootURL) { _, root in dashboard.load(from: root) }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            dashboard.load(from: workspace.rootURL)
+        .onAppear { reloadDashboard(from: workspace.rootURL) }
+        .onDisappear(perform: cancelPendingToggles)
+        .onChange(of: workspace.rootURL) { _, root in
+            reloadDashboard(from: root)
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            reloadDashboard(from: workspace.rootURL)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .studyRocketTimetableChanged)) { _ in
+            reloadDashboard(from: workspace.rootURL)
+        }
+    }
+
+    private func requestDeliveryToggle(_ delivery: WeeklyDelivery) {
+        guard !writingDeliveryIDs.contains(delivery.id) else { return }
+        if let task = deliveryTasks.removeValue(forKey: delivery.id) {
+            task.cancel()
+            deliveryTargets.removeValue(forKey: delivery.id)
+            return
+        }
+        let target = !(deliveryTargets[delivery.id] ?? delivery.isCompleted)
+        deliveryTargets[delivery.id] = target
+        deliveryTasks[delivery.id] = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            writingDeliveryIDs.insert(delivery.id)
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+
+            let sealSource = dashboard.visibleDeliveries
+            let succeeded = dashboard.toggleDelivery(delivery.id, workspace: workspace)
+
+            guard succeeded else {
+                writingDeliveryIDs.remove(delivery.id)
+                deliveryTasks.removeValue(forKey: delivery.id)
+                deliveryTargets.removeValue(forKey: delivery.id)
+                return
+            }
+
+            if target,
+               !dashboard.filteredDeliveries.isEmpty,
+               dashboard.completedDeliveries == dashboard.filteredDeliveries.count {
+                deliverySealSource = sealSource
+                deliverySealPresented = false
+                await Task.yield()
+                guard !Task.isCancelled, deliverySealSource != nil else { return }
+                withAnimation(reduceMotion ? .easeOut(duration: 0.16) : .spring(response: 0.34, dampingFraction: 1)) {
+                    deliverySealPresented = true
+                }
+            }
+
+            writingDeliveryIDs.remove(delivery.id)
+            deliveryTasks.removeValue(forKey: delivery.id)
+            deliveryTargets.removeValue(forKey: delivery.id)
+        }
+    }
+
+    private func requestPeriodToggle(_ item: TodayPeriodTask) {
+        let taskKey = item.id
+        if let task = periodTasks.removeValue(forKey: taskKey) {
+            task.cancel()
+            periodTargets.removeValue(forKey: taskKey)
+            return
+        }
+        guard item.taskID != nil,
+              !item.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let target = !item.isCompleted
+        periodTargets[taskKey] = target
+        periodTasks[taskKey] = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            periodTasks.removeValue(forKey: taskKey)
+            periodTargets.removeValue(forKey: taskKey)
+            dashboard.setPeriodTaskCompletion(item, isCompleted: target, workspace: workspace)
+        }
+    }
+
+    private func cancelPendingToggles() {
+        deliveryTasks.values.forEach { $0.cancel() }
+        periodTasks.values.forEach { $0.cancel() }
+        deliveryTasks.removeAll()
+        periodTasks.removeAll()
+        deliveryTargets.removeAll()
+        writingDeliveryIDs.removeAll()
+        deliverySealSource = nil
+        deliverySealPresented = true
+        periodTargets.removeAll()
+    }
+
+    private func reloadDashboard(from root: URL) {
+        cancelPendingToggles()
+        dashboard.load(from: root)
     }
 }
 
-/// The home screen is intentionally read-only for deliveries.  The weekly
-/// plan remains the single place where completion is changed and atomically
-/// written, while the dashboard gives a compact timeline-style overview.
+private struct TimetableOverview: View {
+    let snapshot: TimetableSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Label("今日课程", systemImage: "calendar.badge.clock")
+                    .font(.system(size: 15, weight: .semibold))
+                Spacer(minLength: 12)
+                Text(snapshotHeader)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+            }
+            .padding(.bottom, 10)
+
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(.background, in: RoundedRectangle(cornerRadius: StudyRocketTheme.cornerRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: StudyRocketTheme.cornerRadius, style: .continuous)
+                .strokeBorder(.quaternary)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("今日课程")
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch snapshot.status {
+        case .notImported:
+            TimetableStateNotice(
+                text: "尚未找到 261 一班课表，请在资料库中确认课表 Markdown 已存在。",
+                symbol: "calendar.badge.exclamationmark",
+                tint: .orange
+            )
+        case .invalid:
+            TimetableStateNotice(
+                text: "课表文件格式有误，今日课程暂不可用。请检查资料库中的课表文件。",
+                symbol: "exclamationmark.triangle.fill",
+                tint: .orange
+            )
+        case .beforeTerm:
+            TimetableStateNotice(
+                text: "课表已接入，课程从 \(dateText(snapshot.firstImportedDate)) 开始。",
+                symbol: "calendar.badge.clock",
+                tint: .secondary
+            )
+        case .afterTerm:
+            TimetableStateNotice(
+                text: "已导入范围结束于 \(dateText(snapshot.lastImportedDate))，未推算后续周次。",
+                symbol: "calendar.badge.checkmark",
+                tint: .secondary
+            )
+        case .available:
+            if let day = snapshot.days.first(where: { $0.id == snapshot.referenceDate }) {
+                let holidays = day.entries.filter { $0.kind == .holiday }
+                let entries = day.entries.filter { $0.kind != .holiday }
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(holidays) { entry in
+                        TimetableStateNotice(text: entry.title, symbol: "sun.max.fill", tint: .orange)
+                            .padding(.bottom, entries.isEmpty ? 8 : 10)
+                    }
+                    if entries.isEmpty {
+                        Label("今日无课程安排", systemImage: holidays.isEmpty ? "calendar" : "calendar.badge.checkmark")
+                            .font(.system(size: StudyRocketTheme.bodySize))
+                            .foregroundStyle(.secondary)
+                            .frame(minHeight: 44, alignment: .leading)
+                    } else {
+                        ForEach(entries) { entry in
+                            TimetableEntryRow(entry: entry)
+                        }
+                    }
+                }
+            } else {
+                TimetableStateNotice(
+                    text: "今日课程快照缺少对应日期，请刷新后重试。",
+                    symbol: "arrow.clockwise",
+                    tint: .orange
+                )
+            }
+        }
+    }
+
+    private var snapshotHeader: String {
+        [snapshot.classLabel, snapshot.weekLabel].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    private func dateText(_ value: String?) -> String {
+        guard let value, !value.isEmpty else { return "待定日期" }
+        return value
+    }
+}
+
+private struct TimetableEntryRow: View {
+    let entry: TimetableEntrySnapshot
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: entry.symbol)
+                .font(.body.weight(.medium))
+                .foregroundStyle(entry.kind == .course ? Color.accentColor : Color.secondary)
+                .frame(width: 22, height: 22)
+                .padding(.top, 1)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(entry.timeText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    if let periodLabel = entry.periodLabel, !periodLabel.isEmpty {
+                        Text(entry.periodText(periodLabel))
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                Text(displayTitle.primary)
+                    .font(.system(size: StudyRocketTheme.bodySize, weight: entry.kind == .course ? .medium : .regular))
+                    .foregroundStyle(entry.kind == .course ? .primary : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let secondary = displayTitle.secondary {
+                    Text(secondary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ViewThatFits(in: .horizontal) {
+                    metadata(horizontal: true)
+                    metadata(horizontal: false)
+                }
+                if let note = entry.note, !note.isEmpty {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 9)
+        .overlay(alignment: .bottom) {
+            Divider().padding(.leading, 34)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(entry.accessibilityText)
+    }
+
+    @ViewBuilder
+    private func metadata(horizontal: Bool) -> some View {
+        if horizontal {
+            HStack(alignment: .top, spacing: 12) {
+                metadataItems
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                metadataItems
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var metadataItems: some View {
+        if let location = entry.location, !location.isEmpty {
+            Label(location, systemImage: "mappin.and.ellipse")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if entry.kind == .course {
+            Label("地点待确认", systemImage: "mappin.and.ellipse")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let instructor = entry.instructor, !instructor.isEmpty {
+            Label(instructor, systemImage: "person")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if entry.kind == .course {
+            Label("教师待确认", systemImage: "person")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var displayTitle: TimetableDisplayTitle {
+        StudyRocketTimetableCourseCatalog.displayTitle(for: entry.title)
+    }
+}
+
+private struct TimetableStateNotice: View {
+    let text: String
+    let symbol: String
+    let tint: Color
+
+    var body: some View {
+        Label(text, systemImage: symbol)
+            .font(.system(size: StudyRocketTheme.bodySize))
+            .foregroundStyle(tint)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+    }
+}
+
+private extension TimetableEntrySnapshot {
+    var symbol: String {
+        switch kind {
+        case .course: return "book.closed"
+        case .support: return "questionmark.circle"
+        case .officeHour: return "person.crop.circle"
+        case .event: return "calendar.badge.clock"
+        case .holiday: return "sun.max.fill"
+        }
+    }
+
+    var timeText: String {
+        switch (startTime, endTime) {
+        case let (start?, end?): return "\(start) - \(end)"
+        case let (start?, nil): return "\(start) 开始"
+        case let (nil, end?): return "\(end) 结束"
+        case (nil, nil): return "时间待定"
+        }
+    }
+
+    func periodText(_ value: String) -> String {
+        value.contains("节") ? value : "第\(value)节"
+    }
+
+    var accessibilityText: String {
+        var values = [timeText, title]
+        if let periodLabel, !periodLabel.isEmpty { values.append(periodText(periodLabel)) }
+        if let location, !location.isEmpty { values.append(location) }
+        if let instructor, !instructor.isEmpty { values.append(instructor) }
+        return values.joined(separator: "，")
+    }
+}
+
+/// The dashboard writes through DashboardModel so completion only settles
+/// after the weekly Markdown file has been saved atomically.
 private struct DeliveryOverview: View {
     let deliveries: [WeeklyDelivery]
+    let sealSource: [WeeklyDelivery]?
+    let sealPresented: Bool
+    let completion: (WeeklyDelivery) -> Bool
+    let isPending: (WeeklyDelivery) -> Bool
+    let isWriting: (WeeklyDelivery) -> Bool
+    let toggle: (WeeklyDelivery) -> Void
     let emptyMessage: String
     let completed: Int
     let total: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AccessibilityFocusState private var sealFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -155,68 +528,149 @@ private struct DeliveryOverview: View {
                 }
             }
             .padding(.bottom, 8)
-            if deliveries.isEmpty {
-                Text(emptyMessage)
-                    .font(.system(size: StudyRocketTheme.bodySize))
-                    .foregroundStyle(.secondary)
-                    .frame(minHeight: 44, alignment: .leading)
-            } else {
-                let visibleCount = min(deliveries.count, 5)
-                ForEach(Array(deliveries.prefix(5).enumerated()), id: \.element.id) { index, delivery in
-                    DeliveryOverviewRow(delivery: delivery, isLast: index == visibleCount - 1)
+            if let sealSource {
+                ZStack(alignment: .leading) {
+                    if sealPresented {
+                        DeliveryCompletionSeal()
+                            .accessibilityFocused($sealFocused)
+                            .transition(sealTransition)
+                    } else {
+                        deliveryRows(sealSource, forceCompleted: true)
+                            .transition(rowsTransition)
+                    }
                 }
-                if deliveries.count > 5 {
-                    Text("还有 \(deliveries.count - 5) 项，前往周计划查看")
-                        .font(.caption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if deliveries.isEmpty {
+                if total == 0 {
+                    Label(emptyMessage, systemImage: "tray")
+                        .font(.system(size: StudyRocketTheme.bodySize))
                         .foregroundStyle(.secondary)
-                        .padding(.top, 4)
+                        .frame(minHeight: 44, alignment: .leading)
+                } else {
+                    DeliveryCompletionSeal()
                 }
+            } else {
+                deliveryRows(deliveries)
             }
         }
         .padding(16)
         .background(.background, in: RoundedRectangle(cornerRadius: StudyRocketTheme.cornerRadius, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: StudyRocketTheme.cornerRadius, style: .continuous).strokeBorder(.quaternary) }
+        .onChange(of: sealPresented) { _, presented in
+            if presented, sealSource != nil { sealFocused = true }
+        }
+    }
+
+    @ViewBuilder
+    private func deliveryRows(_ rows: [WeeklyDelivery], forceCompleted: Bool = false) -> some View {
+        ForEach(Array(rows.enumerated()), id: \.element.id) { index, delivery in
+            DeliveryOverviewRow(
+                delivery: delivery,
+                isCompleted: forceCompleted || completion(delivery),
+                isPending: !forceCompleted && isPending(delivery),
+                isWriting: isWriting(delivery),
+                isLast: index == rows.count - 1,
+                toggle: { toggle(delivery) }
+            )
+        }
+    }
+
+    private var rowsTransition: AnyTransition {
+        reduceMotion ? .opacity : .opacity.combined(with: .offset(x: -8))
+    }
+
+    private var sealTransition: AnyTransition {
+        reduceMotion
+            ? .opacity
+            : .opacity
+                .combined(with: .offset(x: -6))
+                .combined(with: .scale(scale: 0.96, anchor: .leading))
     }
 }
 
 private struct DeliveryOverviewRow: View {
     let delivery: WeeklyDelivery
+    let isCompleted: Bool
+    let isPending: Bool
+    let isWriting: Bool
     let isLast: Bool
+    let toggle: () -> Void
 
     private var presentation: WeeklyDeliveryPresentation {
         WeeklyDeliveryPresentation(text: delivery.text)
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: delivery.isCompleted ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(delivery.isCompleted ? Color.teal : Color.secondary)
-                .font(.body)
-                .padding(.top, 1)
-            VStack(alignment: .leading, spacing: 3) {
-                if let dateLabel = presentation.dateLabel, !dateLabel.isEmpty {
-                    Text(dateLabel).font(.caption).foregroundStyle(.secondary)
+        Button(action: toggle) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(spacing: 4) {
+                    Image(systemName: isCompleted ? "checkmark.circle.fill" : "circle.fill")
+                        .foregroundStyle(isCompleted ? Color.teal : Color.accentColor)
+                        .font(.system(size: 14, weight: .semibold))
+                        .accessibilityHidden(true)
+                    if !isLast {
+                        Rectangle()
+                            .fill(Color.accentColor.opacity(0.22))
+                            .frame(width: 2)
+                            .frame(maxHeight: .infinity)
+                            .accessibilityHidden(true)
+                    }
                 }
-                Text(presentation.body)
-                    .font(.system(size: StudyRocketTheme.bodySize))
-                    .lineSpacing(StudyRocketTheme.bodyLineSpacing)
-                    .foregroundStyle(delivery.isCompleted ? Color.secondary : Color.primary)
-                    .strikethrough(delivery.isCompleted, color: .secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if !isLast { Divider().padding(.top, 8) }
+                .frame(width: 18)
+                VStack(alignment: .leading, spacing: 3) {
+                    if let dateLabel = presentation.dateLabel, !dateLabel.isEmpty {
+                        Text(dateLabel).font(.caption).foregroundStyle(.secondary)
+                    }
+                    DesktopInterruptibleStrikeText(
+                        text: presentation.body,
+                        isStruck: isCompleted,
+                        font: .system(size: StudyRocketTheme.bodySize)
+                    )
+                }
+                Spacer(minLength: 0)
+                if isWriting {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityHidden(true)
+                }
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isWriting)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(delivery.text)
+        .accessibilityValue(isWriting ? "正在保存到周计划" : isCompleted ? "已完成" : "未完成")
+        .accessibilityHint(isWriting ? "保存成功后显示本周完成印章" : isPending ? "再次点按可撤销，不会写入" : "点按后有 1 秒撤销时间")
+    }
+}
+
+private struct DeliveryCompletionSeal: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "checkmark.seal.fill")
+                .symbolRenderingMode(.hierarchical)
+                .font(.system(size: 43, weight: .medium))
+                .foregroundStyle(.teal)
+                .frame(width: 44, height: 44, alignment: .leading)
+                .accessibilityHidden(true)
+            Text("本周交付物已完成")
+                .font(.system(size: StudyRocketTheme.bodySize, weight: .semibold))
+                .foregroundStyle(.teal)
         }
         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("本周交付物已全部完成，已写入周计划")
     }
 }
 
 private struct TodayPlanList: View {
     @EnvironmentObject private var chat: StudyChatStore
     let tasks: [TodayPeriodTask]
-    let firstTask: String?
+    let focus: DesktopTodayFocus
     let unassigned: String
-    let toggle: (String) -> Void
+    let toggle: (TodayPeriodTask) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -224,40 +678,45 @@ private struct TodayPlanList: View {
                 Label("今日安排", systemImage: "checklist")
                     .font(.system(size: 15, weight: .semibold))
                 Spacer()
-                if firstTask != nil { Image(systemName: "flag.fill").foregroundStyle(.tint).accessibilityLabel("有待完成任务") }
+                if case .task = focus { Image(systemName: "flag.fill").foregroundStyle(.tint).accessibilityLabel("有待完成任务") }
             }
             .padding(.bottom, 8)
-            ForEach(Array(tasks.enumerated()), id: \.element.id) { index, item in
-                Button { toggle(item.id) } label: {
-                    HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
-                            .font(.body)
-                            .foregroundStyle(item.isCompleted ? Color.teal : item.task.isEmpty ? Color.secondary.opacity(0.45) : Color.accentColor)
-                            .frame(width: 20, height: 20)
-                            .padding(.top, 1)
-                        Text(item.period)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 38, alignment: .leading)
-                            .padding(.top, 2)
-                        Text(item.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未安排" : item.task)
-                            .font(.system(size: StudyRocketTheme.bodySize))
-                            .lineSpacing(StudyRocketTheme.bodyLineSpacing)
-                            .foregroundStyle(item.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || item.isCompleted ? .secondary : .primary)
-                            .strikethrough(item.isCompleted, color: .secondary)
-                            .multilineTextAlignment(.leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 0)
+            ForEach(WeeklyPlan.periods, id: \.self) { period in
+                let periodTasks = tasks.filter { $0.period == period }
+                VStack(alignment: .leading, spacing: 0) {
+                    Label(period, systemImage: periodSymbol(period))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(minHeight: 28, alignment: .leading)
+                    ForEach(Array(periodTasks.enumerated()), id: \.element.id) { index, item in
+                        Button { toggle(item) } label: {
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
+                                    .font(.body)
+                                    .foregroundStyle(item.isCompleted ? Color.teal : item.task.isEmpty ? Color.secondary.opacity(0.45) : Color.accentColor)
+                                    .frame(width: 20, height: 20)
+                                    .padding(.top, 1)
+                                DesktopInterruptibleStrikeText(
+                                    text: item.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未安排" : item.task,
+                                    isStruck: item.isCompleted,
+                                    font: .system(size: StudyRocketTheme.bodySize),
+                                    inactiveColor: item.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .secondary : .primary
+                                )
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.leading, 28)
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(item.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityLabel("\(item.period)：\(item.task.isEmpty ? "未安排" : item.task)")
+                        .accessibilityValue(item.isCompleted ? "已完成" : "未完成")
+                        .accessibilityHint(item.task.isEmpty ? "当前时段没有任务" : item.isCompleted ? "点按标记为未完成" : "点按标记为已完成")
+                        if index < periodTasks.count - 1 { Divider().padding(.leading, 32) }
                     }
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .disabled(item.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel("\(item.period)：\(item.task.isEmpty ? "未安排" : item.task)")
-                .accessibilityValue(item.isCompleted ? "已完成" : "未完成")
-                .accessibilityHint(item.task.isEmpty ? "当前时段没有任务" : item.isCompleted ? "点按标记为未完成" : "点按标记为已完成")
-                if index < tasks.count - 1 { Divider().padding(.leading, 32) }
+                if period != (WeeklyPlan.periods.last ?? "") { Divider().padding(.vertical, 4) }
             }
             if !unassigned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Label("今天有待分时安排", systemImage: "exclamationmark.triangle.fill")
@@ -265,18 +724,84 @@ private struct TodayPlanList: View {
                     .help(unassigned)
                     .padding(.top, 8)
             }
-            if firstTask == nil {
+            switch focus {
+            case .completed:
+                Label("今日安排已完成", systemImage: "checkmark.seal.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.teal)
+                    .padding(.top, 12)
+            case .unplanned:
                 Button("去周计划安排今天", systemImage: "calendar.badge.plus") {
                     chat.prepare(prompt: "请根据我的档案和本周约束，为今天安排可执行的时间块。先问缺失事实，不要编造。")
                     NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil)
                 }
                 .buttonStyle(.bordered)
                 .padding(.top, 12)
+            case .task:
+                EmptyView()
             }
         }
         .padding(16)
         .background(.background, in: RoundedRectangle(cornerRadius: StudyRocketTheme.cornerRadius, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: StudyRocketTheme.cornerRadius, style: .continuous).strokeBorder(.quaternary) }
+    }
+
+    private func periodSymbol(_ period: String) -> String {
+        switch period {
+        case "上午": "sun.max"
+        case "中午": "sun.and.horizon"
+        default: "moon.stars"
+        }
+    }
+}
+
+private enum DesktopTodayFocus {
+    case task
+    case completed
+    case unplanned
+
+    static func resolve(tasks: [TodayPeriodTask]) -> DesktopTodayFocus {
+        let assigned = tasks.filter { !$0.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard !assigned.isEmpty else { return .unplanned }
+        return assigned.contains(where: { !$0.isCompleted }) ? .task : .completed
+    }
+}
+
+private struct DesktopInterruptibleStrikeText: View {
+    let text: String
+    let isStruck: Bool
+    var font: Font = .body
+    var inactiveColor: Color = .primary
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var progress: CGFloat = 0
+
+    var body: some View {
+        Group {
+            if reduceMotion {
+                Text(text)
+                    .font(font)
+                    .foregroundStyle(isStruck ? Color.secondary : inactiveColor)
+                    .strikethrough(isStruck, color: .secondary)
+            } else {
+                ZStack(alignment: .leading) {
+                    Text(text).font(font).foregroundStyle(inactiveColor)
+                    Text(text)
+                        .font(font)
+                        .foregroundStyle(.secondary)
+                        .strikethrough(true, color: .secondary)
+                        .mask(alignment: .leading) {
+                            Rectangle().scaleEffect(x: progress, anchor: .leading)
+                        }
+                }
+                .onAppear { progress = isStruck ? 1 : 0 }
+                .onChange(of: isStruck) { _, value in
+                    withAnimation(.linear(duration: value ? 1 : 0.16)) { progress = value ? 1 : 0 }
+                }
+            }
+        }
+        .lineSpacing(StudyRocketTheme.bodyLineSpacing)
+        .multilineTextAlignment(.leading)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -464,7 +989,18 @@ struct WeeklyPlanView: View {
     private func persist() {
         let repo = MarkdownRepository(root: workspace.rootURL)
         do {
-            try repo.save(MarkdownParser.replaceWeekly(original, with: plan), relative: file, loadedHash: loadedHash)
+            let sourceMigrations = Dictionary(uniqueKeysWithValues: plan.deliveries.compactMap { delivery -> (String, String)? in
+                guard let previous = originalDeliveries[delivery.id], previous != delivery.text else { return nil }
+                return (
+                    DeliveryPeriodMatcher.sourceKey(for: previous),
+                    DeliveryPeriodMatcher.sourceKey(for: delivery.text)
+                )
+            })
+            try repo.save(
+                MarkdownParser.replaceWeekly(original, with: plan, deliverySourceMigrations: sourceMigrations),
+                relative: file,
+                loadedHash: loadedHash
+            )
             notice = "已保存到工作台/下周计划.md"
             load()
             workspace.refreshGitStatus()
@@ -750,25 +1286,46 @@ private struct BufferWorkspaceSection: View {
 
     var body: some View {
         StudyGroupedSection(title: "缓冲与降级", subtitle: "计划受阻时，按日常留白、撞车取舍和最低底线依次降级。", icon: "shield.lefthalf.filled", tint: .secondary) {
-            VStack(alignment: .leading, spacing: 18) {
-                ForEach(BufferRuleCategory.allCases) { category in
-                    BufferRuleGroup(
-                        category: category,
-                        rules: rules.filter { $0.category == category },
+            VStack(alignment: .leading, spacing: StudyRocketTheme.planRowSpacing) {
+                let orderedRules = BufferRuleCategory.allCases.flatMap { category in rules.filter { $0.category == category } }
+                ForEach(Array(orderedRules.enumerated()), id: \.element.id) { index, rule in
+                    let categoryRules = rules.filter { $0.category == rule.category }
+                    let categoryPosition = categoryRules.firstIndex(where: { $0.id == rule.id }) ?? 0
+                    PlanReadingRow(
+                        id: rule.id,
+                        text: rule.text,
+                        metadata: .buffer(index + 1, rule.category.title),
+                        isCompleted: false,
+                        isPendingCompletion: false,
+                        isExpanded: expandedIDs.contains(rule.id),
                         activeEditor: $activeEditor,
-                        expandedIDs: $expandedIDs,
+                        editorKind: .bufferRule(rule.id),
+                        position: categoryPosition,
+                        total: categoryRules.count,
                         beginEditing: beginEditing,
                         commitEditing: commitEditing,
                         cancelEditing: cancelEditing,
-                        remove: remove,
-                        move: move,
-                        stepMove: stepMove,
-                        add: { add(category) }
+                        toggle: nil,
+                        remove: { remove(rule.id) },
+                        move: { move(rule.id, $0) },
+                        stepMove: { stepMove(rule.id, $0) },
+                        toggleExpanded: { toggleExpanded(rule.id) }
                     )
                 }
+                HStack(spacing: 12) {
+                    ForEach(BufferRuleCategory.allCases) { category in
+                        Button("添加\(category.title)", systemImage: "plus") { add(category) }
+                            .buttonStyle(.link)
+                    }
+                }
+                .frame(minHeight: 30, alignment: .leading)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func toggleExpanded(_ id: UUID) {
+        if expandedIDs.contains(id) { expandedIDs.remove(id) } else { expandedIDs.insert(id) }
     }
 }
 
@@ -848,6 +1405,7 @@ private struct BufferCategoryHeader: View {
 
 private enum PlanRowMetadata {
     case delivery(WeeklyDeliveryPresentation)
+    case buffer(Int, String)
     case plain
 }
 
@@ -875,14 +1433,17 @@ private struct PlanReadingRow: View {
     private var isEditing: Bool { activeEditor?.id == editorID }
     private var editorID: String { WeeklyRowEditorState(kind: editorKind, originalText: text).id }
     private var visibleText: String {
-        if case .delivery(let presentation) = metadata { return presentation.body }
-        return text
+        switch metadata {
+        case .delivery(let presentation): return presentation.body
+        case .buffer(let index, let title): return "\(index). \(title)：\(text)"
+        case .plain: return text
+        }
     }
     private var rowLineSpacing: CGFloat {
         switch metadata {
         case .delivery:
             return StudyRocketTheme.bodyLineSpacing
-        case .plain:
+        case .buffer, .plain:
             return 0
         }
     }
@@ -1111,11 +1672,13 @@ private struct WeeklyGridPlanEditor: View {
     }
     private func cells(for column: Int) -> [String] {
         WeeklyPlan.periods.indices.map { row in
-            plan.cells.indices.contains(row) && plan.cells[row].indices.contains(column) ? plan.cells[row][column] : ""
+            guard plan.cells.indices.contains(row), plan.cells[row].indices.contains(column) else { return "" }
+            return PeriodTaskParser.displayText(from: plan.cells[row][column])
         }
     }
     private func unassigned(for column: Int) -> String {
-        plan.unassignedByDay.indices.contains(column) ? plan.unassignedByDay[column] : ""
+        guard plan.unassignedByDay.indices.contains(column) else { return "" }
+        return PeriodTaskParser.displayText(from: plan.unassignedByDay[column])
     }
     private func target(for row: Int, column: Int) -> WeeklyEditTarget {
         let text = plan.cells.indices.contains(row) && plan.cells[row].indices.contains(column) ? plan.cells[row][column] : ""
@@ -1168,25 +1731,86 @@ private struct WeeklyCellPreview: View {
 struct DailyCheckinView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var chat: StudyChatStore
-    @State private var entry = DailyEntry(id: "", date: "", deliverables: "", studyTime: "", sleep: "", exercise: "", firstTask: ""); @State private var original = ""; @State private var hash = ""; @State private var notice: String?
-    private let formatter = DateFormatter(); private var monthFile: String { "工作台/每日记录/" + String(entry.date.prefix(7)) + ".md" }
-    var body: some View { PageScaffold { VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
-        PageTitleBar(title: "每日复盘", subtitle: "三分钟行为账：只记录已经发生的事实") { StudyIconButton(systemImage: "bubble.left.and.bubble.right", label: "在学业对话中复盘") { chat.prepare(prompt: ReminderRoute.daily.prompt); NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) } }
-        Form { DatePicker("日期", selection: Binding(get: { dateValue }, set: { entry.date = $0.formatted(.iso8601.year().month().day()) }), displayedComponents: .date); TextField("今日完成的具体交付物", text: $entry.deliverables); TextField("净学习时长", text: $entry.studyTime); TextField("入睡/起床", text: $entry.sleep); TextField("运动", text: $entry.exercise); TextField("明日第一任务", text: $entry.firstTask) }.formStyle(.grouped)
-        Button("保存行为账", systemImage: "checkmark.circle") { save() }.buttonStyle(.borderedProminent)
-    } }.onAppear { entry.date = Date.now.formatted(.iso8601.year().month().day()); load() }.alert("保存结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? "") } }
-    private var dateValue: Date { ISO8601DateFormatter().date(from: entry.date) ?? .now }
-    private func load() { let repo = MarkdownRepository(root: workspace.rootURL); original = (try? repo.read(monthFile)) ?? ""; hash = repo.hash(original); entry = MarkdownParser.daily(original, date: entry.date) }
+    @State private var entry = DailyEntry(id: "", date: "", deliverables: "", studyTime: "", sleep: "", exercise: "", firstTask: "")
+    @State private var original = ""
+    @State private var hash = ""
+    @State private var notice: String?
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = MarkdownParser.studyCalendar
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = MarkdownParser.studyCalendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private var monthFile: String { "工作台/每日记录/" + String(entry.date.prefix(7)) + ".md" }
+
+    var body: some View {
+        PageScaffold {
+            VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
+                PageTitleBar(title: "每日复盘", subtitle: "三分钟行为账：只记录已经发生的事实") {
+                    StudyIconButton(systemImage: "bubble.left.and.bubble.right", label: "在学业对话中复盘") {
+                        chat.prepare(prompt: ReminderRoute.daily.prompt)
+                        NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil)
+                    }
+                }
+                Form {
+                    DatePicker("日期", selection: Binding(get: { dateValue }, set: { entry.date = Self.dayFormatter.string(from: $0) }), displayedComponents: .date)
+                    TextField("今日完成的具体交付物", text: $entry.deliverables)
+                    TextField("净学习时长", text: $entry.studyTime)
+                    TextField("入睡/起床", text: $entry.sleep)
+                    TextField("运动", text: $entry.exercise)
+                    TextField("明日第一任务", text: $entry.firstTask)
+                }
+                .formStyle(.grouped)
+                Button("保存行为账", systemImage: "checkmark.circle") { save() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .onAppear {
+            entry.date = Self.dayFormatter.string(from: .now)
+            load()
+        }
+        .onChange(of: entry.date) { oldValue, newValue in
+            if oldValue != newValue { load() }
+        }
+        .alert("保存结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(notice ?? "")
+        }
+    }
+
+    private var dateValue: Date { Self.dayFormatter.date(from: entry.date) ?? .now }
+
+    private func load() {
+        let repo = MarkdownRepository(root: workspace.rootURL)
+        original = (try? repo.read(monthFile)) ?? ""
+        hash = repo.hash(original)
+        entry = MarkdownParser.daily(original, date: entry.date)
+    }
+
     private func save() {
         let repo = MarkdownRepository(root: workspace.rootURL)
+        let savedEntry = entry
         do {
             try repo.save(MarkdownParser.replaceDaily(original, entry: entry), relative: monthFile, loadedHash: hash)
-            try HabitProfileUpdater.update(after: entry, in: workspace.rootURL)
-            notice = "已保存今天的行为账，并更新了助理习惯画像"
-            load()
-            workspace.refreshGitStatus()
-            workspace.refreshMarkdownIndex()
-        } catch { notice = error.localizedDescription }
+        } catch {
+            notice = error.localizedDescription
+            return
+        }
+
+        load()
+        do {
+            try HabitProfileUpdater.update(after: savedEntry, in: workspace.rootURL)
+            notice = "已保存行为账，并更新助理习惯画像。"
+        } catch {
+            notice = "行为账已保存，但助理习惯画像更新失败：\(error.localizedDescription)"
+        }
+        workspace.refreshGitStatus()
+        workspace.refreshMarkdownIndex()
     }
 }
 
@@ -1245,7 +1869,7 @@ struct MarkdownBrowserView: View {
     }
 
     private func configureAndLoad() { document.updateRoot(workspace.rootURL); if let current = document.relative, files.contains(current) { selected = current } else { selected = files.first; if let selected { document.load(selected) } } }
-    private func ensureSelection() { guard let selected, files.contains(selected) else { self.selected = files.first; if let first = files.first { document.load(first) }; return } }
+    private func ensureSelection() { guard let selected, files.contains(selected) else { guard !document.isDirty else { return }; self.selected = files.first; if let first = files.first { document.load(first) }; return } }
     private func requestSelection(_ next: String?) { guard let next, next != selected else { return }; if document.isDirty { pendingSelection = next; showUnsavedDialog = true } else { selected = next; document.load(next) } }
 }
 
@@ -1805,7 +2429,7 @@ private struct ChatMarkdownDocumentView: View {
                 VStack(alignment: .leading, spacing: 5) { if let language { Text(language).font(.caption2).foregroundStyle(.secondary) }; Text(code).font(.system(size: 13, design: .monospaced)).textSelection(.enabled) }
                     .padding(11)
             }
-            .background(Color.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         case .table(let headers, let rows): tableView(headers: headers, rows: rows)
         case .divider: Divider()
         }
@@ -1988,28 +2612,43 @@ private struct InlineSkillProposalPanel: View {
 
 struct ChatComposer: View {
     @EnvironmentObject private var chat: StudyChatStore
+    @FocusState private var inputFocused: Bool
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
-                    ForEach(ReminderRoute.allCases) { route in Button(route.title) { chat.prepare(prompt: route.prompt) }.buttonStyle(.borderless).font(.caption) }
-                    Button("学业答疑") { chat.prepare(prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") }.buttonStyle(.borderless).font(.caption)
+                    ForEach(ReminderRoute.allCases) { route in Button(route.title) { prepare(route.prompt) }.buttonStyle(.borderless).font(.caption) }
+                    Button("学业答疑") { prepare("我有一个学业问题，请先读取我的档案和相关航线再回答。") }.buttonStyle(.borderless).font(.caption)
                     Spacer()
                 }
                 Menu("快捷报告") {
-                    ForEach(ReminderRoute.allCases) { route in Button(route.title) { chat.prepare(prompt: route.prompt) } }
-                    Button("学业答疑") { chat.prepare(prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") }
+                    ForEach(ReminderRoute.allCases) { route in Button(route.title) { prepare(route.prompt) } }
+                    Button("学业答疑") { prepare("我有一个学业问题，请先读取我的档案和相关航线再回答。") }
                 }.font(.caption)
             }.foregroundStyle(.secondary)
             HStack(alignment: .bottom, spacing: 10) {
                 TextField("输入问题或今天完成的事实…", text: $chat.draft, axis: .vertical).lineLimit(2...8).font(.body).textFieldStyle(.plain).padding(11)
                     .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.quaternary))
-                    .onSubmit { chat.send() }
+                    .focused($inputFocused)
+                    .onSubmit(submit)
+                    .onExitCommand { inputFocused = false }
                 if chat.isBusy { StudyIconButton(systemImage: "stop.fill", label: "停止生成", action: chat.stop) }
-                else { StudyIconButton(systemImage: "arrow.up", label: "发送（Return）", action: chat.send, disabled: chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+                else { StudyIconButton(systemImage: "arrow.up", label: "发送（Return）", action: submit, disabled: chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
             }
             Text("使用当前 Codex 登录和只读学业任务；修改会先生成草案。Shift+Return 换行。") .font(.caption2).foregroundStyle(.secondary)
         }.frame(maxWidth: StudyRocketTheme.chatMaxWidth).frame(maxWidth: .infinity).padding(.horizontal, StudyRocketTheme.pageInset).padding(.vertical, 10).background(.bar)
+    }
+
+    private func prepare(_ prompt: String) {
+        chat.prepare(prompt: prompt)
+        inputFocused = true
+    }
+
+    private func submit() {
+        guard !chat.isBusy, !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        chat.send()
+        inputFocused = false
     }
 }
 

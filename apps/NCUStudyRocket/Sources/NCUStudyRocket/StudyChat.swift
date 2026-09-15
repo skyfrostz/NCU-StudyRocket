@@ -188,6 +188,7 @@ final class CodexAppServerClient: NSObject {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = ["app-server", "--stdio"]
+        process.environment = StudyRocketCodexErrorPresentation.childProcessEnvironment()
         let stdin = Pipe(); let stdout = Pipe(); let stderr = Pipe()
         process.standardInput = stdin; process.standardOutput = stdout; process.standardError = stderr
         let lease = try CodexLeaseStore().acquire(owner: "NCU StudyRocket")
@@ -218,6 +219,10 @@ final class CodexAppServerClient: NSObject {
             "capabilities": ["experimentalApi": true]
         ])
         sendNotification(method: "initialized", params: [:])
+        let config = try await request(method: "config/read", params: ["cwd": root.path])
+        guard let selection = StudyRocketModelSelection.configReadResult(config) else {
+            throw StudyChatError.protocolError("Codex 未返回当前模型配置，请在 Mac 重新登录后重试。")
+        }
 
         var legacyHistory: [ChatMessage] = []
         if let legacyThreadID, legacyThreadID != threadID {
@@ -230,27 +235,23 @@ final class CodexAppServerClient: NSObject {
             }
         }
 
-        let thread: [String: Any]
+        var thread: [String: Any]
         if let threadID {
             let response = try await request(method: "thread/resume", params: [
                 "threadId": threadID, "includeTurns": true, "cwd": root.path,
                 "sandbox": "read-only", "approvalPolicy": "never", "runtimeWorkspaceRoots": [root.path],
-                "developerInstructions": Self.developerInstructions()
+                "developerInstructions": Self.developerInstructions(),
+                "model": selection.model, "modelProvider": selection.modelProvider
             ])
             thread = try resultObject(response)
             currentThreadID = threadID
-        } else {
-            let response = try await request(method: "thread/start", params: [
-                "cwd": root.path, "sandbox": "read-only", "approvalPolicy": "never",
-                "runtimeWorkspaceRoots": [root.path], "threadSource": "studyrocket",
-                "developerInstructions": Self.developerInstructions(legacyHistory: legacyHistory), "dynamicTools": StudyRocketDynamicToolContract.declaration
-            ])
-            thread = try resultObject(response)
-            guard let newID = (thread["thread"] as? [String: Any])?["id"] as? String else {
-                throw StudyChatError.protocolError("Codex 没有返回学业任务 ID。")
+            if StudyRocketModelSelection.threadResult(thread) != selection {
+                let resumed = await Task.detached(priority: .utility) { self.parseHistory(thread["thread"] as? [String: Any]) ?? [] }.value
+                legacyHistory = Array((legacyHistory + resumed).suffix(40))
+                thread = try await startFixedThread(root: root, selection: selection, legacyHistory: legacyHistory)
             }
-            currentThreadID = newID
-            _ = try? await request(method: "thread/name/set", params: ["threadId": newID, "name": "StudyRocket 学业助理"])
+        } else {
+            thread = try await startFixedThread(root: root, selection: selection, legacyHistory: legacyHistory)
         }
         let currentHistory = await Task.detached(priority: .utility) { self.parseHistory(thread["thread"] as? [String: Any]) ?? [] }.value
         let history = (legacyHistory + currentHistory).sorted { $0.date < $1.date }
@@ -259,6 +260,23 @@ final class CodexAppServerClient: NSObject {
         let recentTurnIDs = Set(turnOrder.suffix(10))
         onHistory?(history.filter { $0.turnID.map(recentTurnIDs.contains) ?? false })
         return currentThreadID!
+    }
+
+    private func startFixedThread(root: URL, selection: StudyRocketModelSelection, legacyHistory: [ChatMessage]) async throws -> [String: Any] {
+        let response = try await request(method: "thread/start", params: [
+            "cwd": root.path, "sandbox": "read-only", "approvalPolicy": "never",
+            "runtimeWorkspaceRoots": [root.path], "threadSource": "studyrocket",
+            "developerInstructions": Self.developerInstructions(legacyHistory: legacyHistory),
+            "dynamicTools": StudyRocketDynamicToolContract.declaration,
+            "model": selection.model, "modelProvider": selection.modelProvider
+        ])
+        let thread = try resultObject(response)
+        guard let newID = (thread["thread"] as? [String: Any])?["id"] as? String else {
+            throw StudyChatError.protocolError("Codex 没有返回学业任务 ID。")
+        }
+        currentThreadID = newID
+        _ = try? await request(method: "thread/name/set", params: ["threadId": newID, "name": "StudyRocket 学业助理"])
+        return thread
     }
 
     func send(_ text: String) async throws -> ChatTurnResult {
@@ -334,7 +352,12 @@ final class CodexAppServerClient: NSObject {
     private func handle(_ object: [String: Any]) {
         if let id = object["id"] as? Int, let continuation = pending.removeValue(forKey: id) {
             if let error = object["error"] as? [String: Any] {
-                continuation.resume(throwing: StudyChatError.protocolError(error["message"] as? String ?? "Codex 请求失败。"))
+                continuation.resume(throwing: StudyChatError.protocolError(
+                    StudyRocketCodexErrorPresentation.message(
+                        for: error["message"] as? String,
+                        fallback: "Codex 请求失败。"
+                    )
+                ))
             } else {
                 continuation.resume(returning: object["result"] as? [String: Any] ?? [:])
             }
@@ -376,7 +399,8 @@ final class CodexAppServerClient: NSObject {
             guard (turn["id"] as? String) == activeTurnID else { return }
             let rawStatus = turn["status"] as? String ?? "failed"
             let status = ChatTurnState(rawValue: rawStatus) ?? .failed
-            let error = (turn["error"] as? [String: Any])?["message"] as? String
+            let error = ((turn["error"] as? [String: Any])?["message"] as? String)
+                .map { StudyRocketCodexErrorPresentation.message(for: $0) }
             let result = ChatTurnResult(turnID: activeTurnID!, status: status, errorMessage: error, completedAt: date(fromUnix: turn["completedAt"]))
             onTurnCompleted?(result)
             switch status {
@@ -390,7 +414,10 @@ final class CodexAppServerClient: NSObject {
         case "error":
             guard let threadID = params["threadId"] as? String, threadID == currentThreadID else { return }
             if let eventTurnID = params["turnId"] as? String, eventTurnID != activeTurnID { return }
-            let message = (params["error"] as? [String: Any])?["message"] as? String ?? "Codex 返回错误。"
+            let message = StudyRocketCodexErrorPresentation.message(
+                for: (params["error"] as? [String: Any])?["message"] as? String,
+                fallback: "Codex 返回错误。"
+            )
             if params["willRetry"] as? Bool == true {
                 onRetry?(message)
             } else {
@@ -482,7 +509,7 @@ final class CodexAppServerClient: NSObject {
         return """
     你是 StudyRocket 学业助理，只处理南昌大学玛丽女王学院数据科学与大数据技术（中外合作办学）学生的课程答疑、学习规划、复盘、科研、竞赛和保研问题。先读 AGENTS.md、PROFILE.md 和相关工作台 Markdown；遵守仓库规则，未知信息标记【待核实】，不编造 GPA、排名、名额、日期或推免比例。学校政策必须基于仓库官方文件，时效信息需要联网核实并给官方来源。
     你运行在只读任务中，绝不直接编辑、创建、删除或提交文件。用户要求更新计划、交付物、复盘或档案时，读取当前内容后调用 `studyrocket.propose_changes`，每个目标文件调用一次并传入完整候选正文和理由；应用会在用户确认后写入。只有周复盘有稳定证据时才调用 `studyrocket.propose_skill_update`。绝不调用旧的无命名空间工具名 `studyrocket_propose_changes` 或 `studyrocket_propose_skill_update`，也不要用 exec 包装草案工具调用。
-    课程答疑采用“解释 -> 例子 -> 自测 -> 归档”。计划必须是可勾选交付物，保留缓冲并给撞车降级方案。只记录用户明确提供的事实，不把推测写进行为账。执行日结、周复盘、月复盘或规划前，读取工作台/助理偏好与习惯.md。只有周复盘中同类事实连续至少 3 次时，才可提出 Skill 修改草案；不得把个人事实写进 Skill。
+    课程答疑采用“解释 -> 例子 -> 自测 -> 归档”。计划必须是可勾选交付物，保留缓冲并给撞车降级方案。编辑工作台/下周计划.md 时，同一时段的多个事项用 <br> 分隔且不要在时段单元格内写 Markdown 复选框；带明确开始时间的事项必须归入上午（12:00 前）、中午（12:00-17:59）或晚上（18:00 起），只有无法判断时段的事项才能放入待分配。只记录用户明确提供的事实，不把推测写进行为账。执行日结、周复盘、月复盘或规划前，读取工作台/助理偏好与习惯.md。只有周复盘中同类事实连续至少 3 次时，才可提出 Skill 修改草案；不得把个人事实写进 Skill。
     沟通采用平衡型关怀：如果用户明确表达压力、挫败、疲惫、犹豫或任务受阻，先用 1-2 句具体、克制的承接，再给一个最小下一步或降级方案；如果用户报告了完成的交付物，先具体指出已完成的事实及其意义，再继续安排。普通事实问答不要机械加安慰语。禁止空泛鼓励、过度共情、心理诊断、依赖性表达和结果保证。情绪只用于当前回应，不写入每日账、复盘、习惯画像或其他 Markdown。
     \(continuity)
     """
@@ -814,7 +841,7 @@ final class StudyChatStore: ObservableObject {
             let id = try await client.connect(root: root, threadID: active, legacyThreadID: legacy)
             guard generation == connectionGeneration else { return }
             threadID = id
-            if active == nil { try? taskDescriptorStore.save(StudyRocketTaskDescriptor(threadID: id), for: root) }
+            if active != id { try? taskDescriptorStore.save(StudyRocketTaskDescriptor(threadID: id), for: root) }
             UserDefaults.standard.set(id, forKey: key)
             UserDefaults.standard.set(StudyRocketThreadProtocol.currentVersion, forKey: threadProtocolKey(for: root))
             if let legacy { UserDefaults.standard.set(legacy, forKey: legacyThreadKey(for: root)) }
@@ -1302,13 +1329,12 @@ final class StudyChatStore: ObservableObject {
         do {
             for proposal in selected {
                 guard SkillRepository.isAllowed(relative: proposal.relativePath) else { throw MarkdownError.outsideWorkspace }
-                let url = workspace.rootURL.appendingPathComponent(proposal.relativePath)
-                let current = try String(contentsOf: url, encoding: .utf8)
+                let current = try repository.read(proposal.relativePath)
                 guard repository.hash(current) == proposal.baseHash else { throw MarkdownError.conflict }
                 try SkillRepository.validate(proposal.proposedContent)
             }
             for proposal in selected {
-                try Data(proposal.proposedContent.utf8).write(to: workspace.rootURL.appendingPathComponent(proposal.relativePath), options: .atomic)
+                try repository.save(proposal.proposedContent, relative: proposal.relativePath, loadedHash: proposal.baseHash)
             }
             transcript.skillProposals.removeAll { selected.contains($0) }
             workspace.refreshGitStatus()
@@ -1322,9 +1348,8 @@ final class StudyChatStore: ObservableObject {
     }
 
     private func receiveToolCall(_ params: [String: Any]) -> [String: Any] {
-        guard let namespace = params["namespace"] as? String,
-              let tool = params["tool"] as? String,
-              StudyRocketDynamicToolContract.accepts(namespace: namespace, tool: tool),
+        guard let tool = params["tool"] as? String,
+              let normalized = StudyRocketDynamicToolContract.normalizedCall(namespace: params["namespace"] as? String, tool: tool),
               let root else {
             return ["success": false, "contentItems": [["type": "inputText", "text": "草案工具必须使用 studyrocket 命名空间；旧接口不可用。"]]]
         }
@@ -1338,7 +1363,7 @@ final class StudyChatStore: ObservableObject {
         guard let turnID = params["turnId"] as? String else {
             return ["success": false, "contentItems": [["type": "inputText", "text": "草案缺少回合 ID。"]]]
         }
-        return registerProposal(tool: tool, arguments: args, turnID: turnID)
+        return registerProposal(tool: normalized.tool, arguments: args, turnID: turnID)
     }
 
     @discardableResult
@@ -1355,8 +1380,7 @@ final class StudyChatStore: ObservableObject {
         do {
             if tool == StudyRocketDynamicToolContract.skillProposalTool {
                 guard SkillRepository.isAllowed(relative: path) else { throw MarkdownError.outsideWorkspace }
-                let url = root.appendingPathComponent(path)
-                let original = try String(contentsOf: url, encoding: .utf8)
+                let original = try repository.read(path)
                 try SkillRepository.validate(content)
                 let proposal = SkillChangeProposal(turnID: turnID, relativePath: path, originalContent: original, proposedContent: content, reason: reason, baseHash: repository.hash(original))
                 transcript.skillProposals.removeAll { $0.turnID == turnID && $0.relativePath == path }
