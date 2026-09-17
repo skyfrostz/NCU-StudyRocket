@@ -884,6 +884,65 @@ struct ChatQuickAction: View {
     var body: some View { Button { chat.prepare(prompt: prompt); NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) } label: { Label(title, systemImage: icon).frame(maxWidth: .infinity, alignment: .leading) }.buttonStyle(.bordered) }
 }
 
+private enum WeeklyPlanDisplayMode: String, CaseIterable, Identifiable {
+    case agenda
+    case overview
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .agenda: "日程"
+        case .overview: "周览"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .agenda: "list.bullet"
+        case .overview: "rectangle.grid.2x2"
+        }
+    }
+}
+
+private enum WeeklyPlanPresentation {
+    static func dayTitle(plan: WeeklyPlan, column: Int) -> String {
+        let label = dateLabel(plan: plan, column: column)
+        guard let date = MarkdownParser.leadingDate(in: label, relativeTo: .now) else {
+            return label
+        }
+        let weekday = MarkdownParser.studyCalendar.component(.weekday, from: date)
+        return "\(WeeklyPlan.days[(weekday + 5) % 7]) · \(label)"
+    }
+
+    static func dateLabel(plan: WeeklyPlan, column: Int) -> String {
+        guard plan.dayDateLabels.indices.contains(column), !plan.dayDateLabels[column].isEmpty else {
+            return WeeklyPlan.days.indices.contains(column) ? WeeklyPlan.days[column] : "未标注日期"
+        }
+        return plan.dayDateLabels[column]
+    }
+
+    static func weekdayLabel(plan: WeeklyPlan, column: Int) -> String {
+        guard let date = MarkdownParser.leadingDate(in: dateLabel(plan: plan, column: column), relativeTo: .now) else {
+            return WeeklyPlan.days.indices.contains(column) ? WeeklyPlan.days[column] : "日期"
+        }
+        let weekday = MarkdownParser.studyCalendar.component(.weekday, from: date)
+        return WeeklyPlan.days[(weekday + 5) % 7]
+    }
+
+    static func taskCount(plan: WeeklyPlan, column: Int) -> Int {
+        WeeklyPlan.periods.indices.reduce(into: 0) { count, row in
+            guard plan.cells.indices.contains(row), plan.cells[row].indices.contains(column) else { return }
+            count += PeriodTaskParser.tasks(from: plan.cells[row][column]).count
+        }
+    }
+
+    static func pendingCount(plan: WeeklyPlan, column: Int) -> Int {
+        guard plan.unassignedByDay.indices.contains(column) else { return 0 }
+        return PeriodTaskParser.tasks(from: plan.unassignedByDay[column]).count
+    }
+}
+
 struct WeeklyPlanView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var chat: StudyChatStore
@@ -891,6 +950,7 @@ struct WeeklyPlanView: View {
     @State private var editingCell: WeeklyEditTarget?
     @State private var migrationNoticeVisible = true
     @AppStorage("studyrocket.completedDeliveriesExpanded") private var completedDeliveriesExpanded = false
+    @AppStorage("studyrocket.weeklyPlan.displayMode") private var displayModeRaw = WeeklyPlanDisplayMode.agenda.rawValue
     @State private var originalDeliveries: [UUID: String] = [:]
     @State private var originalRules: [UUID: (BufferRuleCategory, String)] = [:]
     @State private var deletionReview: WeeklyDeletionSummary?
@@ -900,7 +960,30 @@ struct WeeklyPlanView: View {
     @State private var expandedBufferRuleIDs = Set<UUID>()
     @State private var pendingCompletionIDs = Set<UUID>()
     @State private var inlineNotice: String?
+    @State private var selectedDayLabel: String?
     private let file = "工作台/下周计划.md"
+
+    private var displayMode: Binding<WeeklyPlanDisplayMode> {
+        Binding(
+            get: { WeeklyPlanDisplayMode(rawValue: displayModeRaw) ?? .agenda },
+            set: { displayModeRaw = $0.rawValue }
+        )
+    }
+
+    private var selectedDayIndex: Int {
+        if let selectedDayLabel,
+           let index = plan.dayDateLabels.firstIndex(of: selectedDayLabel) {
+            return index
+        }
+        return plan.dayDateLabels.indices.first(where: { plan.isToday(column: $0) })
+            ?? plan.dayDateLabels.indices.first
+            ?? 0
+    }
+
+    private var hasPendingTasks: Bool {
+        plan.unassignedByDay.contains { !PeriodTaskParser.tasks(from: $0).isEmpty }
+    }
+
     var body: some View { PageScaffold { VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
         PageTitleBar(title: "周计划", subtitle: "每天三个时间块，点按格子编辑完整任务") {
             HStack(spacing: 8) {
@@ -911,13 +994,44 @@ struct WeeklyPlanView: View {
         if migrationNoticeVisible, let migrationNotice = plan.migrationNotice {
             MigrationNotice(text: migrationNotice) { migrationNoticeVisible = false }
         }
-        WeeklyGridPlanEditor(
-            plan: $plan,
-            edit: { target in editingCell = target },
-            returnTask: returnScheduledTask
-        )
-        WeeklyPendingTasksSection(plan: plan) { assignment in
-            pendingTaskAssignment = assignment
+        Picker("周计划显示方式", selection: displayMode) {
+            ForEach(WeeklyPlanDisplayMode.allCases) { mode in
+                Label(mode.title, systemImage: mode.systemImage).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(maxWidth: 260)
+        .accessibilityLabel("周计划显示方式")
+
+        switch displayMode.wrappedValue {
+        case .agenda:
+            WeeklyDaySelector(plan: plan, selectedDay: selectedDayIndex, select: selectDay)
+            if hasPendingTasks {
+                ResponsiveColumns {
+                    WeeklyDayAgenda(
+                        plan: plan,
+                        day: selectedDayIndex,
+                        edit: { target in editingCell = target },
+                        returnTask: { row, taskID in returnScheduledTask(row: row, column: selectedDayIndex, taskID: taskID) }
+                    )
+                } second: {
+                    WeeklyPendingTasksSection(plan: plan) { assignment in
+                        pendingTaskAssignment = assignment
+                    }
+                }
+            } else {
+                WeeklyDayAgenda(
+                    plan: plan,
+                    day: selectedDayIndex,
+                    edit: { target in editingCell = target },
+                    returnTask: { row, taskID in returnScheduledTask(row: row, column: selectedDayIndex, taskID: taskID) }
+                )
+            }
+        case .overview:
+            WeeklyCompactOverview(plan: plan) { day in
+                selectDay(day)
+                displayModeRaw = WeeklyPlanDisplayMode.agenda.rawValue
+            }
         }
         if let inlineNotice {
             Label(inlineNotice, systemImage: "info.circle.fill")
@@ -987,13 +1101,29 @@ struct WeeklyPlanView: View {
     }
     .alert("保存结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? "") } }
     private func load() {
+        let previousDayLabel = selectedDayLabel
         let repo = MarkdownRepository(root: workspace.rootURL)
         original = (try? repo.read(file)) ?? ""
         loadedHash = repo.hash(original)
         plan = MarkdownParser.weekly(original)
         originalDeliveries = Dictionary(uniqueKeysWithValues: plan.deliveries.map { ($0.id, $0.text) })
         originalRules = Dictionary(uniqueKeysWithValues: plan.bufferRules.map { ($0.id, ($0.category, $0.text)) })
+        selectedDayLabel = plan.dayDateLabels.contains(previousDayLabel ?? "")
+            ? previousDayLabel
+            : preferredDayLabel()
         migrationNoticeVisible = true
+    }
+
+    private func preferredDayLabel() -> String? {
+        let index = plan.dayDateLabels.indices.first(where: { plan.isToday(column: $0) })
+            ?? plan.dayDateLabels.indices.first
+        guard let index, plan.dayDateLabels.indices.contains(index) else { return nil }
+        return plan.dayDateLabels[index]
+    }
+
+    private func selectDay(_ index: Int) {
+        guard plan.dayDateLabels.indices.contains(index) else { return }
+        selectedDayLabel = plan.dayDateLabels[index]
     }
     private func save() {
         let summary = currentDeletionSummary()
@@ -1832,135 +1962,317 @@ private struct WeeklyPendingTaskAssignmentSheet: View {
     }
 }
 
-private struct WeeklyGridPlanEditor: View {
-    @Binding var plan: WeeklyPlan
-    let edit: (WeeklyEditTarget) -> Void
-    let returnTask: (Int, Int, String) -> Void
+private struct WeeklyDaySelector: View {
+    let plan: WeeklyPlan
+    let selectedDay: Int
+    let select: (Int) -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         StudySurface {
-            ScrollView(.horizontal, showsIndicators: true) {
-                HStack(alignment: .top, spacing: 8) {
-                    ForEach(WeeklyPlan.days.indices, id: \.self) { column in
-                        WeeklyDayColumn(
-                            title: dayTitle(for: column),
-                            isToday: plan.isToday(column: column),
-                            slots: slots(for: column),
-                            edit: { row in edit(target(for: row, column: column)) },
-                            returnTask: { row, taskID in returnTask(row, column, taskID) }
-                        )
-                    }
+            if dynamicTypeSize.isAccessibilitySize {
+                menuSelector
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    expandedSelector
+                    menuSelector
                 }
-                .padding(.bottom, 4)
             }
         }
     }
 
-    private func dayTitle(for column: Int) -> String {
-        guard plan.dayDateLabels.indices.contains(column), !plan.dayDateLabels[column].isEmpty else { return WeeklyPlan.days[column] }
-        let label = plan.dayDateLabels[column]
-        guard let date = MarkdownParser.leadingDate(in: label, relativeTo: .now) else { return label }
-        let calendar = MarkdownParser.studyCalendar
-        let weekday = calendar.component(.weekday, from: date)
-        let weekdayIndex = (weekday + 5) % 7
-        return "\(WeeklyPlan.days[weekdayIndex]) · \(label)"
-    }
-
-    private func slots(for column: Int) -> [PeriodSnapshot] {
-        WeeklyPlan.periods.indices.map { row in
-            PeriodSnapshot(
-                id: WeeklyPlan.periodIDs[row],
-                title: WeeklyPlan.periods[row],
-                text: plan.cells.indices.contains(row) && plan.cells[row].indices.contains(column) ? plan.cells[row][column] : ""
-            )
+    private var expandedSelector: some View {
+        HStack(spacing: 6) {
+            ForEach(WeeklyPlan.days.indices, id: \.self) { day in
+                let isSelected = day == selectedDay
+                let taskCount = WeeklyPlanPresentation.taskCount(plan: plan, column: day)
+                let pendingCount = WeeklyPlanPresentation.pendingCount(plan: plan, column: day)
+                Button { select(day) } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 4) {
+                            Text(WeeklyPlanPresentation.weekdayLabel(plan: plan, column: day))
+                                .font(.caption.weight(isSelected ? .bold : .semibold))
+                            if plan.isToday(column: day) {
+                                Circle()
+                                    .fill(Color.accentColor)
+                                    .frame(width: 6, height: 6)
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                        Text(WeeklyPlanPresentation.dateLabel(plan: plan, column: day))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        HStack(spacing: 5) {
+                            Label("\(taskCount)", systemImage: "checklist")
+                            if pendingCount > 0 {
+                                Label("\(pendingCount)", systemImage: "calendar.badge.plus")
+                            }
+                        }
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(
+                        isSelected ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.05),
+                        in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .strokeBorder(isSelected ? Color.accentColor.opacity(0.30) : Color.clear)
+                    }
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .accessibilityLabel("\(WeeklyPlanPresentation.dayTitle(plan: plan, column: day))，\(taskCount) 项安排，\(pendingCount) 项待分时")
+                .accessibilityValue(isSelected ? "已选中" : "")
+            }
         }
     }
 
-    private func target(for row: Int, column: Int) -> WeeklyEditTarget {
-        let text = plan.cells.indices.contains(row) && plan.cells[row].indices.contains(column) ? plan.cells[row][column] : ""
-        return WeeklyEditTarget(id: "grid-\(row)-\(column)", title: "\(dayTitle(for: column)) · \(WeeklyPlan.periods[row])", text: text, kind: .grid(row: row, column: column))
+    private var menuSelector: some View {
+        Menu {
+            ForEach(WeeklyPlan.days.indices, id: \.self) { day in
+                Button {
+                    select(day)
+                } label: {
+                    if day == selectedDay {
+                        Label(WeeklyPlanPresentation.dayTitle(plan: plan, column: day), systemImage: "checkmark")
+                    } else {
+                        Text(WeeklyPlanPresentation.dayTitle(plan: plan, column: day))
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "calendar")
+                Text(WeeklyPlanPresentation.dayTitle(plan: plan, column: selectedDay))
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel("选择日期")
+        .accessibilityValue(WeeklyPlanPresentation.dayTitle(plan: plan, column: selectedDay))
     }
 }
 
-private struct WeeklyDayColumn: View {
-    let title: String
-    let isToday: Bool
-    let slots: [PeriodSnapshot]
-    let edit: (Int) -> Void
+private struct WeeklyDayAgenda: View {
+    let plan: WeeklyPlan
+    let day: Int
+    let edit: (WeeklyEditTarget) -> Void
     let returnTask: (Int, String) -> Void
 
-    private var cardBackground: Color {
-        isToday ? Color.accentColor.opacity(0.07) : Color.secondary.opacity(0.06)
-    }
-
-    private var cardBorder: Color {
-        isToday ? Color.accentColor.opacity(0.20) : Color.secondary.opacity(0.12)
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.subheadline.weight(isToday ? .bold : .semibold)).frame(maxWidth: .infinity, alignment: .leading)
-            ForEach(WeeklyPlan.periods.indices, id: \.self) { row in
-                let slot = slots.indices.contains(row)
-                    ? slots[row]
-                    : PeriodSnapshot(id: WeeklyPlan.periodIDs[row], title: WeeklyPlan.periods[row], text: "")
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 5) {
-                        Text(slot.title).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                        Spacer(minLength: 0)
-                        Button { edit(row) } label: {
-                            Image(systemName: "pencil")
-                                .frame(width: 24, height: 24)
-                        }
-                        .buttonStyle(.borderless)
-                        .help("编辑\(slot.title)任务")
-                        .accessibilityLabel("\(title)，\(slot.title)，编辑任务")
-                    }
-                    if slot.tasks.isEmpty {
-                        Text("未安排")
-                            .font(.system(size: 13))
+        StudySurface {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(WeeklyPlanPresentation.dayTitle(plan: plan, column: day))
+                            .font(.headline)
+                        Text(summary)
+                            .font(.caption)
                             .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, minHeight: 32, alignment: .topLeading)
-                    } else {
-                        ForEach(slot.tasks) { task in
-                            HStack(alignment: .top, spacing: 5) {
-                                Text(task.text)
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(.primary)
-                                    .multilineTextAlignment(.leading)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                Spacer(minLength: 0)
-                                Button { returnTask(row, task.id) } label: {
-                                    Image(systemName: "tray.and.arrow.down")
-                                        .frame(width: 24, height: 24)
-                                }
-                                .buttonStyle(.borderless)
-                                .help("退回待分时")
-                                .accessibilityLabel("将\(task.text)退回待分时")
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 28, alignment: .topLeading)
-                        }
+                    }
+                    Spacer(minLength: 8)
+                    if plan.isToday(column: day) {
+                        Text("今天")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
                     }
                 }
-                .padding(9)
-                .frame(width: 142, alignment: .topLeading)
-                .frame(minHeight: 76, alignment: .topLeading)
-                .background(cardBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay { RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(cardBorder) }
+                ForEach(WeeklyPlan.periods.indices, id: \.self) { row in
+                    if row > 0 { Divider() }
+                    WeeklyAgendaPeriodRow(
+                        dayTitle: WeeklyPlanPresentation.dayTitle(plan: plan, column: day),
+                        title: WeeklyPlan.periods[row],
+                        text: periodText(row),
+                        edit: { edit(target(for: row)) },
+                        returnTask: { taskID in returnTask(row, taskID) }
+                    )
+                }
             }
         }
-        .frame(width: 142, alignment: .leading)
+    }
+
+    private var summary: String {
+        let taskCount = WeeklyPlanPresentation.taskCount(plan: plan, column: day)
+        let pendingCount = WeeklyPlanPresentation.pendingCount(plan: plan, column: day)
+        return pendingCount == 0 ? "\(taskCount) 项安排" : "\(taskCount) 项安排 · \(pendingCount) 项待分时"
+    }
+
+    private func periodText(_ row: Int) -> String {
+        guard plan.cells.indices.contains(row), plan.cells[row].indices.contains(day) else { return "" }
+        return plan.cells[row][day]
+    }
+
+    private func target(for row: Int) -> WeeklyEditTarget {
+        WeeklyEditTarget(
+            id: "grid-\(row)-\(day)",
+            title: "\(WeeklyPlanPresentation.dayTitle(plan: plan, column: day)) · \(WeeklyPlan.periods[row])",
+            text: periodText(row),
+            kind: .grid(row: row, column: day)
+        )
     }
 }
 
-private struct WeeklyCellPreview: View {
+private struct WeeklyAgendaPeriodRow: View {
+    let dayTitle: String
+    let title: String
     let text: String
+    let edit: () -> Void
+    let returnTask: (String) -> Void
+
     var body: some View {
-        Text(text.isEmpty ? "未安排" : text)
-            .font(.caption).multilineTextAlignment(.leading).lineLimit(2)
-            .frame(width: 124, alignment: .topLeading)
-            .frame(minHeight: 44, maxHeight: 64, alignment: .topLeading).padding(6)
-            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        let tasks = PeriodTaskParser.tasks(from: text)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 8)
+                Button(action: edit) {
+                    Image(systemName: "pencil")
+                        .frame(width: StudyRocketTheme.controlHeight, height: StudyRocketTheme.controlHeight)
+                }
+                .buttonStyle(.borderless)
+                .help("编辑\(title)任务")
+                .accessibilityLabel("\(dayTitle)，\(title)，编辑任务")
+            }
+            if tasks.isEmpty {
+                Text("未安排")
+                    .font(.system(size: StudyRocketTheme.bodySize))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            } else {
+                ForEach(tasks) { task in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(task.text)
+                            .font(.system(size: StudyRocketTheme.bodySize))
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        Button { returnTask(task.id) } label: {
+                            Image(systemName: "tray.and.arrow.down")
+                                .frame(width: StudyRocketTheme.controlHeight, height: StudyRocketTheme.controlHeight)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("退回待分时")
+                        .accessibilityLabel("将\(task.text)退回待分时")
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .topLeading)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct WeeklyCompactOverview: View {
+    let plan: WeeklyPlan
+    let select: (Int) -> Void
+
+    private let columns = [GridItem(.adaptive(minimum: 216), spacing: 12)]
+
+    var body: some View {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+            ForEach(WeeklyPlan.days.indices, id: \.self) { day in
+                WeeklyCompactDayCard(plan: plan, day: day) { select(day) }
+            }
+        }
+    }
+}
+
+private struct WeeklyCompactDayCard: View {
+    let plan: WeeklyPlan
+    let day: Int
+    let select: () -> Void
+
+    var body: some View {
+        let taskCount = WeeklyPlanPresentation.taskCount(plan: plan, column: day)
+        let pendingCount = WeeklyPlanPresentation.pendingCount(plan: plan, column: day)
+        Button(action: select) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(WeeklyPlanPresentation.weekdayLabel(plan: plan, column: day))
+                            .font(.subheadline.weight(plan.isToday(column: day) ? .bold : .semibold))
+                        Text(WeeklyPlanPresentation.dateLabel(plan: plan, column: day))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    if plan.isToday(column: day) {
+                        Image(systemName: "location.fill")
+                            .font(.caption)
+                            .foregroundStyle(Color.accentColor)
+                            .accessibilityHidden(true)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+                ForEach(WeeklyPlan.periods.indices, id: \.self) { row in
+                    WeeklyCompactPeriodSummary(title: WeeklyPlan.periods[row], text: periodText(row))
+                }
+                if pendingCount > 0 {
+                    Label("\(pendingCount) 项待分时", systemImage: "calendar.badge.plus")
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 160, alignment: .topLeading)
+            .padding(14)
+            .background(
+                plan.isToday(column: day) ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.05),
+                in: RoundedRectangle(cornerRadius: StudyRocketTheme.cornerRadius, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: StudyRocketTheme.cornerRadius, style: .continuous)
+                    .strokeBorder(plan.isToday(column: day) ? Color.accentColor.opacity(0.25) : Color.secondary.opacity(0.18))
+            }
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .accessibilityLabel("\(WeeklyPlanPresentation.dayTitle(plan: plan, column: day))，\(taskCount) 项安排，\(pendingCount) 项待分时")
+        .accessibilityHint("查看当天日程")
+    }
+
+    private func periodText(_ row: Int) -> String {
+        guard plan.cells.indices.contains(row), plan.cells[row].indices.contains(day) else { return "" }
+        return plan.cells[row][day]
+    }
+}
+
+private struct WeeklyCompactPeriodSummary: View {
+    let title: String
+    let text: String
+
+    var body: some View {
+        let tasks = PeriodTaskParser.tasks(from: text)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 30, alignment: .leading)
+            Text(tasks.first?.text ?? "未安排")
+                .font(.caption)
+                .foregroundStyle(tasks.isEmpty ? .secondary : .primary)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+            Spacer(minLength: 4)
+            if tasks.count > 1 {
+                Text("\(tasks.count)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
     }
 }
 
