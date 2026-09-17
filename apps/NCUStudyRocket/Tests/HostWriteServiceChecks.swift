@@ -154,7 +154,7 @@ struct HostWriteServiceChecks {
         try testDeliveryToggleStaysInsideManagedSection()
         try testDeliveryPeriodLinkingAndSources()
         try testIndependentPeriodTasksAndLegacyCompatibility()
-        try testTimedUnassignedTasksBecomeCompletablePeriods()
+        try testTimedUnassignedTasksStayPendingForManualScheduling()
         try testWeeklyProposalIsNormalizedBeforeApproval()
         try testHistoricalAndFutureCompletionRecordsSurviveSave()
         try testCurrentWindowRowsPromoteAcrossSections()
@@ -587,7 +587,7 @@ struct HostWriteServiceChecks {
         try require(migratedEvening.tasks[0].isCompleted == false && migratedEvening.tasks[1].isCompleted == true, "task toggle did not expand the legacy completion into independent records")
     }
 
-    private static func testTimedUnassignedTasksBecomeCompletablePeriods() throws {
+    private static func testTimedUnassignedTasksStayPendingForManualScheduling() throws {
         let label = shortDateLabel(Date())
         let source = """
         # 临时计划
@@ -611,23 +611,23 @@ struct HostWriteServiceChecks {
         let initial = builder.build()
         guard let currentDay = initial.week.days.first,
               let currentNoon = currentDay.slots.first(where: { $0.id == "noon" }) else {
-            fatalError("missing normalized current day")
+            fatalError("missing current day")
         }
+        try require(currentNoon.tasks.map(\.text) == ["12:00 大扫除"], "snapshot changed an existing period")
         try require(
-            currentNoon.tasks.map(\.text) == ["12:00 大扫除", "14:00 领取 Bar Code", "16:00 领取银行卡"],
-            "snapshot did not promote timed unassigned tasks into noon"
+            currentDay.unassigned == "14:00 领取 Bar Code\n16:00 领取银行卡\n等待确认地点",
+            "snapshot did not preserve timed pending tasks"
         )
-        try require(currentDay.unassigned == "等待确认地点", "snapshot removed unresolved unassigned text")
 
         let rawDay = DaySnapshot(
             id: currentDay.id,
             dateLabel: currentDay.dateLabel,
             slots: [
                 PeriodSnapshot(id: "morning", title: "上午", text: "08:30 见面会"),
-                PeriodSnapshot(id: "noon", title: "中午", text: "12:00 大扫除"),
+                PeriodSnapshot(id: "noon", title: "中午", text: "12:00 大扫除\n14:00 领取 Bar Code"),
                 PeriodSnapshot(id: "evening", title: "晚上", text: "")
             ],
-            unassigned: "- [ ] 14:00 领取 Bar Code\n- [ ] 16:00 领取银行卡\n等待确认地点"
+            unassigned: "- [ ] 16:00 领取银行卡\n等待确认地点"
         )
         let writtenSnapshot = try service.applyWeek(PlanWriteRequest(
             plan: WeeklyPlanSnapshot(
@@ -640,26 +640,19 @@ struct HostWriteServiceChecks {
             metadata: WriteMetadata(baseRevision: initial.revision, idempotencyKey: "timed-unassigned-normalization")
         ))
         let written = try String(contentsOf: root.appendingPathComponent("工作台/下周计划.md"), encoding: .utf8)
-        try require(written.contains("12:00 大扫除<br>14:00 领取 Bar Code<br>16:00 领取银行卡"), "write path did not persist promoted tasks")
-        try require(written.contains("| 等待确认地点 | [ ] |"), "write path lost unresolved text")
+        try require(written.contains("12:00 大扫除<br>14:00 领取 Bar Code"), "write path did not preserve the assigned task")
+        try require(written.contains("16:00 领取银行卡<br>等待确认地点 | [ ] |"), "write path did not preserve pending tasks")
         try require(!written.contains("- [ ] 14:00"), "write path retained an in-cell Markdown checkbox")
 
         guard let writtenDay = writtenSnapshot.week.days.first,
-              let writtenNoon = writtenDay.slots.first(where: { $0.id == "noon" }),
-              writtenNoon.tasks.count == 3 else { fatalError("missing written noon tasks") }
-        let barcode = writtenNoon.tasks[1]
-        let bankCard = writtenNoon.tasks[2]
-        let toggled = try service.togglePeriod(PeriodCompletionToggleRequest(
-            dayID: writtenDay.id,
-            periodID: writtenNoon.id,
-            taskID: barcode.id,
-            isCompleted: true,
-            metadata: WriteMetadata(baseRevision: writtenSnapshot.revision, idempotencyKey: "promoted-task-toggle")
-        ))
-        let toggledNoon = try requireDay(toggled.week.days, id: writtenDay.id)
-            .slots.first(where: { $0.id == "noon" })!
-        try require(toggledNoon.tasks.first(where: { $0.id == barcode.id })?.isCompleted == true, "promoted task could not be completed independently")
-        try require(toggledNoon.tasks.first(where: { $0.id == bankCard.id })?.isCompleted == false, "one promoted task toggle changed its sibling")
+              let writtenNoon = writtenDay.slots.first(where: { $0.id == "noon" }) else {
+            fatalError("missing written noon tasks")
+        }
+        try require(writtenNoon.tasks.map(\.text) == ["12:00 大扫除", "14:00 领取 Bar Code"], "written assignment was changed")
+        try require(
+            writtenDay.unassigned == "16:00 领取银行卡\n等待确认地点",
+            "written pending tasks were reassigned automatically"
+        )
     }
 
     private static func testWeeklyProposalIsNormalizedBeforeApproval() throws {
@@ -679,7 +672,7 @@ struct HostWriteServiceChecks {
         )
         try require(registration["success"] as? Bool == true, "weekly proposal registration failed")
         guard let proposal = store.list().proposals.first else { fatalError("missing normalized proposal") }
-        let expectedRow = "| \(label) | 08:30 见面会 | 12:00 大扫除<br>14:00 领取 Bar Code<br>16:00 领取银行卡 |  |  | [ ] |"
+        let expectedRow = "| \(label) | 08:30 见面会 | 12:00 大扫除 |  | 14:00 领取 Bar Code<br>16:00 领取银行卡 | [ ] |"
         try require(proposal.proposedContent.contains(expectedRow), "proposal diff was not normalized before approval")
         try require(try String(contentsOf: root.appendingPathComponent("工作台/下周计划.md"), encoding: .utf8) == source, "proposal registration changed the real file")
 

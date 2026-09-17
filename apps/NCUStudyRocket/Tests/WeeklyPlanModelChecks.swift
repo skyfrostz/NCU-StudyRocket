@@ -232,20 +232,22 @@ struct WeeklyPlanModelChecks {
         let eveningTasks = PeriodTaskParser.tasks(from: multiPlan.cells[2][0])
         check(eveningTasks.count == 2, "a period with two lines is split into two independent tasks")
 
-        let promotedSource = """
+        let pendingSource = """
         <!-- studyrocket:weekly:start -->
         | 日期 | 上午 | 中午 | 晚上 | 待分配 | 完成 |
         |------|------|------|------|----------|------|
         | 8 月 13 日 | 08:30 见面会 | 12:00 大扫除 |  | - [ ] 14:00 领取 Bar Code<br>- [ ] 16:00 领取银行卡<br>地点待确认 | [ ] |
         <!-- studyrocket:weekly:end -->
         """
-        let promotedPlan = MarkdownParser.weekly(promotedSource, referenceDate: today)
+        let pendingPlan = MarkdownParser.weekly(pendingSource, referenceDate: today)
         check(
-            PeriodTaskParser.tasks(from: promotedPlan.cells[1][0]).map(\.text)
-                == ["12:00 大扫除", "14:00 领取 Bar Code", "16:00 领取银行卡"],
-            "desktop parser promotes timed unassigned items into independent noon tasks"
+            PeriodTaskParser.tasks(from: pendingPlan.cells[1][0]).map(\.text) == ["12:00 大扫除"],
+            "desktop parser changed an assigned period"
         )
-        check(promotedPlan.unassignedByDay[0] == "地点待确认", "desktop parser keeps only unresolved text unassigned")
+        check(
+            pendingPlan.unassignedByDay[0] == "14:00 领取 Bar Code\n16:00 领取银行卡\n地点待确认",
+            "desktop parser did not preserve timed pending items"
+        )
 
         let legacyCompletedMulti = try MarkdownParser.replacePeriodCompletion(
             in: multiTaskSource,

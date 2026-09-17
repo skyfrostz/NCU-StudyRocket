@@ -2049,6 +2049,7 @@ private struct MobilePlanView: View {
   let onNavigate: (Int) -> Void
   @State private var completedDeliveriesExpanded = false
   @State private var futureRowsExpanded = false
+  @State private var assignment: MobilePendingTaskAssignment?
 
   var body: some View {
     NavigationStack {
@@ -2105,6 +2106,13 @@ private struct MobilePlanView: View {
       #if os(iOS)
         .scrollDismissesKeyboard(.interactively)
       #endif
+    }
+    .sheet(item: $assignment) { assignment in
+      MobilePendingTaskAssignmentSheet(
+        assignment: assignment,
+        days: session.snapshot?.week.days ?? [],
+        session: session
+      )
     }
   }
 
@@ -2240,16 +2248,41 @@ private struct MobilePlanView: View {
       ForEach(Array(day.slots.enumerated()), id: \.element.id) { index, slot in
         scheduleSlot(slot, index: index, dayID: day.id)
       }
-      if !day.unassigned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        Label {
-          Text(PeriodTaskParser.displayText(from: day.unassigned))
-            .font(.subheadline)
-            .fixedSize(horizontal: false, vertical: true)
-        } icon: {
-          Image(systemName: "tray.full")
+      pendingTasks(day)
+    }
+  }
+
+  @ViewBuilder
+  private func pendingTasks(_ day: DaySnapshot) -> some View {
+    let tasks = PeriodTaskParser.tasks(from: day.unassigned)
+    if !tasks.isEmpty {
+      VStack(alignment: .leading, spacing: 8) {
+        Label("待分时", systemImage: "tray.full")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.secondary)
+        ForEach(Array(tasks.enumerated()), id: \.element.id) { index, task in
+          Button {
+            assignment = MobilePendingTaskAssignment(sourceDayID: day.id, sourceTaskIndex: index, text: task.text)
+          } label: {
+            HStack(alignment: .top, spacing: 10) {
+              Image(systemName: "calendar.badge.plus")
+                .foregroundStyle(MobileTheme.brand)
+                .frame(width: 20, height: 20)
+              Text(task.text)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+              Spacer(minLength: 0)
+              Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("待分时，\(task.text)")
+          .accessibilityHint("选择日期和时段纳入安排")
         }
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
       }
     }
   }
@@ -2319,6 +2352,22 @@ private struct MobilePlanView: View {
               }
             }
             Spacer(minLength: 0)
+            if let dayID {
+              Button {
+                Task {
+                  await session.returnScheduledTaskToUnassigned(
+                    dayID: dayID,
+                    periodID: slot.id,
+                    taskID: task.id
+                  )
+                }
+              } label: {
+                Image(systemName: "tray.and.arrow.down")
+                  .frame(width: 44, height: 44)
+              }
+              .buttonStyle(.borderless)
+              .accessibilityLabel("将\(task.text)退回待分时")
+            }
           }
           .padding(.leading, 20)
           .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -2379,6 +2428,92 @@ private struct MobilePlanView: View {
     formatter.dateFormat = "yyyy-MM-dd"
     return formatter
   }()
+}
+
+private struct MobilePendingTaskAssignment: Identifiable {
+  let sourceDayID: String
+  let sourceTaskIndex: Int
+  let text: String
+
+  var id: String { "\(sourceDayID)-\(sourceTaskIndex)-\(text)" }
+}
+
+private struct MobilePendingTaskAssignmentSheet: View {
+  let assignment: MobilePendingTaskAssignment
+  let days: [DaySnapshot]
+  @ObservedObject var session: MobileSession
+  @Environment(\.dismiss) private var dismiss
+  @State private var text: String
+  @State private var targetDayID: String
+  @State private var targetPeriodID = "morning"
+
+  init(assignment: MobilePendingTaskAssignment, days: [DaySnapshot], session: MobileSession) {
+    self.assignment = assignment
+    self.days = days
+    self.session = session
+    _text = State(initialValue: assignment.text)
+    _targetDayID = State(initialValue: days.contains(where: { $0.id == assignment.sourceDayID }) ? assignment.sourceDayID : days.first?.id ?? "")
+  }
+
+  private var targetDay: DaySnapshot? {
+    days.first { $0.id == targetDayID }
+  }
+
+  private var targetPeriod: PeriodSnapshot? {
+    targetDay?.slots.first { $0.id == targetPeriodID }
+  }
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        Section("事项") {
+          TextField("事项", text: $text, axis: .vertical)
+            .lineLimit(2...5)
+        }
+        Section("纳入安排") {
+          Picker("日期", selection: $targetDayID) {
+            ForEach(days) { day in
+              Text(day.dateLabel).tag(day.id)
+            }
+          }
+          Picker("时段", selection: $targetPeriodID) {
+            ForEach(targetDay?.slots ?? []) { period in
+              Text(period.title).tag(period.id)
+            }
+          }
+          if let targetPeriod, !targetPeriod.tasks.isEmpty {
+            Label("该时段已有 \(targetPeriod.tasks.count) 项安排", systemImage: "exclamationmark.triangle")
+              .font(.footnote)
+              .foregroundStyle(.orange)
+          }
+        }
+      }
+      .navigationTitle("安排待分时事项")
+      #if os(iOS)
+      .navigationBarTitleDisplayMode(.inline)
+      #endif
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("取消") { dismiss() }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+          Button("安排") {
+            Task {
+              await session.assignUnassignedTask(
+                sourceDayID: assignment.sourceDayID,
+                taskIndex: assignment.sourceTaskIndex,
+                text: text,
+                targetDayID: targetDayID,
+                targetPeriodID: targetPeriodID
+              )
+              dismiss()
+            }
+          }
+          .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || targetDay == nil || targetPeriod == nil)
+        }
+      }
+    }
+  }
 }
 
 private struct MobileDailyView: View {

@@ -253,12 +253,9 @@ let normalizedSchedule = WeeklyPlanTaskNormalizer.normalized(
     unassigned: "- [ ] 14:00 领取 Bar Code<br>- [ ] 下午4点领取银行卡<br>等待确认地点"
 )
 precondition(normalizedSchedule.periods[0].tasks.map(\.text) == ["08:30 中英师生见面会"])
-precondition(
-    normalizedSchedule.periods[1].tasks.map(\.text)
-        == ["12:00-13:30 寝室大扫除", "14:00 领取 Bar Code", "下午4点领取银行卡"]
-)
+precondition(normalizedSchedule.periods[1].tasks.map(\.text) == ["12:00-13:30 寝室大扫除"])
 precondition(normalizedSchedule.periods[2].tasks.isEmpty)
-precondition(normalizedSchedule.unassigned == "等待确认地点")
+precondition(normalizedSchedule.unassigned == "14:00 领取 Bar Code\n下午4点领取银行卡\n等待确认地点")
 let normalizedProposal = WeeklyPlanTaskNormalizer.normalizedMarkdown(
     """
     # 计划
@@ -269,7 +266,7 @@ let normalizedProposal = WeeklyPlanTaskNormalizer.normalizedMarkdown(
     <!-- studyrocket:weekly:end -->
     """
 )
-precondition(normalizedProposal.contains("| 9 月 15 日 | 08:30 见面会 | 12:00 大扫除<br>14:00 领取 Bar Code<br>16:00 领取银行卡 |  | 地点待确认 | [ ] |"))
+precondition(normalizedProposal.contains("| 9 月 15 日 | 08:30 见面会 | 12:00 大扫除 |  | 14:00 领取 Bar Code<br>16:00 领取银行卡<br>地点待确认 | [ ] |"))
 precondition(!normalizedProposal.contains("- [ ] 14:00"))
 let duplicateTasks = PeriodTaskParser.tasks(from: "复习英语<br>复习英语")
 precondition(duplicateTasks.count == 2 && duplicateTasks[0].id != duplicateTasks[1].id)

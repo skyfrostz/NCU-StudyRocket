@@ -921,6 +921,91 @@ public final class MobileSession: ObservableObject {
         }
     }
 
+    public func assignUnassignedTask(
+        sourceDayID: String,
+        taskIndex: Int,
+        text: String,
+        targetDayID: String,
+        targetPeriodID: String
+    ) async {
+        let editedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !editedText.isEmpty, let current = snapshot,
+              let sourceIndex = current.week.days.firstIndex(where: { $0.id == sourceDayID }),
+              let targetIndex = current.week.days.firstIndex(where: { $0.id == targetDayID }) else { return }
+
+        let source = current.week.days[sourceIndex]
+        var unassignedTasks = PeriodTaskParser.tasks(from: source.unassigned).map(\.text)
+        guard unassignedTasks.indices.contains(taskIndex) else { return }
+        unassignedTasks.remove(at: taskIndex)
+
+        let days = current.week.days.enumerated().map { index, day -> DaySnapshot in
+            var unassigned = day.unassigned
+            var slots = day.slots
+            if index == sourceIndex {
+                unassigned = unassignedTasks.joined(separator: "\n")
+            }
+            if index == targetIndex,
+               let periodIndex = slots.firstIndex(where: { $0.id == targetPeriodID }) {
+                slots[periodIndex] = periodAppending(editedText, to: slots[periodIndex])
+            }
+            return DaySnapshot(id: day.id, dateLabel: day.dateLabel, slots: slots, unassigned: unassigned)
+        }
+        await saveWeek(replacingDays(in: current.week, with: days))
+    }
+
+    public func returnScheduledTaskToUnassigned(
+        dayID: String,
+        periodID: String,
+        taskID: String
+    ) async {
+        guard let current = snapshot,
+              let dayIndex = current.week.days.firstIndex(where: { $0.id == dayID }) else { return }
+
+        let day = current.week.days[dayIndex]
+        guard let periodIndex = day.slots.firstIndex(where: { $0.id == periodID }),
+              let task = day.slots[periodIndex].tasks.first(where: { $0.id == taskID }) else { return }
+
+        let days = current.week.days.enumerated().map { index, value -> DaySnapshot in
+            guard index == dayIndex else { return value }
+            var slots = value.slots
+            slots[periodIndex] = periodRemoving(taskID, from: slots[periodIndex])
+            let unassigned = (PeriodTaskParser.tasks(from: value.unassigned).map(\.text) + [task.text])
+                .joined(separator: "\n")
+            return DaySnapshot(id: value.id, dateLabel: value.dateLabel, slots: slots, unassigned: unassigned)
+        }
+        await saveWeek(replacingDays(in: current.week, with: days))
+    }
+
+    private func replacingDays(in plan: WeeklyPlanSnapshot, with days: [DaySnapshot]) -> WeeklyPlanSnapshot {
+        WeeklyPlanSnapshot(
+            days: days,
+            bufferRules: plan.bufferRules,
+            deliveries: plan.deliveries,
+            historicalRows: plan.historicalRows,
+            futureRows: plan.futureRows
+        )
+    }
+
+    private func periodAppending(_ text: String, to period: PeriodSnapshot) -> PeriodSnapshot {
+        let taskTexts = period.tasks.map(\.text) + [text]
+        let updatedTasks = PeriodTaskParser.tasks(from: taskTexts.joined(separator: "\n"))
+        let completionByID = Dictionary(uniqueKeysWithValues: period.tasks.map { ($0.id, $0.isCompleted) })
+        let tasks = updatedTasks.map {
+            PeriodTaskSnapshot(id: $0.id, text: $0.text, isCompleted: completionByID[$0.id] ?? false)
+        }
+        return PeriodSnapshot(id: period.id, title: period.title, text: taskTexts.joined(separator: "\n"), tasks: tasks)
+    }
+
+    private func periodRemoving(_ taskID: String, from period: PeriodSnapshot) -> PeriodSnapshot {
+        let remainingTasks = period.tasks.filter { $0.id != taskID }
+        return PeriodSnapshot(
+            id: period.id,
+            title: period.title,
+            text: remainingTasks.map(\.text).joined(separator: "\n"),
+            tasks: remainingTasks
+        )
+    }
+
     func toggleDelivery(
         _ delivery: DeliverySnapshot,
         isCompleted: Bool,

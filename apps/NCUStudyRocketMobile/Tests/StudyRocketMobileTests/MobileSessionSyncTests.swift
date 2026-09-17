@@ -96,6 +96,22 @@ private final class MobileSyncFixture: @unchecked Sendable {
         case ("GET", "/v1/snapshot"):
             snapshotReads += 1
             return MobileStubResponse(statusCode: 200, data: try encoder.encode(authoritative))
+        case ("POST", "/v1/week"):
+            let value = try JSONDecoder().decode(PlanWriteRequest.self, from: Self.bodyData(for: request))
+            record(path: path, revision: value.metadata.baseRevision)
+            guard value.metadata.baseRevision == authoritative.revision else {
+                return MobileStubResponse(
+                    statusCode: 409,
+                    data: try encoder.encode(APIErrorBody(code: "conflict", message: "revision conflict", retryable: true))
+                )
+            }
+            authoritative = Self.rebuild(
+                authoritative,
+                days: value.plan.days,
+                historicalRows: value.plan.historicalRows,
+                futureRows: value.plan.futureRows
+            )
+            return MobileStubResponse(statusCode: 200, data: try encoder.encode(authoritative))
         case ("POST", "/v1/chat/send"):
             guard chatCompletionAfterHistoryReads != nil else {
                 return MobileStubResponse(statusCode: 404, data: try encoder.encode(APIErrorBody(code: "not_found", message: path)))
@@ -829,6 +845,103 @@ final class MobileSessionSyncTests: XCTestCase {
         )
     }
 
+    func testAssignUnassignedTaskPreservesExactTextAndWritesWeek() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = DaySnapshot(
+            id: "2026-08-19",
+            dateLabel: "8月19日 · 周三",
+            slots: makeSnapshot().week.days[0].slots,
+            unassigned: "14:05 领取 Bar Code"
+        )
+        let target = DaySnapshot(
+            id: "2026-08-20",
+            dateLabel: "8月20日 · 周四",
+            slots: [
+                PeriodSnapshot(id: "morning", title: "上午", text: "晨读"),
+                PeriodSnapshot(id: "noon", title: "中午", text: ""),
+                PeriodSnapshot(id: "evening", title: "晚上", text: ""),
+            ]
+        )
+        let initial = makeSnapshot(days: [source, target])
+        let fixture = MobileSyncFixture(snapshot: initial)
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+
+        await session.assignUnassignedTask(
+            sourceDayID: source.id,
+            taskIndex: 0,
+            text: "14:05 领取 Bar Code",
+            targetDayID: target.id,
+            targetPeriodID: "evening"
+        )
+
+        XCTAssertEqual(fixture.writePaths, ["/v1/week"])
+        XCTAssertTrue(session.snapshot?.week.days[0].unassigned.isEmpty ?? false)
+        XCTAssertEqual(session.snapshot?.week.days[1].slots[2].tasks.map(\.text), ["14:05 领取 Bar Code"])
+    }
+
+    func testReturnScheduledTaskToUnassignedKeepsOtherCompletionState() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let parsedTasks = PeriodTaskParser.tasks(from: "临时事项\n已完成事项")
+        let periods = [
+            PeriodSnapshot(
+                id: "morning",
+                title: "上午",
+                text: "临时事项\n已完成事项",
+                tasks: [
+                    PeriodTaskSnapshot(id: parsedTasks[0].id, text: parsedTasks[0].text),
+                    PeriodTaskSnapshot(id: parsedTasks[1].id, text: parsedTasks[1].text, isCompleted: true)
+                ]
+            ),
+            PeriodSnapshot(id: "noon", title: "中午", text: ""),
+            PeriodSnapshot(id: "evening", title: "晚上", text: ""),
+        ]
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(periods: periods))
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        let task = try XCTUnwrap(session.snapshot?.week.days[0].slots[0].tasks.first)
+
+        await session.returnScheduledTaskToUnassigned(dayID: "2026-08-19", periodID: "morning", taskID: task.id)
+
+        XCTAssertEqual(fixture.writePaths, ["/v1/week"])
+        XCTAssertEqual(session.snapshot?.week.days[0].unassigned, "临时事项")
+        XCTAssertEqual(session.snapshot?.week.days[0].slots[0].tasks.map(\.text), ["已完成事项"])
+        XCTAssertTrue(session.snapshot?.week.days[0].slots[0].tasks[0].isCompleted ?? false)
+    }
+
+    func testOfflineAssignmentCreatesPendingWeekDraftAndReplays() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cached = makeSnapshot(days: [DaySnapshot(
+            id: "2026-08-19",
+            dateLabel: "8月19日 · 周三",
+            slots: makeSnapshot().week.days[0].slots,
+            unassigned: "领取资料"
+        )])
+        try JSONEncoder().encode(cached).write(to: directory.appendingPathComponent("snapshot.json"), options: .atomic)
+        let offline = MobileSession(cacheDirectory: directory)
+
+        await offline.assignUnassignedTask(
+            sourceDayID: "2026-08-19",
+            taskIndex: 0,
+            text: "领取资料",
+            targetDayID: "2026-08-19",
+            targetPeriodID: "noon"
+        )
+        XCTAssertNotNil(offline.pendingWeekDraft)
+
+        let fixture = MobileSyncFixture(snapshot: cached)
+        let online = makeSession(directory: directory, fixture: fixture)
+        await online.refresh()
+        await online.commitPendingDrafts()
+
+        XCTAssertNil(online.pendingWeekDraft)
+        XCTAssertEqual(fixture.writePaths, ["/v1/week"])
+        XCTAssertEqual(online.snapshot?.week.days[0].slots[1].tasks.map(\.text), ["中午任务", "领取资料"])
+    }
+
     private func makeSession(
         directory: URL,
         fixture: MobileSyncFixture,
@@ -911,7 +1024,8 @@ final class MobileSessionSyncTests: XCTestCase {
     private func makeSnapshot(
         completedDeliveryIDs: Set<String> = ["d1", "d2"],
         timetable: TimetableSnapshot? = nil,
-        periods: [PeriodSnapshot]? = nil
+        periods: [PeriodSnapshot]? = nil,
+        days: [DaySnapshot]? = nil
     ) -> SnapshotResponse {
         let periods = periods ?? [
             PeriodSnapshot(id: "morning", title: "上午", text: "上午任务"),
@@ -926,6 +1040,7 @@ final class MobileSessionSyncTests: XCTestCase {
                 dateLabel: "8月\(16 + index)日"
             )
         }
+        let days = days ?? [DaySnapshot(id: "2026-08-19", dateLabel: "8月19日 · 周三", slots: periods)]
         return SnapshotResponse(
             revision: "r0",
             home: HomeSnapshot(
@@ -938,7 +1053,7 @@ final class MobileSessionSyncTests: XCTestCase {
                 timetable: timetable
             ),
             week: WeeklyPlanSnapshot(
-                days: [DaySnapshot(id: "2026-08-19", dateLabel: "8月19日 · 周三", slots: periods)],
+                days: days,
                 bufferRules: [],
                 deliveries: deliveries
             ),

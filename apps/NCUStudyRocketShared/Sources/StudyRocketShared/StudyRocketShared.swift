@@ -622,25 +622,15 @@ public struct DaySnapshot: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-/// Keeps scheduled tasks inside the three completable periods. The
-/// `unassigned` column is reserved for items whose period cannot be inferred;
-/// otherwise those items would be visible only as read-only explanatory text.
+/// Canonicalizes weekly task text while preserving the user's explicit
+/// placement. Items in `unassigned` remain pending until the user assigns a
+/// period from either client.
 public enum WeeklyPlanTaskNormalizer {
     public static func normalized(
         periods: [PeriodSnapshot],
         unassigned: String
     ) -> (periods: [PeriodSnapshot], unassigned: String) {
-        var taskTexts = periods.map { PeriodTaskParser.tasks(from: $0.text).map(\.text) }
-        var unresolved: [String] = []
-
-        for task in PeriodTaskParser.tasks(from: unassigned) {
-            guard let periodID = periodID(for: task.text),
-                  let index = periods.firstIndex(where: { $0.id == periodID }) else {
-                unresolved.append(task.text)
-                continue
-            }
-            taskTexts[index].append(task.text)
-        }
+        let taskTexts = periods.map { PeriodTaskParser.tasks(from: $0.text).map(\.text) }
 
         let resolvedPeriods = periods.enumerated().map { index, period in
             var completionByID: [String: Bool] = [:]
@@ -663,7 +653,8 @@ public enum WeeklyPlanTaskNormalizer {
             )
         }
 
-        return (resolvedPeriods, unresolved.joined(separator: "\n"))
+        let unresolved = PeriodTaskParser.tasks(from: unassigned).map(\.text).joined(separator: "\n")
+        return (resolvedPeriods, unresolved)
     }
 
     public static func normalized(_ plan: WeeklyPlanSnapshot) -> WeeklyPlanSnapshot {
@@ -732,40 +723,6 @@ public enum WeeklyPlanTaskNormalizer {
             lines[index] = renderTableRow(cells)
         }
         return lines.joined(separator: "\n")
-    }
-
-    private static let leadingTime = try! NSRegularExpression(
-        pattern: #"^\s*(?:(清晨|早上|上午|中午|下午|傍晚|晚上|晚间)\s*)?([0-2]?\d)\s*(?:[:：]\s*([0-5]?\d)|点(?:\s*([0-5]?\d)\s*分?)?)"#
-    )
-
-    private static func periodID(for text: String) -> String? {
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        guard let match = leadingTime.firstMatch(in: text, range: range),
-              let hourText = capture(match, group: 2, in: text),
-              var hour = Int(hourText), (0...23).contains(hour) else { return nil }
-
-        switch capture(match, group: 1, in: text) {
-        case "下午", "傍晚", "晚上", "晚间":
-            if hour < 12 { hour += 12 }
-        case "中午":
-            if (1..<11).contains(hour) { hour += 12 }
-        case "清晨", "早上", "上午":
-            if hour == 12 { hour = 0 }
-        default:
-            break
-        }
-
-        switch hour {
-        case 0..<12: return "morning"
-        case 12..<18: return "noon"
-        default: return "evening"
-        }
-    }
-
-    private static func capture(_ match: NSTextCheckingResult, group: Int, in text: String) -> String? {
-        let range = match.range(at: group)
-        guard range.location != NSNotFound, let swiftRange = Range(range, in: text) else { return nil }
-        return String(text[swiftRange])
     }
 
     private static func isMarker(_ line: String, _ marker: String) -> Bool {
