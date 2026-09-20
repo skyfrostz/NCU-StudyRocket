@@ -4,13 +4,19 @@ import StudyRocketShared
 
 final class HostProposalStore: @unchecked Sendable {
     private let root: URL
+    private let backupRoot: URL
     private let lock = NSLock()
     private let mutationLock = NSLock()
     private var values: [String: ProposalDTO] = [:]
     private var appliedReplays: [String: ProposalListResponse] = [:]
     private let skillNames = Set(["daily-checkin", "knowledge-ingest", "ncu-planner", "node-countdown", "retro-monthly", "retro-weekly", "term-roadmap", "weekly-reslot"])
 
-    init(root: URL) { self.root = root.standardizedFileURL }
+    init(root: URL, backupRoot: URL? = nil) {
+        self.root = root.standardizedFileURL
+        self.backupRoot = backupRoot?.standardizedFileURL
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/NCU StudyRocket/Backups", isDirectory: true)
+    }
 
     func list() -> ProposalListResponse {
         lock.lock(); defer { lock.unlock() }
@@ -65,7 +71,6 @@ final class HostProposalStore: @unchecked Sendable {
             }
             originals.append((proposal, currentData))
         }
-        let backupRoot = fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/NCU StudyRocket/Backups", isDirectory: true)
         try fileManager.createDirectory(at: backupRoot, withIntermediateDirectories: true)
         for (proposal, data) in originals {
             let backup = backupRoot.appendingPathComponent(proposal.relativePath.replacingOccurrences(of: "/", with: "_") + ".\(Int(Date().timeIntervalSince1970)).bak")

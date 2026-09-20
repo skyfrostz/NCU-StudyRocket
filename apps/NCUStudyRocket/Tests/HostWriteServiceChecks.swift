@@ -151,6 +151,7 @@ struct HostWriteServiceChecks {
         try require((try String(contentsOf: planFile, encoding: .utf8)).contains("此段不属于移动端管理范围。"), "period writes changed unmanaged Markdown")
 
         try testInvalidDailyDateCannotEscapeWorkspace()
+        try testDailyWriteRoundTrip()
         try testDeliveryToggleStaysInsideManagedSection()
         try testDeliveryPeriodLinkingAndSources()
         try testIndependentPeriodTasksAndLegacyCompatibility()
@@ -177,6 +178,33 @@ struct HostWriteServiceChecks {
         try requireHostError("invalid_date") { _ = try HostWriteService(root: root).applyDaily(request) }
         try require(try Data(contentsOf: planFile) == original, "invalid daily date changed the weekly plan")
         try require(!FileManager.default.fileExists(atPath: root.appendingPathComponent("下周计划.md").path), "invalid daily date escaped the managed directory")
+    }
+
+    private static func testDailyWriteRoundTrip() throws {
+        let root = try makeWorkspace(source: validSource())
+        defer { try? FileManager.default.removeItem(at: root) }
+        let initial = HostSnapshotBuilder(root: root).build()
+        guard let dayID = initial.week.days.first?.id else {
+            throw NSError(domain: "HostWriteServiceChecks", code: 1, userInfo: [NSLocalizedDescriptionKey: "daily fixture is missing its current date"])
+        }
+        let entry = DailySnapshot(
+            date: dayID,
+            deliverables: "每日写入交付物",
+            studyTime: "90 分钟",
+            sleep: "23:30-07:00",
+            exercise: "步行 20 分钟",
+            firstTask: "每日写入后的第一任务"
+        )
+        let written = try HostWriteService(root: root).applyDaily(DailyWriteRequest(
+            entry: entry,
+            metadata: WriteMetadata(baseRevision: initial.revision, idempotencyKey: "daily-round-trip")
+        ))
+        try require(written.daily == entry, "daily write did not round-trip through the Host snapshot")
+        let file = root.appendingPathComponent("工作台/每日记录/\(dayID.prefix(7)).md")
+        let source = try String(contentsOf: file, encoding: .utf8)
+        try require(source.contains("今日完成的具体交付物：每日写入交付物"), "daily write omitted deliverables")
+        try require(source.contains("入睡/起床：23:30-07:00"), "daily write omitted sleep")
+        try require(HostSnapshotBuilder(root: root).build().daily == entry, "daily file did not remain readable after a fresh snapshot")
     }
 
     private static func testDeliveryToggleStaysInsideManagedSection() throws {

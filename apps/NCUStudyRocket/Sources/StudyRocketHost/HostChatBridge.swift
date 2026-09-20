@@ -59,7 +59,7 @@ private enum HostCodexSessionExit {
 private final class HostCodexSession {
     private let executable = "/Applications/ChatGPT.app/Contents/Resources/codex"
     private let root: URL
-    private let descriptorStore = StudyRocketTaskDescriptorStore()
+    private let descriptorStore: StudyRocketTaskDescriptorStore
     private var threadID: String
     private var migratedHistory: [ChatMessageDTO] = []
     private var process: Process?
@@ -83,8 +83,13 @@ private final class HostCodexSession {
     var onItemCompleted: ((String, String, String, String?) -> Void)?
     var onTurnStatus: ((String, String, String?, String?, Date?) -> Void)?
 
-    init(root: URL, threadID: String = StudyRocketThreadProtocol.legacyHostThreadID) {
+    init(
+        root: URL,
+        descriptorStore: StudyRocketTaskDescriptorStore = StudyRocketTaskDescriptorStore(),
+        threadID: String = StudyRocketThreadProtocol.legacyHostThreadID
+    ) {
         self.root = root.standardizedFileURL
+        self.descriptorStore = descriptorStore
         self.threadID = threadID
     }
 
@@ -512,6 +517,8 @@ private final class HostCodexSession {
 
 final class HostChatBridge: @unchecked Sendable {
     private let root: URL
+    private let descriptorStore: StudyRocketTaskDescriptorStore
+    private let disablesCodex: Bool
     private let cache = HostChatCache()
     private let readinessLock = NSLock()
     private let requestLock = NSLock()
@@ -534,16 +541,26 @@ final class HostChatBridge: @unchecked Sendable {
         return _chatIssueCode
     }
     var canGenerateChat: Bool {
-        chatState.canGenerate
+        !disablesCodex && chatState.canGenerate
     }
     var currentThreadID: String? {
         readinessLock.lock(); defer { readinessLock.unlock() }
         return _activeThreadID
     }
 
-    init(root: URL) {
+    init(
+        root: URL,
+        descriptorStore: StudyRocketTaskDescriptorStore = StudyRocketTaskDescriptorStore(),
+        proposalBackupRoot: URL? = nil,
+        disablesCodex: Bool = false
+    ) {
         self.root = root.standardizedFileURL
-        proposalStore = HostProposalStore(root: root.standardizedFileURL)
+        self.descriptorStore = descriptorStore
+        self.disablesCodex = disablesCodex
+        proposalStore = HostProposalStore(root: root.standardizedFileURL, backupRoot: proposalBackupRoot)
+        if disablesCodex {
+            setChatState(.unavailable, issueCode: "self_check_no_codex")
+        }
     }
 
     func history() -> ChatHistoryResponse {
@@ -554,6 +571,9 @@ final class HostChatBridge: @unchecked Sendable {
     /// This makes a malformed dynamic-tool declaration fail at Host startup rather
     /// than surfacing later as a `namespace: null` tool error on the phone.
     func selfCheck() async throws {
+        guard !disablesCodex else {
+            throw HostChatError.unavailable("隔离自检已禁用 Codex；计划和同步接口仍可验证。")
+        }
         setChatState(.starting)
         guard StudyRocketDynamicToolContract.declarationIsValid else {
             throw HostChatError.protocolError("StudyRocket 草案工具声明校验失败。")
@@ -675,7 +695,10 @@ final class HostChatBridge: @unchecked Sendable {
     }
 
     func connectHistory() async throws -> ChatHistoryResponse {
-        try await withCheckedThrowingContinuation { continuation in
+        guard !disablesCodex else {
+            throw HostChatError.unavailable("隔离自检未启动 Codex 对话。")
+        }
+        return try await withCheckedThrowingContinuation { continuation in
             Task { @MainActor [weak self] in
                 guard let self else {
                     continuation.resume(throwing: HostChatError.unavailable("Host 会话不可用。"))
@@ -710,8 +733,9 @@ final class HostChatBridge: @unchecked Sendable {
 
     @MainActor
     private func ensureSession() {
+        guard !disablesCodex else { return }
         guard session == nil else { return }
-        let value = HostCodexSession(root: root)
+        let value = HostCodexSession(root: root, descriptorStore: descriptorStore)
         value.onProcessExit = { [weak self] exit in
             guard let self else { return }
             switch exit {

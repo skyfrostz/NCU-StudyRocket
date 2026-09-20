@@ -20,7 +20,7 @@ enum StudyRocketHostApp {
         let application = NSApplication.shared
         let delegate = HostApplicationDelegate()
         application.delegate = delegate
-        application.setActivationPolicy(.regular)
+        application.setActivationPolicy(StudyRocketSelfCheckConfiguration.current == nil ? .regular : .accessory)
         withExtendedLifetime(delegate) {
             application.run()
         }
@@ -34,14 +34,18 @@ private final class HostApplicationDelegate: NSObject, NSApplicationDelegate, NS
     private var dashboardWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let isolatedSelfCheck = StudyRocketSelfCheckConfiguration.current != nil
+        if !isolatedSelfCheck {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "StudyRocket Host")
         item.button?.toolTip = "StudyRocket 手机连接"
         statusItem = item
         rebuildMenu()
         showDashboard(nil)
+        }
         let shouldAutostart = ProcessInfo.processInfo.environment["STUDYROCKET_HOST_AUTOSTART"] == "1"
             || CommandLine.arguments.contains("--autostart")
+            || isolatedSelfCheck
         NSLog("StudyRocket Host launched (autostart=%@)", shouldAutostart ? "yes" : "no")
         if shouldAutostart {
             host.start()
@@ -231,10 +235,12 @@ final class HostController: ObservableObject {
     @Published private(set) var tailscaleStatus = TailscaleStatus.unavailable
     @Published private(set) var chatStatus = "未连接"
     @Published private(set) var chatBusy = false
+    private let selfCheck = StudyRocketSelfCheckConfiguration.current
     private var server: StudyRocketHTTPServer?
     private var startupDeadline: DispatchWorkItem?
     private var terminationSources: [DispatchSourceSignal] = []
     private var rootURL: URL {
+        if let selfCheck { return selfCheck.repositoryRoot }
         let path = UserDefaults.standard.string(forKey: "workspaceRoot") ?? "/Users/skyfrost/Desktop/大学"
         return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
     }
@@ -260,7 +266,11 @@ final class HostController: ObservableObject {
         errorMessage = nil
         chatStatus = "正在自检"
         do {
-            let server = try StudyRocketHTTPServer(port: StudyRocketAPI.defaultHostPort, root: rootURL)
+            let server = try StudyRocketHTTPServer(
+                port: selfCheck?.port ?? StudyRocketAPI.defaultHostPort,
+                root: rootURL,
+                selfCheck: selfCheck
+            )
             server.onChatEvent = { [weak self] event in
                 Task { @MainActor in self?.receiveChatEvent(event) }
             }
@@ -474,8 +484,9 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.skyfrost.ncustudyrocket.host", qos: .utility)
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
-    private let pairing = HostPairingStore()
-    private let localSession = HostLocalSessionStore()
+    private let selfCheck: StudyRocketSelfCheckConfiguration?
+    private let pairing: HostPairingStore
+    private let localSession: HostLocalSessionStore
     private let localSessionToken: String
     private let codexLeaseStore: CodexLeaseStore
     private let codexLeaseLock = NSLock()
@@ -491,18 +502,37 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
     private var selfCheckTask: Task<Void, Never>?
     var onChatEvent: ((String) -> Void)?
 
-    init(port: UInt16, root: URL) throws {
+    init(port: UInt16, root: URL, selfCheck: StudyRocketSelfCheckConfiguration? = StudyRocketSelfCheckConfiguration.current) throws {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!)
         listener = try NWListener(using: parameters)
         self.root = root.standardizedFileURL
-        codexLeaseStore = CodexLeaseStore()
-        localSessionToken = try localSession.issue()
+        self.selfCheck = selfCheck
+        if let selfCheck {
+            try FileManager.default.createDirectory(at: selfCheck.stateDirectory, withIntermediateDirectories: true)
+        }
+        pairing = HostPairingStore(
+            service: selfCheck?.pairingKeychainService ?? "com.skyfrost.ncustudyrocket.host",
+            account: selfCheck?.pairingKeychainAccount ?? "paired-devices"
+        )
+        let sessionStore = HostLocalSessionStore(url: selfCheck?.localSessionURL)
+        localSession = sessionStore
+        localSessionToken = try sessionStore.issue()
+        codexLeaseStore = CodexLeaseStore(url: selfCheck?.codexLeaseURL)
         let builder = HostSnapshotBuilder(root: root.standardizedFileURL)
         snapshotBuilder = builder
         eventHub = StudyRocketEventHub(snapshotProvider: { builder.build() })
-        writeService = HostWriteService(root: root.standardizedFileURL)
-        chatBridge = HostChatBridge(root: root.standardizedFileURL)
+        writeService = HostWriteService(
+            root: root.standardizedFileURL,
+            backupRoot: selfCheck?.backupDirectory
+        )
+        let descriptorStore = StudyRocketTaskDescriptorStore(directory: selfCheck?.taskDescriptorDirectory)
+        chatBridge = HostChatBridge(
+            root: root.standardizedFileURL,
+            descriptorStore: descriptorStore,
+            proposalBackupRoot: selfCheck?.proposalBackupDirectory,
+            disablesCodex: selfCheck?.disablesCodex ?? false
+        )
         chatBridge.onEvent = { [weak self] event in
             guard let self else { return }
             eventHub.publish(event: event, snapshot: snapshotBuilder.build())
@@ -525,6 +555,10 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
         }
         listener.start(queue: queue)
         selfCheckTask?.cancel()
+        if selfCheck?.disablesCodex == true {
+            onReady(false, "隔离自检已禁用 Codex；计划、写入和同步接口可继续验证。")
+            return
+        }
         selfCheckTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -564,7 +598,9 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
     }
 
     func generatePairingCode() -> String {
-        pairing.generateCode()
+        let code = pairing.generateCode()
+        recordPairingCode(code)
+        return code
     }
 
     func devices() -> [PairedDeviceRecord] { pairing.list() }
@@ -671,7 +707,9 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
         let status: String
         if method == "GET", path == "/v1/health" {
             let bound = FileManager.default.fileExists(atPath: root.appendingPathComponent("AGENTS.md").path) && FileManager.default.fileExists(atPath: root.appendingPathComponent("PROFILE.md").path)
-            let codexReady = FileManager.default.isExecutableFile(atPath: "/Applications/ChatGPT.app/Contents/Resources/codex")
+            let codexReady = selfCheck?.disablesCodex == true
+                ? false
+                : FileManager.default.isExecutableFile(atPath: "/Applications/ChatGPT.app/Contents/Resources/codex")
             let chatState = chatBridge.chatState
             let toolsReady = chatBridge.canGenerateChat && StudyRocketDynamicToolContract.declarationIsValid
             if isAuthorized(headers: headers, method: method, path: path, body: body) {
@@ -957,6 +995,20 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
             .first { $0.lowercased().hasPrefix(name.lowercased() + ":") }?
             .split(separator: ":", maxSplits: 1).last?
             .trimmingCharacters(in: .whitespaces)
+    }
+
+    private func recordPairingCode(_ code: String) {
+        guard let selfCheck else { return }
+        do {
+            try FileManager.default.createDirectory(at: selfCheck.stateDirectory, withIntermediateDirectories: true)
+            try Data(code.utf8).write(to: selfCheck.pairingCodeURL, options: .atomic)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o600))],
+                ofItemAtPath: selfCheck.pairingCodeURL.path
+            )
+        } catch {
+            NSLog("StudyRocket Host could not record isolated pairing code: %@", error.localizedDescription)
+        }
     }
 }
 

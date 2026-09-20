@@ -1,10 +1,26 @@
 import Foundation
 import XCTest
 @testable import StudyRocketMobile
-import StudyRocketWidgetSupport
+@testable import StudyRocketWidgetSupport
 import StudyRocketShared
 
 final class MobileWidgetSnapshotTests: XCTestCase {
+    func testWidgetConfigurationUsesSelfCheckValuesFromItsBundle() {
+        let info: [String: Any] = [
+            "StudyRocketAppGroupIdentifier": "group.com.skyfrost.ncustudyrocket.selfcheck",
+            "StudyRocketURLScheme": "ncustudyrocket-selfcheck"
+        ]
+
+        XCTAssertEqual(
+            StudyRocketWidgetConfiguration.appGroupIdentifier(in: info),
+            "group.com.skyfrost.ncustudyrocket.selfcheck"
+        )
+        XCTAssertEqual(
+            StudyRocketWidgetConfiguration.urlScheme(in: info),
+            "ncustudyrocket-selfcheck"
+        )
+    }
+
     func testProjectionKeepsOnlyAssignedTodayTasksAndOpenDelivery() {
         let fetchedAt = Date(timeIntervalSince1970: 1_789_281_000)
         let source = SnapshotResponse(

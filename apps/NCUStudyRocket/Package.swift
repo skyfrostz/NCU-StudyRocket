@@ -55,6 +55,13 @@ let package = Package(
             name: "TimetableImportChecks",
             dependencies: ["StudyRocketTimetableImport"],
             path: "Tests/TimetableImportChecks"
+        ),
+        .executableTarget(
+            name: "StudyRocketSelfCheckHTTPChecks",
+            dependencies: [
+                .product(name: "StudyRocketShared", package: "NCUStudyRocketShared")
+            ],
+            path: "Tests/StudyRocketSelfCheckHTTPChecks"
         )
     ]
 )

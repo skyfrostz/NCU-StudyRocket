@@ -98,7 +98,7 @@ private struct StudyRocketWidgetView: View {
             }
         }
         .privacySensitive()
-        .widgetURL(URL(string: "ncustudyrocket://home"))
+        .widgetURL(URL(string: "\(StudyRocketWidgetConfiguration.urlScheme)://home"))
         .containerBackground(for: .widget) {
             Color(uiColor: .systemBackground)
         }

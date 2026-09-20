@@ -5,8 +5,32 @@ import Foundation
 /// never leave the main app's private container.
 public enum StudyRocketWidgetConfiguration {
     public static let kind = "NCUStudyRocketWidget"
-    public static let appGroupIdentifier = "group.com.skyfrost.ncustudyrocket"
+    public static let appGroupIdentifier = appGroupIdentifier(in: Bundle.main.infoDictionary ?? [:])
+    public static let urlScheme = urlScheme(in: Bundle.main.infoDictionary ?? [:])
     fileprivate static let snapshotKey = "studyrocket.widget.snapshot.v1"
+
+    static func appGroupIdentifier(in infoDictionary: [String: Any]) -> String {
+        configuredValue(
+            in: infoDictionary,
+            key: "StudyRocketAppGroupIdentifier",
+            fallback: "group.com.skyfrost.ncustudyrocket"
+        )
+    }
+
+    static func urlScheme(in infoDictionary: [String: Any]) -> String {
+        configuredValue(
+            in: infoDictionary,
+            key: "StudyRocketURLScheme",
+            fallback: "ncustudyrocket"
+        )
+    }
+
+    private static func configuredValue(in infoDictionary: [String: Any], key: String, fallback: String) -> String {
+        guard let rawValue = infoDictionary[key] as? String else { return fallback }
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !value.hasPrefix("$(") else { return fallback }
+        return value
+    }
 }
 
 public struct StudyRocketWidgetPeriod: Codable, Equatable, Sendable, Identifiable {

@@ -12,6 +12,11 @@ let challenge = UUID().uuidString
 let authorizationSignature = try RequestSigning.signAuthorization(privateKey: privateKey, challenge: challenge)
 precondition(RequestSigning.verifyAuthorization(publicKeyData: privateKey.publicKey.rawRepresentation, signatureBase64: authorizationSignature, challenge: challenge))
 precondition(!RequestSigning.verifyAuthorization(publicKeyData: privateKey.publicKey.rawRepresentation, signatureBase64: authorizationSignature, challenge: UUID().uuidString))
+precondition(StudyRocketSelfCheckConfiguration.isolatedPort(from: ["--studyrocket-self-check"]) == 43818)
+precondition(StudyRocketSelfCheckConfiguration.isolatedPort(from: ["--studyrocket-self-check", "--self-check-port", "44000"]) == 44000)
+precondition(StudyRocketSelfCheckConfiguration.isolatedPort(from: ["--studyrocket-self-check", "--self-check-port", "43817"]) == nil)
+precondition(StudyRocketSelfCheckConfiguration.isolatedPort(from: ["--studyrocket-self-check", "--self-check-port", "1023"]) == nil)
+precondition(StudyRocketSelfCheckConfiguration.isolatedPort(from: ["--studyrocket-self-check", "--self-check-port", "43818", "--self-check-port", "44000"]) == nil)
 
 let request = SendChatRequest(text: "测试")
 let encoded = try JSONEncoder().encode(request)

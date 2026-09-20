@@ -12,14 +12,22 @@ final class HostWriteService {
     private let root: URL
     private let snapshotBuilder: HostSnapshotBuilder
     private let fileManager = FileManager.default
+    private let backupRoot: URL
     private var calendar: Calendar
     private let writeLock = NSLock()
     private let replayLock = NSLock()
     private var replayed: [String: SnapshotResponse] = [:]
 
-    init(root: URL) {
+    init(
+        root: URL,
+        backupRoot: URL? = StudyRocketSelfCheckConfiguration.current?.backupDirectory
+    ) {
         self.root = root.standardizedFileURL
         snapshotBuilder = HostSnapshotBuilder(root: root.standardizedFileURL)
+        self.backupRoot = (backupRoot
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/NCU StudyRocket/Backups", isDirectory: true)
+        ).standardizedFileURL
         var calendar = Calendar(identifier: .gregorian)
         calendar.locale = Locale(identifier: "zh_CN")
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
@@ -683,7 +691,6 @@ final class HostWriteService {
         guard resolvedURL.path.hasPrefix(resolvedRoot.path + "/"), !isSymlink(url) else { throw HostWriteError(code: "path_denied", message: "目标文件不在仓库允许范围内。") }
         let current = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         guard hash(current) == expectedHash else { throw HostWriteError(code: "conflict", message: "文件已被其他程序修改，请重新加载。") }
-        let backupRoot = fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/NCU StudyRocket/Backups", isDirectory: true)
         try fileManager.createDirectory(at: backupRoot, withIntermediateDirectories: true)
         if let oldData = current.data(using: .utf8) {
             let backup = backupRoot.appendingPathComponent(relative.replacingOccurrences(of: "/", with: "_") + ".\(Int(Date().timeIntervalSince1970)).bak")

@@ -309,6 +309,67 @@ final class MobileSessionSyncTests: XCTestCase {
         XCTAssertTrue(MobileEndpointError.accepts(URL(string: "http://localhost:43817/")!, allowSimulatorLoopbackHTTP: true))
         XCTAssertFalse(MobileEndpointError.accepts(URL(string: "http://127.0.0.1:43817/")!, allowSimulatorLoopbackHTTP: true))
         XCTAssertFalse(MobileEndpointError.accepts(URL(string: "http://localhost:43818/")!, allowSimulatorLoopbackHTTP: true))
+        XCTAssertTrue(MobileEndpointError.accepts(
+            URL(string: "http://localhost:43818/")!,
+            allowSimulatorLoopbackHTTP: false,
+            selfCheckSimulatorLoopbackPort: 43818
+        ))
+        XCTAssertTrue(MobileEndpointError.accepts(
+            URL(string: "http://localhost:44000/")!,
+            allowSimulatorLoopbackHTTP: false,
+            selfCheckSimulatorLoopbackPort: 44000
+        ))
+        XCTAssertFalse(MobileEndpointError.accepts(
+            URL(string: "http://localhost:43817/")!,
+            allowSimulatorLoopbackHTTP: false,
+            selfCheckSimulatorLoopbackPort: 43818
+        ))
+        XCTAssertFalse(MobileEndpointError.accepts(
+            URL(string: "http://127.0.0.1:43818/")!,
+            allowSimulatorLoopbackHTTP: false,
+            selfCheckSimulatorLoopbackPort: 43818
+        ))
+    }
+
+    func testSelfCheckLoopbackPortRequiresExplicitIsolatedSimulatorConfiguration() {
+        XCTAssertEqual(
+            MobileEndpointError.selfCheckLoopbackPort(
+                arguments: ["--studyrocket-self-check", "--self-check-port", "43818"],
+                isSelfCheckRuntime: true
+            ),
+            43818
+        )
+        XCTAssertEqual(
+            MobileEndpointError.selfCheckLoopbackPort(
+                arguments: ["--studyrocket-self-check", "--self-check-port", "44000"],
+                isSelfCheckRuntime: true
+            ),
+            44000
+        )
+        XCTAssertNil(MobileEndpointError.selfCheckLoopbackPort(
+            arguments: ["--studyrocket-self-check", "--self-check-port", "43818"],
+            isSelfCheckRuntime: false
+        ))
+        XCTAssertNil(MobileEndpointError.selfCheckLoopbackPort(
+            arguments: ["--self-check-port", "43818"],
+            isSelfCheckRuntime: true
+        ))
+        XCTAssertNil(MobileEndpointError.selfCheckLoopbackPort(
+            arguments: ["--studyrocket-self-check", "--self-check-port", "43817"],
+            isSelfCheckRuntime: true
+        ))
+        XCTAssertNil(MobileEndpointError.selfCheckLoopbackPort(
+            arguments: ["--studyrocket-self-check", "--self-check-port", "0"],
+            isSelfCheckRuntime: true
+        ))
+        XCTAssertNil(MobileEndpointError.selfCheckLoopbackPort(
+            arguments: ["--studyrocket-self-check", "--self-check-port", "1"],
+            isSelfCheckRuntime: true
+        ))
+        XCTAssertNil(MobileEndpointError.selfCheckLoopbackPort(
+            arguments: ["--studyrocket-self-check", "--self-check-port", "43818", "--self-check-port", "44000"],
+            isSelfCheckRuntime: true
+        ))
     }
 
     override func tearDown() {

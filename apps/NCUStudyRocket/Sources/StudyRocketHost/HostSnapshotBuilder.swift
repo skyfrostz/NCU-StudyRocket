@@ -328,7 +328,14 @@ final class HostSnapshotBuilder {
             }
             return ""
         }
-        return DailySnapshot(date: isoDate(now), deliverables: field(["完成交付物"]), studyTime: field(["净学习时长"]), sleep: field(["睡眠"]), exercise: field(["运动"]), firstTask: field(["明日第一任务"]))
+        return DailySnapshot(
+            date: isoDate(now),
+            deliverables: field(["今日完成的具体交付物", "完成交付物"]),
+            studyTime: field(["净学习时长"]),
+            sleep: field(["入睡/起床", "睡眠"]),
+            exercise: field(["运动"]),
+            firstTask: field(["明日第一任务"])
+        )
     }
 
     /// The mobile client only sees logical document keys.  Keeping the path

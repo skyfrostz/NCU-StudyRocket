@@ -5,9 +5,9 @@ final class HostLocalSessionStore {
     private let fileManager: FileManager
     private let url: URL
 
-    init(fileManager: FileManager = .default) {
+    init(fileManager: FileManager = .default, url: URL? = nil) {
         self.fileManager = fileManager
-        url = StudyRocketLocalSession.tokenURL(fileManager: fileManager)
+        self.url = url ?? StudyRocketLocalSession.tokenURL(fileManager: fileManager)
     }
 
     func issue() throws -> String {

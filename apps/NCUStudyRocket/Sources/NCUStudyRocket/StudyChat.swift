@@ -141,6 +141,7 @@ enum StudyChatError: LocalizedError {
 @MainActor
 final class CodexAppServerClient: NSObject {
     private let executable = "/Applications/ChatGPT.app/Contents/Resources/codex"
+    private let codexLeaseStore: CodexLeaseStore
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
@@ -173,6 +174,11 @@ final class CodexAppServerClient: NSObject {
     var isRunning: Bool { process?.isRunning == true }
     var threadID: String? { currentThreadID }
 
+    init(codexLeaseStore: CodexLeaseStore = CodexLeaseStore()) {
+        self.codexLeaseStore = codexLeaseStore
+        super.init()
+    }
+
     func connect(root: URL, threadID: String?, legacyThreadID: String? = nil) async throws -> String {
         if isRunning, self.rootURL?.standardizedFileURL == root.standardizedFileURL, currentThreadID == threadID, threadID != nil {
             return threadID!
@@ -191,7 +197,7 @@ final class CodexAppServerClient: NSObject {
         process.environment = StudyRocketCodexErrorPresentation.childProcessEnvironment()
         let stdin = Pipe(); let stdout = Pipe(); let stderr = Pipe()
         process.standardInput = stdin; process.standardOutput = stdout; process.standardError = stderr
-        let lease = try CodexLeaseStore().acquire(owner: "NCU StudyRocket")
+        let lease = try codexLeaseStore.acquire(owner: "NCU StudyRocket")
         process.terminationHandler = { [weak self] process in
             Task { @MainActor in self?.processEnded(process, generation: generation, message: process.terminationReason == .uncaughtSignal ? "Codex 子进程异常退出。" : "Codex 子进程已退出。") }
         }
@@ -543,9 +549,10 @@ final class StudyChatStore: ObservableObject {
     @Published var isBusy = false
     @Published var lastSubmitted: String?
     @Published private(set) var threadID: String?
-    private let client = CodexAppServerClient()
-    private let hostClient = StudyRocketHostClient()
-    private let taskDescriptorStore = StudyRocketTaskDescriptorStore()
+    private let selfCheckConfiguration: StudyRocketSelfCheckConfiguration?
+    private let client: CodexAppServerClient
+    private let hostClient: StudyRocketHostClient
+    private let taskDescriptorStore: StudyRocketTaskDescriptorStore
     private var root: URL?
     private var usingHost = false
     private var hostProposalIDs: [UUID: String] = [:]
@@ -573,7 +580,11 @@ final class StudyChatStore: ObservableObject {
     private func threadProtocolKey(for root: URL) -> String { "\(threadKey(for: root)).protocolVersion" }
     private func legacyThreadKey(for root: URL) -> String { "\(threadKey(for: root)).legacyThreadID" }
 
-    init() {
+    init(configuration: StudyRocketSelfCheckConfiguration? = StudyRocketSelfCheckConfiguration.current) {
+        selfCheckConfiguration = configuration
+        client = CodexAppServerClient(codexLeaseStore: CodexLeaseStore(url: configuration?.codexLeaseURL))
+        hostClient = StudyRocketHostClient(configuration: configuration)
+        taskDescriptorStore = StudyRocketTaskDescriptorStore(directory: configuration?.taskDescriptorDirectory)
         client.onTurnStarted = { [weak self] turnID, startedAt in
             guard let self else { return }
             self.assignPendingSubmission(to: turnID, startedAt: startedAt)
@@ -803,8 +814,8 @@ final class StudyChatStore: ObservableObject {
         pendingUnknownMessages.removeAll(); errorMessage = nil; setState(.connecting)
         let key = threadKey(for: root)
         let descriptor = forceCreate ? nil : taskDescriptorStore.load(for: root)
-        let stored = forceCreate ? nil : UserDefaults.standard.string(forKey: key)
-        let legacyStored = forceCreate ? nil : UserDefaults.standard.string(forKey: legacyThreadKey(for: root))
+        let stored = forceCreate || selfCheckConfiguration != nil ? nil : UserDefaults.standard.string(forKey: key)
+        let legacyStored = forceCreate || selfCheckConfiguration != nil ? nil : UserDefaults.standard.string(forKey: legacyThreadKey(for: root))
         let active = descriptor?.protocolVersion == StudyRocketThreadProtocol.currentVersion ? descriptor?.threadID : nil
         let legacy = active == nil ? (descriptor?.threadID ?? stored ?? legacyStored) : nil
         threadID = active
@@ -814,6 +825,14 @@ final class StudyChatStore: ObservableObject {
             return
         }
 #endif
+
+        if selfCheckConfiguration?.disablesCodex == true {
+            let message = "隔离自检未启动 Codex 对话；请在正式运行验收中单独完成只读真实对话。"
+            setState(.failed)
+            errorMessage = message
+            transcript.setLoadState(.failed(message))
+            return
+        }
 
         // When the optional Host is running, make it the single Codex owner.
         // If it is absent or cannot resume the fixed task, retain the original
@@ -842,9 +861,11 @@ final class StudyChatStore: ObservableObject {
             guard generation == connectionGeneration else { return }
             threadID = id
             if active != id { try? taskDescriptorStore.save(StudyRocketTaskDescriptor(threadID: id), for: root) }
-            UserDefaults.standard.set(id, forKey: key)
-            UserDefaults.standard.set(StudyRocketThreadProtocol.currentVersion, forKey: threadProtocolKey(for: root))
-            if let legacy { UserDefaults.standard.set(legacy, forKey: legacyThreadKey(for: root)) }
+            if selfCheckConfiguration == nil {
+                UserDefaults.standard.set(id, forKey: key)
+                UserDefaults.standard.set(StudyRocketThreadProtocol.currentVersion, forKey: threadProtocolKey(for: root))
+                if let legacy { UserDefaults.standard.set(legacy, forKey: legacyThreadKey(for: root)) }
+            }
             setState(.connected)
             if let pendingPrompt { draft = pendingPrompt; self.pendingPrompt = nil }
         } catch {
@@ -871,9 +892,11 @@ final class StudyChatStore: ObservableObject {
             errorMessage = "请先在 StudyRocket Host 中停止手机连接，再创建新的学业任务。"
             return
         }
-        UserDefaults.standard.removeObject(forKey: threadKey(for: root))
-        UserDefaults.standard.removeObject(forKey: legacyThreadKey(for: root))
-        UserDefaults.standard.set(StudyRocketThreadProtocol.currentVersion, forKey: threadProtocolKey(for: root))
+        if selfCheckConfiguration == nil {
+            UserDefaults.standard.removeObject(forKey: threadKey(for: root))
+            UserDefaults.standard.removeObject(forKey: legacyThreadKey(for: root))
+            UserDefaults.standard.set(StudyRocketThreadProtocol.currentVersion, forKey: threadProtocolKey(for: root))
+        }
         taskDescriptorStore.remove(for: root)
         client.disconnect(); threadID = nil
         await connectInternal(to: root, forceCreate: true)

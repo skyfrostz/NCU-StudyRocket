@@ -2014,6 +2014,9 @@ public enum MobileEndpointError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .invalidEndpoint:
+            if let selfCheckPort = Self.selfCheckSimulatorLoopbackHTTPPort {
+                return "Host 地址必须是无账号、查询参数和子路径的完整 HTTPS 地址；本机模拟器调试可使用 http://localhost:43817，SelfCheck 运行可使用 http://localhost:\(selfCheckPort)。"
+            }
             if Self.simulatorLoopbackHTTPEnabled {
                 return "Host 地址必须是无账号、查询参数和子路径的完整 HTTPS 地址；仅本机模拟器调试可使用 http://localhost:43817。"
             }
@@ -2037,7 +2040,11 @@ public enum MobileEndpointError: LocalizedError {
         }
     }
 
-    static func accepts(_ url: URL, allowSimulatorLoopbackHTTP: Bool = simulatorLoopbackHTTPEnabled) -> Bool {
+    static func accepts(
+        _ url: URL,
+        allowSimulatorLoopbackHTTP: Bool = simulatorLoopbackHTTPEnabled,
+        selfCheckSimulatorLoopbackPort: Int? = selfCheckSimulatorLoopbackHTTPPort
+    ) -> Bool {
         let isSimpleHostAddress = url.host?.isEmpty == false
             && url.user == nil
             && url.password == nil
@@ -2048,13 +2055,21 @@ public enum MobileEndpointError: LocalizedError {
 
         if url.scheme?.lowercased() == "https" { return true }
 
-        // The iOS Simulator runs on the Mac but cannot use its scoped
-        // Tailscale MagicDNS resolver.  Keep this opt-in and exact so device
-        // builds continue to require the Tailscale HTTPS endpoint.
-        return allowSimulatorLoopbackHTTP
-            && url.scheme?.lowercased() == "http"
-            && url.host?.lowercased() == "localhost"
-            && (url.port == nil || url.port == Int(StudyRocketAPI.defaultHostPort))
+        guard url.scheme?.lowercased() == "http",
+              url.host?.lowercased() == "localhost" else {
+            return false
+        }
+
+        // The production Debug fixture retains its explicit 43817 opt-in.
+        if allowSimulatorLoopbackHTTP,
+           url.port == nil || url.port == Int(StudyRocketAPI.defaultHostPort) {
+            return true
+        }
+
+        // A second local Host is reserved for the isolated SelfCheck app.
+        // It is unavailable on devices and cannot reuse the production port.
+        guard let selfCheckSimulatorLoopbackPort else { return false }
+        return url.port == selfCheckSimulatorLoopbackPort
     }
 
     private static var simulatorLoopbackHTTPEnabled: Bool {
@@ -2063,6 +2078,38 @@ public enum MobileEndpointError: LocalizedError {
         #else
         return false
         #endif
+    }
+
+    private static var selfCheckSimulatorLoopbackHTTPPort: Int? {
+        #if targetEnvironment(simulator)
+        return selfCheckLoopbackPort(
+            arguments: ProcessInfo.processInfo.arguments,
+            isSelfCheckRuntime: Bundle.main.bundleIdentifier == "com.skyfrost.ncustudyrocket.mobile.selfcheck"
+        )
+        #else
+        return nil
+        #endif
+    }
+
+    static func selfCheckLoopbackPort(arguments: [String], isSelfCheckRuntime: Bool) -> Int? {
+        guard isSelfCheckRuntime,
+              arguments.contains("--studyrocket-self-check") else {
+            return nil
+        }
+
+        let portFlagIndices = arguments.indices.filter { arguments[$0] == "--self-check-port" }
+        guard portFlagIndices.count == 1,
+              let portFlagIndex = portFlagIndices.first else {
+            return nil
+        }
+        let portValueIndex = arguments.index(after: portFlagIndex)
+        guard portValueIndex < arguments.endIndex,
+              let port = Int(arguments[portValueIndex]),
+              (1_024...65_535).contains(port),
+              port != Int(StudyRocketAPI.defaultHostPort) else {
+            return nil
+        }
+        return port
     }
 }
 

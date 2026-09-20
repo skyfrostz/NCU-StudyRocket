@@ -8,10 +8,16 @@ actor StudyRocketHostClient {
     private let session: URLSession
     private let tokenURL: URL
 
-    init(endpoint: URL = URL(string: "http://127.0.0.1:\(StudyRocketAPI.defaultHostPort)")!, session: URLSession = .shared) {
+    init(
+        configuration: StudyRocketSelfCheckConfiguration? = StudyRocketSelfCheckConfiguration.current,
+        endpoint: URL? = nil,
+        session: URLSession = .shared,
+        tokenURL: URL? = nil
+    ) {
         self.endpoint = endpoint
+            ?? URL(string: "http://127.0.0.1:\(configuration?.port ?? StudyRocketAPI.defaultHostPort)")!
         self.session = session
-        tokenURL = StudyRocketLocalSession.tokenURL()
+        self.tokenURL = tokenURL ?? configuration?.localSessionURL ?? StudyRocketLocalSession.tokenURL()
     }
 
     func isAvailable(for root: URL? = nil) async -> Bool {

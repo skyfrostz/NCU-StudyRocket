@@ -24,6 +24,7 @@ final class ReminderScheduler: NSObject, ObservableObject {
     @Published var nextDates: [ReminderRoute: Date?] = [:]
     @Published private(set) var pendingRoute: ReminderRoute?
     private var permissionRequestInFlight = false
+    private let disabled: Bool
     private let center = UNUserNotificationCenter.current()
     private var observers: [NSObjectProtocol] = []
     private let calendar: Calendar = {
@@ -32,8 +33,13 @@ final class ReminderScheduler: NSObject, ObservableObject {
         return calendar
     }()
 
-    override init() {
+    init(disabled: Bool = false) {
+        self.disabled = disabled
         super.init()
+        guard !disabled else {
+            authorization = "隔离自检已禁用"
+            return
+        }
         center.delegate = self
         center.setNotificationCategories([
             UNNotificationCategory(identifier: "studyrocket.chat", actions: [
@@ -56,6 +62,7 @@ final class ReminderScheduler: NSObject, ObservableObject {
     deinit { observers.forEach(NotificationCenter.default.removeObserver) }
 
     func requestPermissionAndSchedule() {
+        guard !disabled else { return }
         guard !permissionRequestInFlight else { return }
         permissionRequestInFlight = true
         Task {
@@ -69,17 +76,20 @@ final class ReminderScheduler: NSObject, ObservableObject {
     }
 
     func toggle(_ route: ReminderRoute, isOn: Bool) {
+        guard !disabled else { return }
         enabled[route] = isOn; UserDefaults.standard.set(isOn, forKey: "reminder.\(route.rawValue)")
         Task { await reschedule(route) }
     }
 
     func sendTest(_ route: ReminderRoute) {
+        guard !disabled else { return }
         let content = UNMutableNotificationContent(); content.title = "StudyRocket · \(route.title)"; content.body = "打开学业对话，开始今天的事实报告。"; content.sound = .default; content.categoryIdentifier = "studyrocket.chat"
         let request = UNNotificationRequest(identifier: "studyrocket.test.\(route.rawValue).\(UUID().uuidString)", content: content, trigger: UNTimeIntervalNotificationTrigger(timeInterval: 2, repeats: false))
         center.add(request)
     }
 
     func refreshAuthorization() async {
+        guard !disabled else { return }
         let settings = await center.notificationSettings()
         switch settings.authorizationStatus { case .authorized, .provisional: authorization = "已允许"; case .denied: authorization = "已拒绝"; case .notDetermined: authorization = "未请求"; @unknown default: authorization = "未知" }
         await scheduleAll()

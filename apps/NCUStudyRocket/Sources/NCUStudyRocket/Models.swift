@@ -408,10 +408,14 @@ final class WorkspaceStore: ObservableObject {
     private var timer: Timer?
     private var gitRefreshTask: Task<Void, Never>?
     private var indexTask: Task<Void, Never>?
+    private let selfCheckConfiguration: StudyRocketSelfCheckConfiguration?
 
-    init() {
-        let saved = UserDefaults.standard.string(forKey: "workspaceRoot").map(URL.init(fileURLWithPath:))
-        rootURL = saved ?? URL(fileURLWithPath: "/Users/skyfrost/Desktop/大学")
+    init(configuration: StudyRocketSelfCheckConfiguration? = StudyRocketSelfCheckConfiguration.current) {
+        selfCheckConfiguration = configuration
+        let saved = configuration == nil
+            ? UserDefaults.standard.string(forKey: "workspaceRoot").map(URL.init(fileURLWithPath:))
+            : nil
+        rootURL = configuration?.repositoryRoot ?? saved ?? URL(fileURLWithPath: "/Users/skyfrost/Desktop/大学")
         refreshGitStatus()
         refreshMarkdownIndex()
     }
@@ -425,7 +429,9 @@ final class WorkspaceStore: ObservableObject {
         indexTask?.cancel()
         indexTask = nil
         rootURL = url.standardizedFileURL
-        UserDefaults.standard.set(rootURL.path, forKey: "workspaceRoot")
+        if selfCheckConfiguration == nil {
+            UserDefaults.standard.set(rootURL.path, forKey: "workspaceRoot")
+        }
         refreshGitStatus()
         refreshMarkdownIndex()
     }
@@ -489,7 +495,18 @@ enum MarkdownError: LocalizedError { case outsideWorkspace, nonMarkdown, conflic
 
 final class MarkdownRepository {
     let root: URL
-    init(root: URL) { self.root = root.standardizedFileURL }
+    private let backupRoot: URL
+
+    init(
+        root: URL,
+        backupRoot: URL? = StudyRocketSelfCheckConfiguration.current?.backupDirectory
+    ) {
+        self.root = root.standardizedFileURL
+        self.backupRoot = (backupRoot
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/NCU StudyRocket/Backups", isDirectory: true)
+        ).standardizedFileURL
+    }
     func url(_ relative: String) -> URL { root.appendingPathComponent(relative) }
     func read(_ relative: String) throws -> String {
         try String(contentsOf: validatedMarkdownURL(relative), encoding: .utf8)
@@ -501,11 +518,10 @@ final class MarkdownRepository {
         let target = try validatedMarkdownURL(relative)
         let current = (try? String(contentsOf: target, encoding: .utf8)) ?? ""
         guard hash(current) == loadedHash else { throw MarkdownError.conflict }
-        let backupDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/NCU StudyRocket/Backups", isDirectory: true)
-        try FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
-        if let old = try? Data(contentsOf: target) { let name = relative.replacingOccurrences(of: "/", with: "_") + "." + String(Int(Date().timeIntervalSince1970)); try? old.write(to: backupDir.appendingPathComponent(name)) }
+        try FileManager.default.createDirectory(at: backupRoot, withIntermediateDirectories: true)
+        if let old = try? Data(contentsOf: target) { let name = relative.replacingOccurrences(of: "/", with: "_") + "." + String(Int(Date().timeIntervalSince1970)); try? old.write(to: backupRoot.appendingPathComponent(name)) }
         try Data(content.utf8).write(to: target, options: .atomic)
-        pruneBackups(in: backupDir, prefix: relative.replacingOccurrences(of: "/", with: "_") + ".")
+        pruneBackups(in: backupRoot, prefix: relative.replacingOccurrences(of: "/", with: "_") + ".")
     }
 
     private func validatedMarkdownURL(_ relative: String) throws -> URL {

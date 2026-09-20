@@ -16,7 +16,7 @@ public enum MobileIdentityError: LocalizedError {
 
 public final class MobileDeviceIdentity {
     private static let lock = NSLock()
-    private let service = "com.skyfrost.ncustudyrocket.mobile"
+    private let service = MobileRuntimeConfiguration.keychainService
     // Keep the simulator fixture isolated from the physical-device key. This
     // also prevents a pre-fallback Secure Enclave reference in an existing
     // Simulator keychain from being decoded as a software key.
@@ -103,4 +103,17 @@ public final class MobileDeviceIdentity {
             throw MobileIdentityError.unavailable
         }
     }
+}
+
+private enum MobileRuntimeConfiguration {
+    static let keychainService: String = {
+        guard let rawValue = Bundle.main.object(forInfoDictionaryKey: "StudyRocketKeychainService") as? String else {
+            return "com.skyfrost.ncustudyrocket.mobile"
+        }
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !value.hasPrefix("$(") else {
+            return "com.skyfrost.ncustudyrocket.mobile"
+        }
+        return value
+    }()
 }

@@ -98,7 +98,7 @@ enum MobileWidgetDestination: Equatable {
     }
 
     static func parse(_ url: URL) -> Self? {
-        guard url.scheme?.lowercased() == "ncustudyrocket" else { return nil }
+        guard url.scheme?.lowercased() == StudyRocketWidgetConfiguration.urlScheme.lowercased() else { return nil }
 
         switch url.host?.lowercased() {
         case "home": return .home

@@ -946,11 +946,20 @@ private enum WeeklyPlanPresentation {
 struct WeeklyPlanView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var chat: StudyChatStore
+    private static let weeklyPlanPreferences: UserDefaults = {
+        guard let configuration = StudyRocketSelfCheckConfiguration.current else {
+            return .standard
+        }
+        guard let defaults = UserDefaults(suiteName: configuration.desktopPreferencesSuite) else {
+            preconditionFailure("无法创建隔离周计划偏好域。")
+        }
+        return defaults
+    }()
     @State private var plan = WeeklyPlan(); @State private var original = ""; @State private var loadedHash = ""; @State private var notice: String?
     @State private var editingCell: WeeklyEditTarget?
     @State private var migrationNoticeVisible = true
-    @AppStorage("studyrocket.completedDeliveriesExpanded") private var completedDeliveriesExpanded = false
-    @AppStorage("studyrocket.weeklyPlan.displayMode") private var displayModeRaw = WeeklyPlanDisplayMode.agenda.rawValue
+    @AppStorage("studyrocket.completedDeliveriesExpanded", store: WeeklyPlanView.weeklyPlanPreferences) private var completedDeliveriesExpanded = false
+    @AppStorage("studyrocket.weeklyPlan.displayMode", store: WeeklyPlanView.weeklyPlanPreferences) private var displayModeRaw = WeeklyPlanDisplayMode.agenda.rawValue
     @State private var originalDeliveries: [UUID: String] = [:]
     @State private var originalRules: [UUID: (BufferRuleCategory, String)] = [:]
     @State private var deletionReview: WeeklyDeletionSummary?
