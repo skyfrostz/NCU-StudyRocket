@@ -16,6 +16,22 @@ public enum StudyRocketCodexErrorPresentation {
         "CODEX_BASE_URL"
     ]
 
+    /// These are bindings for the Codex process that happened to launch the
+    /// app.  A StudyRocket Host app-server owns a separate fixed academic
+    /// task, so inheriting them can route its dynamic tools into that caller.
+    private static let taskBoundCodexRuntimeKeys: Set<String> = [
+        "CODEX_APP_TOOLS_PIPE_PATH",
+        "CODEX_CI",
+        "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+        "CODEX_MCP_NODE_PATH",
+        "CODEX_PERMISSION_PROFILE",
+        "CODEX_SAGE_BACKFILL_TRACKER_TAB_REUSE",
+        "CODEX_SESSION_ID",
+        "CODEX_SHELL",
+        "CODEX_THREAD_ID",
+        "CODEX_VERSION"
+    ]
+
     private static let directCredentialPattern = try! NSRegularExpression(
         pattern: #"(?i)\b(?:sk|rk|sess|token)-[A-Za-z0-9_-]{4,}\b"#
     )
@@ -51,12 +67,17 @@ public enum StudyRocketCodexErrorPresentation {
     }
 
     /// Direct API credentials and endpoint overrides must not shadow the
-    /// user's normal Codex login. Keep other environment variables, including
-    /// a valid Codex access-token session supplied by the parent process.
+    /// user's normal Codex login. Keep login material such as
+    /// `CODEX_ACCESS_TOKEN`, but do not inherit a caller's task-bound runtime
+    /// channels into the Host's separate app-server.
     public static func childProcessEnvironment(
         from environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String: String] {
-        environment.filter { !credentialOverrideKeys.contains($0.key.uppercased()) }
+        environment.filter {
+            let key = $0.key.uppercased()
+            return !credentialOverrideKeys.contains(key)
+                && !taskBoundCodexRuntimeKeys.contains(key)
+        }
     }
 
     private static func redactCredentials(in message: String) -> String {

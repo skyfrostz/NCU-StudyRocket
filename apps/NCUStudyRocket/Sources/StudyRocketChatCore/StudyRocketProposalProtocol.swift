@@ -85,4 +85,12 @@ public enum StudyRocketThreadProtocol {
         guard let storedThreadID, !storedThreadID.isEmpty else { return false }
         return storedVersion < currentVersion
     }
+
+    /// A compatible descriptor can still refer to a thread whose rollout was
+    /// never persisted, for example when its previous owner exited just after
+    /// `thread/start`. Recreate only this precise app-server failure; auth and
+    /// other protocol errors must remain visible to the user.
+    public static func requiresRecreationForMissingRollout(errorMessage: String?) -> Bool {
+        errorMessage?.localizedCaseInsensitiveContains("no rollout found for thread id") == true
+    }
 }

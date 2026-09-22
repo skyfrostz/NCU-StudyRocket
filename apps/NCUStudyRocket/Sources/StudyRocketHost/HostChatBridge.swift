@@ -170,20 +170,32 @@ private final class HostCodexSession {
         }
         if let compatibleThreadID {
             threadID = compatibleThreadID
-            let resumed = try await request(method: "thread/resume", params: [
-                "threadId": threadID,
-                "includeTurns": true,
-                "cwd": root.path,
-                "sandbox": "read-only",
-                "approvalPolicy": "never",
-                "runtimeWorkspaceRoots": [root.path],
-                "developerInstructions": Self.developerInstructions(),
-                "model": selection.model,
-                "modelProvider": selection.modelProvider
-            ])
-            if StudyRocketModelSelection.threadResult(resumed) != selection {
-                let resumedHistory = parseHistory((resumed["thread"] as? [String: Any]) ?? resumed)
-                migratedHistory = Array((migratedHistory + resumedHistory).suffix(40))
+            let resumed: [String: Any]?
+            do {
+                resumed = try await request(method: "thread/resume", params: [
+                    "threadId": threadID,
+                    "includeTurns": true,
+                    "cwd": root.path,
+                    "sandbox": "read-only",
+                    "approvalPolicy": "never",
+                    "runtimeWorkspaceRoots": [root.path],
+                    "developerInstructions": Self.developerInstructions(),
+                    "model": selection.model,
+                    "modelProvider": selection.modelProvider
+                ])
+            } catch {
+                guard StudyRocketThreadProtocol.requiresRecreationForMissingRollout(errorMessage: error.localizedDescription) else {
+                    throw error
+                }
+                resumed = nil
+            }
+            if let resumed {
+                if StudyRocketModelSelection.threadResult(resumed) != selection {
+                    let resumedHistory = parseHistory((resumed["thread"] as? [String: Any]) ?? resumed)
+                    migratedHistory = Array((migratedHistory + resumedHistory).suffix(40))
+                    threadID = try await startFixedThread(selection: selection, legacyHistory: migratedHistory)
+                }
+            } else {
                 threadID = try await startFixedThread(selection: selection, legacyHistory: migratedHistory)
             }
         } else {

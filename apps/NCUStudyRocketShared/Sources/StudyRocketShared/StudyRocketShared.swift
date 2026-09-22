@@ -8,7 +8,9 @@ public enum StudyRocketAPI {
     public static let version = 1
     /// Version of the persisted academic-task/dynamic-tool contract.
     /// Bump this when a resumed task cannot safely reuse its tool registry.
-    public static let academicTaskProtocolVersion = 4
+    /// v5 deliberately recreates v4 tasks whose persisted dynamic registry can no
+    /// longer be restored by the current Codex app-server.
+    public static let academicTaskProtocolVersion = 5
     public static let prefix = "/v1"
     public static let defaultHostPort: UInt16 = 43817
 }

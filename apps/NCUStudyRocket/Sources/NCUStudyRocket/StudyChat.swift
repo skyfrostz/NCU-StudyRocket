@@ -243,17 +243,29 @@ final class CodexAppServerClient: NSObject {
 
         var thread: [String: Any]
         if let threadID {
-            let response = try await request(method: "thread/resume", params: [
-                "threadId": threadID, "includeTurns": true, "cwd": root.path,
-                "sandbox": "read-only", "approvalPolicy": "never", "runtimeWorkspaceRoots": [root.path],
-                "developerInstructions": Self.developerInstructions(),
-                "model": selection.model, "modelProvider": selection.modelProvider
-            ])
-            thread = try resultObject(response)
-            currentThreadID = threadID
-            if StudyRocketModelSelection.threadResult(thread) != selection {
-                let resumed = await Task.detached(priority: .utility) { self.parseHistory(thread["thread"] as? [String: Any]) ?? [] }.value
-                legacyHistory = Array((legacyHistory + resumed).suffix(40))
+            let resumedResponse: [String: Any]?
+            do {
+                resumedResponse = try await request(method: "thread/resume", params: [
+                    "threadId": threadID, "includeTurns": true, "cwd": root.path,
+                    "sandbox": "read-only", "approvalPolicy": "never", "runtimeWorkspaceRoots": [root.path],
+                    "developerInstructions": Self.developerInstructions(),
+                    "model": selection.model, "modelProvider": selection.modelProvider
+                ])
+            } catch {
+                guard StudyRocketThreadProtocol.requiresRecreationForMissingRollout(errorMessage: error.localizedDescription) else {
+                    throw error
+                }
+                resumedResponse = nil
+            }
+            if let resumedResponse {
+                thread = try resultObject(resumedResponse)
+                currentThreadID = threadID
+                if StudyRocketModelSelection.threadResult(thread) != selection {
+                    let resumed = await Task.detached(priority: .utility) { self.parseHistory(thread["thread"] as? [String: Any]) ?? [] }.value
+                    legacyHistory = Array((legacyHistory + resumed).suffix(40))
+                    thread = try await startFixedThread(root: root, selection: selection, legacyHistory: legacyHistory)
+                }
+            } else {
                 thread = try await startFixedThread(root: root, selection: selection, legacyHistory: legacyHistory)
             }
         } else {
@@ -860,7 +872,15 @@ final class StudyChatStore: ObservableObject {
             let id = try await client.connect(root: root, threadID: active, legacyThreadID: legacy)
             guard generation == connectionGeneration else { return }
             threadID = id
-            if active != id { try? taskDescriptorStore.save(StudyRocketTaskDescriptor(threadID: id), for: root) }
+            if active != id {
+                do {
+                    try taskDescriptorStore.save(StudyRocketTaskDescriptor(threadID: id), for: root)
+                } catch {
+                    client.disconnect()
+                    threadID = nil
+                    throw error
+                }
+            }
             if selfCheckConfiguration == nil {
                 UserDefaults.standard.set(id, forKey: key)
                 UserDefaults.standard.set(StudyRocketThreadProtocol.currentVersion, forKey: threadProtocolKey(for: root))

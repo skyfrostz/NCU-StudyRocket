@@ -373,8 +373,8 @@ precondition(descriptor.protocolVersion == StudyRocketAPI.academicTaskProtocolVe
 try descriptorStore.save(descriptor, for: firstRoot)
 precondition(descriptorStore.load(for: firstRoot) == descriptor)
 precondition(descriptorStore.load(for: secondRoot) == nil)
-try descriptorStore.save(StudyRocketTaskDescriptor(threadID: "thread-b", protocolVersion: 3), for: secondRoot)
-precondition(descriptorStore.load(for: secondRoot)?.protocolVersion == 3)
+try descriptorStore.save(StudyRocketTaskDescriptor(threadID: "thread-b", protocolVersion: 4), for: secondRoot)
+precondition(descriptorStore.load(for: secondRoot)?.protocolVersion == 4)
 var migratedTaskCount = 0
 let restoreAcademicTask: () throws -> String = {
     if let stored = descriptorStore.load(for: secondRoot),
@@ -382,7 +382,7 @@ let restoreAcademicTask: () throws -> String = {
         return stored.threadID
     }
     migratedTaskCount += 1
-    let newThreadID = "thread-v4-\(migratedTaskCount)"
+    let newThreadID = "thread-v5-\(migratedTaskCount)"
     try descriptorStore.save(StudyRocketTaskDescriptor(threadID: newThreadID), for: secondRoot)
     return newThreadID
 }

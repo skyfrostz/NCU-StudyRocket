@@ -1,6 +1,6 @@
 # NCU StudyRocket 项目知识库
 
-更新时间：2026-09-15
+更新时间：2026-09-22
 
 本文件汇总当前 Codex 项目会话中仍有维护价值的内容，并与当前源码交叉核验。它不是发布说明，也不替代 `AGENTS.md`、`README.md`、源码或测试。
 
@@ -33,7 +33,7 @@
 - `01a005da-0830-7f70-9adf-8a5eeb9a1674`，标题“按照这个plan开始修复……”：给出聊天滚动、Markdown、SSE 心跳与重连方案；早期轮次受只读权限阻塞，不能把整个计划视为已实现。
 - `01a00877-d58d-7192-8e36-5f5756a99ece`，标题“ncu studyrocket desktop学业助理一直卡在读取资料……”：实现任务描述符迁移、typed 终态、切页不断连和历史兜底。
 - `01a00eb9-8d18-7be1-abfa-857526c53fb6`，标题“修复双端安全稳定性问题”：实现并验证 Host HTTP、写入、Keychain、nonce、challenge、路径安全、generation 隔离和跨端 UI 修复；后续又诊断 Host 自检阻塞首页的问题。
-- `01a01523-9228-7ca3-b3b1-64fc9e1ff490`，标题“修复手机首页与 Host 自检”：当前主修复会话，覆盖 Host 降级、协议 v4、交付物与今日时段联动、完成动画、连接页、网络分流、任务权限和手机待同步队列卡死。
+- `01a01523-9228-7ca3-b3b1-64fc9e1ff490`，标题“修复手机首页与 Host 自检”：当时的主修复会话，覆盖 Host 降级、协议 v4、交付物与今日时段联动、完成动画、连接页、网络分流、任务权限和手机待同步队列卡死；当前协议已由后续维护升级为 v5。
 
 ### 2.2 学业对话与动态工具会话（2 个）
 
@@ -70,7 +70,7 @@
 - `019ffa27-d554-7061-baed-1a1523e1d278`
 - `019ffa36-dec8-7c31-9084-00e104a605d0`
 
-它们只证明旧动态工具发现或调用路径曾失败，不提供产品事实。当前应使用规范 `studyrocket` 命名空间和协议 v4。
+它们只证明旧动态工具发现或调用路径曾失败，不提供产品事实。当前应使用规范 `studyrocket` 命名空间和协议 v5。
 
 重复初始化会话：
 
@@ -117,12 +117,13 @@
 
 ### 3.3 Codex 学业任务
 
-**当前事实**：`StudyRocketAPI.academicTaskProtocolVersion = 4`。
+**当前事实**：`StudyRocketAPI.academicTaskProtocolVersion = 5`。
 
 - 描述符按标准化仓库路径的 SHA-256 隔离，只保存 `threadID` 和协议版本。
-- v3 或不兼容任务首次迁移时只读取有限文字历史，创建带规范 `studyrocket` 动态工具声明的新任务并保存 v4 描述符。
-- 后续启动恢复同一 v4 任务。
+- v4 或其他不兼容任务首次迁移时只读取有限文字历史，创建带规范 `studyrocket` 动态工具声明的新任务并保存 v5 描述符；若 v5 描述符指向未持久化的 rollout，则仅对 `no rollout found for thread id` 自动重建，其他错误保持可见。
+- 后续启动恢复同一 v5 任务。
 - `thread/start` 可以声明动态工具；`thread/resume` 不传 `dynamicTools`。
+- Host 子 app-server 不继承调用端的 `CODEX_SESSION_ID`、`CODEX_THREAD_ID`、`CODEX_APP_TOOLS_PIPE_PATH` 等任务绑定变量；它保留本机登录状态与 `CODEX_ACCESS_TOKEN`。
 - Desktop 与 Host 共用 Codex 单实例租约，不允许两个 `app-server` 同时拥有同一工作区会话。
 - 页面切换不终止回合；显式停止、换仓库或应用退出才清理连接。
 
@@ -223,7 +224,7 @@
 
 ## 5. 已淘汰或需谨慎使用的历史结论
 
-- **已淘汰**：协议版本 3 是当前版本。当前源码为 v4。
+- **已淘汰**：协议版本 3 或 4 是当前版本。当前源码为 v5。
 - **已淘汰**：`dynamicToolsReady=false` 时关闭整个 Host。当前应进入降级状态。
 - **已淘汰**：给 `thread/resume` 传 `dynamicTools`。该参数不受支持。
 - **已淘汰**：Codex 固定使用 `127.0.0.1:7890` 显式代理。该端口曾无监听，现已移除显式代理。
@@ -336,6 +337,8 @@ cd /Users/skyfrost/Desktop/大学/apps/NCUStudyRocket
 codesign --verify --deep --strict '/Applications/NCU StudyRocket.app'
 codesign --verify --deep --strict '/Applications/StudyRocket Host.app'
 ```
+
+同时替换 Desktop 与 Host 时，可以为两条安装命令设置 `STUDYROCKET_NO_LAUNCH=1`，再只启动计划作为 Codex owner 的一端，避免两个 app-server 争夺同一租约。
 
 Mobile 产物也必须做严格签名验证，并确认 bundle ID 为 `com.skyfrost.ncustudyrocket.mobile`。
 

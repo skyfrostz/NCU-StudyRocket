@@ -169,11 +169,42 @@ struct ChatTurnReducerTests {
             "OPENAI_API_KEY": "test",
             "OPENAI_BASE_URL": "https://example.invalid",
             "CODEX_ACCESS_TOKEN": "valid-session",
-            "PATH": "/usr/bin"
+            "CODEX_APP_TOOLS_PIPE_PATH": "caller-pipe",
+            "CODEX_CI": "1",
+            "CODEX_INTERNAL_ORIGINATOR_OVERRIDE": "Codex Desktop",
+            "CODEX_MCP_NODE_PATH": "/tmp/caller-node",
+            "CODEX_SESSION_ID": "caller-session",
+            "CODEX_THREAD_ID": "caller-thread",
+            "CODEX_PERMISSION_PROFILE": "caller-permission",
+            "CODEX_SAGE_BACKFILL_TRACKER_TAB_REUSE": "1",
+            "CODEX_SHELL": "1",
+            "CODEX_VERSION": "caller-version",
+            "PATH": "/usr/bin",
+            "HOME": "/Users/tester",
+            "CODEX_HOME": "/Users/tester/.codex",
+            "CODEX_SQLITE_HOME": "/Users/tester/.codex/state"
         ])
         expect(environment["OPENAI_API_KEY"], nil, "direct API keys must not enter the Codex child process")
         expect(environment["OPENAI_BASE_URL"], nil, "endpoint overrides must not enter the Codex child process")
         expect(environment["CODEX_ACCESS_TOKEN"], "valid-session", "normal Codex login sessions must remain available")
+        expect(environment["PATH"], "/usr/bin", "the Host child must retain its executable search path")
+        expect(environment["HOME"], "/Users/tester", "the Host child must retain the home directory used for stored login")
+        expect(environment["CODEX_HOME"], "/Users/tester/.codex", "the Host child must retain the configured Codex state directory")
+        expect(environment["CODEX_SQLITE_HOME"], "/Users/tester/.codex/state", "the Host child must retain the configured Codex SQLite state directory")
+        for key in [
+            "CODEX_APP_TOOLS_PIPE_PATH",
+            "CODEX_CI",
+            "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+            "CODEX_MCP_NODE_PATH",
+            "CODEX_PERMISSION_PROFILE",
+            "CODEX_SAGE_BACKFILL_TRACKER_TAB_REUSE",
+            "CODEX_SESSION_ID",
+            "CODEX_SHELL",
+            "CODEX_THREAD_ID",
+            "CODEX_VERSION"
+        ] {
+            expect(environment[key], nil, "\(key) must not enter the Host child process")
+        }
     }
 
     private static func testNamespacedProposalContract() {
@@ -215,10 +246,14 @@ struct ChatTurnReducerTests {
     }
 
     private static func testLegacyThreadRequiresOneTimeMigration() {
-        expect(StudyRocketThreadProtocol.currentVersion, 4, "the dynamic-tool task contract must be v4")
+        expect(StudyRocketThreadProtocol.currentVersion, 5, "the dynamic-tool task contract must be v5")
+        expect(StudyRocketThreadProtocol.requiresMigration(storedThreadID: "v4", storedVersion: 4), true, "v4 persisted threads must be recreated with the current dynamic-tool registry")
         expect(StudyRocketThreadProtocol.requiresMigration(storedThreadID: "legacy", storedVersion: 3), true, "v3 persisted threads must migrate once")
         expect(StudyRocketThreadProtocol.requiresMigration(storedThreadID: "current", storedVersion: StudyRocketThreadProtocol.currentVersion), false, "current protocol threads must resume in place")
         expect(StudyRocketThreadProtocol.requiresMigration(storedThreadID: nil, storedVersion: 0), false, "a missing thread should be created without migration")
+        expect(StudyRocketThreadProtocol.requiresRecreationForMissingRollout(errorMessage: "no rollout found for thread id missing-thread"), true, "a missing rollout must recreate the fixed task")
+        expect(StudyRocketThreadProtocol.requiresRecreationForMissingRollout(errorMessage: "401 Unauthorized"), false, "authentication errors must not recreate a task")
+        expect(StudyRocketThreadProtocol.requiresRecreationForMissingRollout(errorMessage: "thread resume timed out"), false, "generic transport failures must not recreate a task")
     }
 
     private static func testNestedProposalRoutesToVisibleTurn() {
