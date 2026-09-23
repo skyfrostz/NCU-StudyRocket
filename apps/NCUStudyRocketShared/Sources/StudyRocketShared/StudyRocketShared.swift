@@ -1005,6 +1005,14 @@ public enum StudyRocketChatState: String, Codable, Equatable, Sendable {
     public var canGenerate: Bool {
         self == .protocolReadyAuthUnknown || self == .ready
     }
+
+    /// Reading history verifies the local protocol, not the model credentials.
+    public var afterProtocolReconnect: Self {
+        switch self {
+        case .starting, .unavailable: .protocolReadyAuthUnknown
+        case .protocolReadyAuthUnknown, .ready, .authFailed: self
+        }
+    }
 }
 
 /// Only the two thread-setting fields that may safely cross the app-server

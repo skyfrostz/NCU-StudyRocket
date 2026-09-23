@@ -723,7 +723,8 @@ final class HostChatBridge: @unchecked Sendable {
                         setActiveThreadID(threadID)
                     }
                     cache.set(value)
-                    if chatState == .starting { setChatState(.protocolReadyAuthUnknown) }
+                    let restoredState = chatState.afterProtocolReconnect
+                    if restoredState != chatState { setChatState(restoredState) }
                     continuation.resume(returning: value)
                 } catch {
                     setChatState(.unavailable)

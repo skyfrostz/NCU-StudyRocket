@@ -1,6 +1,6 @@
 # NCU StudyRocket 项目知识库
 
-更新时间：2026-09-22
+更新时间：2026-09-23
 
 本文件汇总当前 Codex 项目会话中仍有维护价值的内容，并与当前源码交叉核验。它不是发布说明，也不替代 `AGENTS.md`、`README.md`、源码或测试。
 
@@ -123,6 +123,7 @@
 - v4 或其他不兼容任务首次迁移时只读取有限文字历史，创建带规范 `studyrocket` 动态工具声明的新任务并保存 v5 描述符；若 v5 描述符指向未持久化的 rollout，则仅对 `no rollout found for thread id` 自动重建，其他错误保持可见。
 - 后续启动恢复同一 v5 任务。
 - `thread/start` 可以声明动态工具；`thread/resume` 不传 `dynamicTools`。
+- 动态工具声明可随任务持久化，但处理器属于发起回合的 StudyRocket 连接。直接在 Codex 桌面历史页续聊可能仍发现工具，却返回 `Unsupported dynamic tool namespace: studyrocket`；Host health 不能证明另一个连接的工具路由。应在 StudyRocket 内发起真实请求并核对待确认草案，不通过直接改 Markdown 恢复。
 - Host 子 app-server 不继承调用端的 `CODEX_SESSION_ID`、`CODEX_THREAD_ID`、`CODEX_APP_TOOLS_PIPE_PATH` 等任务绑定变量；它保留本机登录状态与 `CODEX_ACCESS_TOKEN`。
 - Desktop 与 Host 共用 Codex 单实例租约，不允许两个 `app-server` 同时拥有同一工作区会话。
 - 页面切换不终止回合；显式停止、换仓库或应用退出才清理连接。
@@ -136,6 +137,7 @@
 - 自检失败或超时后保留 listener、配对、本地会话和已认证计划接口。
 - 聊天和草案在认证后返回受控 `codex_starting`；未认证请求优先返回 401。
 - 后续自检成功可原地恢复，不需要重启 Host 或手机。
+- 短暂故障后读取历史成功，应将 `unavailable` 恢复为 `protocolReadyAuthUnknown`，重新开放聊天；已确认的 `authFailed` 不因只读历史成功而清除。协议恢复不等于模型认证或提案调用已验收。
 - Host 每 20 秒发送 SSE heartbeat；客户端忽略 heartbeat 正文。
 
 ### 3.5 Mobile 连接与同步
