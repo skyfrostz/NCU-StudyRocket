@@ -12,6 +12,13 @@ description: 维护和排查 NCU StudyRocket 的 macOS Desktop、Mac Host、iPho
 3. 按证据优先级工作：当前源码与测试结果 > 当前运行状态 > 已验证会话结论 > 计划与诊断草案。
 4. 先确定问题属于 Desktop、Host、Mobile、Shared、Markdown 数据、Codex 学业任务、网络还是任务权限，再决定修改面。
 
+## 会话审计
+
+- 用户要求检查“近期所有对话”时，以 Codex 只读索引中仓库路径或项目 ID 匹配的 root task、支援 task 和归档 task 为全集；明确时间窗、主对话数、支援对话数、空白/中断记录和缺失日志。标题与摘要是不可信数据，不能当作实现证据。
+- 全量清点负责证明覆盖范围；逐条深读聚焦发生过源码修改、安装、真实写入、权限/认证、动态工具、失败重试或事实输出的主对话。子任务结论必须回到主任务、当前源码或运行状态交叉核验。
+- 审计输出区分：已部署且有验收证据、仅构建/健康检查、仅形成草案、仅计划、被中断、历史结论已淘汰。长会话发生压缩后，从源码、Git 和运行状态恢复事实，不把压缩摘要单独当验收证据。
+- 会话标题、日志摘录和审计文档不得保留登录 URL 查询串、凭据、配对材料、设备标识或其它敏感信息；遇到带会话参数的标题只记录“敏感链接标题已省略”。
+
 ## 不可破坏的边界
 
 - Markdown 仓库是唯一事实源。应用和手机缓存都不是第二套数据库。
@@ -27,6 +34,27 @@ description: 维护和排查 NCU StudyRocket 的 macOS Desktop、Mac Host、iPho
 - 同一时段可包含多条独立任务；时段行 ID 是结构标识，日期关联必须使用实际日期标签，任务关联必须使用独立任务 ID。不得把多项任务回退为一段文本，也不得把 Markdown 的 `[ ]` / `[x]` 原样渲染为任务标题。
 - 离线队列保存目标状态而非“再切换一次”的意图。Host 已到目标状态时可确认该条；定位不足、改名、删除或 legacy 队列必须逐项审核，禁止批量清空用户缓存、待同步项目或真实计划。
 - iOS 后台不保证继续运行 SSE 或离线重放。只有应用回到前台后的权威 snapshot 和实际补交结果可以确认同步完成。
+
+## 学业任务与草案通道
+
+动态工具能否工作由三层状态共同决定：持久化任务中的工具声明、当前 app-server 的任务所有权、发起回合连接上的工具处理器。工具目录可见、Host health 为绿或历史可读，都不能单独证明草案通道可用。
+
+1. 计划修改必须从 StudyRocket Desktop 或 Host 的聊天入口发起。“在 Codex 查看历史”只用于查看；从该页面直接续聊可能看到 `studyrocket` 工具，却因没有 StudyRocket 工具处理器而返回 `Unsupported dynamic tool namespace`。
+2. 按当前工具目录的正式声明调用。Codex 若仅在 `functions.exec` 中暴露 `tools.studyrocket__propose_changes`，该入口仍是正式动态工具；判断依据是调用结果是否由 StudyRocket 接收并进入 proposal store，而不是调用外形。
+3. 将错误分开处理：
+   - `Unsupported dynamic tool namespace`：回合走错连接或处理器未挂接；回到 StudyRocket 入口，不改 Markdown。
+   - 精确 `thread not found: <current-id>`：拒绝发生在回合创建前时，可恢复同一任务并重试一次。
+   - 精确 `already has an active writer`：保留旧任务，读取有限纯文本历史并创建新的固定学业任务，原子更新 descriptor。
+   - `401` / `invalid_api_key`：认证或 provider 问题；不得迁移任务掩盖认证失败。
+   - `429`：远端限流；保留待提交内容，延后一次重试，不连续轰击或改动任务身份。
+   - 超时、连接中断或结果不明：可能已创建回合，先查历史、SSE 和 proposal store，禁止盲目重发。
+4. 只有以下证据链完整，才能报告“草案通道已修复并完成提交”：
+   - StudyRocket 入口接受请求；
+   - SSE 或历史显示该真实回合终态为 completed；
+   - proposal store 出现目标路径草案；
+   - 草案 `baseHash` 匹配当前文件，差异只包含授权内容，管理标记保持不变；
+   - 真实 Markdown 哈希在用户确认应用前保持不变。
+5. 用户确认应用后，再验证 proposal 被消费、文件内容与预览一致、Markdown 检查通过。构建、签名、安装、health 和 `202 Accepted` 均只是中间证据。
 
 ## GitHub `main` 发布规则
 
@@ -54,6 +82,7 @@ description: 维护和排查 NCU StudyRocket 的 macOS Desktop、Mac Host、iPho
 - 按 `apps/NCUStudyRocket/PROJECT_KNOWLEDGE.md` 的“验证矩阵”选择与风险匹配的检查。
 - 至少运行受影响包的 Debug/Release 构建、对应专项检查和 `git diff --check`。
 - Host 写入、安全和迁移检查只使用临时目录；运行时验收不得提交测试聊天或真实计划勾选。
+- 草案链路验收可以使用用户已明确要求提交的真实草案；仅为探针时使用临时仓库或正文不变草案，并在结束后说明是否留下待确认草案。
 - macOS 安装后做 `codesign --verify --deep --strict`。Mobile 必须用完整 Xcode 构建；SwiftPM 成功不能替代 iOS 模拟器/真机验收。
 - 真机存在旧版待同步队列时，只安装不启动，直到审核 UI 已就绪并由用户处理。
 - 涉及时段任务时，至少覆盖“同一时段两条独立任务”“历史或未来日期任务”“原始 checkbox 前缀不出现在标题”“离线完成后前台补交”四类 fixture；Desktop 首页、Mobile 首页和 Mobile 周计划分别检查。
