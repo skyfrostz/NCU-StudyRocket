@@ -120,41 +120,43 @@ private final class HostCodexSession {
         onProcessExit?(exit)
     }
 
-    func connect() async throws {
-        if isRunning {
+    func connect(forceResume: Bool = false) async throws {
+        if isRunning && !forceResume {
             touchActivity()
             return
         }
         guard FileManager.default.isExecutableFile(atPath: executable) else {
             throw HostChatError.unavailable("找不到 Codex 本地程序。")
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = ["app-server", "--stdio"]
-        process.environment = StudyRocketCodexErrorPresentation.childProcessEnvironment()
-        let stdin = Pipe(); let stdout = Pipe(); let stderr = Pipe()
-        process.standardInput = stdin; process.standardOutput = stdout; process.standardError = stderr
-        process.terminationHandler = { [weak self] _ in
-            Task { @MainActor in self?.processDidTerminate() }
-        }
-        try process.run()
-        self.process = process
-        touchActivity()
-        input = stdin.fileHandleForWriting
-        output = stdout.fileHandleForReading
-        // Do not rely on FileHandle.readabilityHandler here.  In a packaged
-        // AppKit process it can fail to fire for a quiet child, leaving a
-        // perfectly healthy app-server response buffered forever.  A blocking
-        // reader on a utility queue keeps stdout flowing and drains stderr so
-        // neither pipe can back-pressure the child process.
-        beginReadingStdout(stdout.fileHandleForReading)
-        drain(stderr.fileHandleForReading)
+        if !isRunning {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = ["app-server", "--stdio"]
+            process.environment = StudyRocketCodexErrorPresentation.childProcessEnvironment()
+            let stdin = Pipe(); let stdout = Pipe(); let stderr = Pipe()
+            process.standardInput = stdin; process.standardOutput = stdout; process.standardError = stderr
+            process.terminationHandler = { [weak self] _ in
+                Task { @MainActor in self?.processDidTerminate() }
+            }
+            try process.run()
+            self.process = process
+            touchActivity()
+            input = stdin.fileHandleForWriting
+            output = stdout.fileHandleForReading
+            // Do not rely on FileHandle.readabilityHandler here.  In a packaged
+            // AppKit process it can fail to fire for a quiet child, leaving a
+            // perfectly healthy app-server response buffered forever.  A blocking
+            // reader on a utility queue keeps stdout flowing and drains stderr so
+            // neither pipe can back-pressure the child process.
+            beginReadingStdout(stdout.fileHandleForReading)
+            drain(stderr.fileHandleForReading)
 
-        _ = try await request(method: "initialize", params: [
-            "clientInfo": ["name": "ncu-studyrocket-host", "version": "0.1.0"],
-            "capabilities": ["experimentalApi": true]
-        ])
-        sendNotification(method: "initialized", params: [:])
+            _ = try await request(method: "initialize", params: [
+                "clientInfo": ["name": "ncu-studyrocket-host", "version": "0.1.0"],
+                "capabilities": ["experimentalApi": true]
+            ])
+            sendNotification(method: "initialized", params: [:])
+        }
         let config = try await request(method: "config/read", params: ["cwd": root.path])
         guard let selection = StudyRocketModelSelection.configReadResult(config) else {
             throw HostChatError.protocolError("Codex 未返回当前模型配置，请在 Mac 重新登录后重启 Host。")
@@ -184,8 +186,15 @@ private final class HostCodexSession {
                     "modelProvider": selection.modelProvider
                 ])
             } catch {
-                guard StudyRocketThreadProtocol.requiresRecreationForMissingRollout(errorMessage: error.localizedDescription) else {
+                let writerConflict = StudyRocketThreadProtocol.hasConflictingWriter(errorMessage: error.localizedDescription, threadID: threadID)
+                guard writerConflict || StudyRocketThreadProtocol.requiresRecreationForMissingRollout(errorMessage: error.localizedDescription) else {
                     throw error
+                }
+                if writerConflict {
+                    // Keep the desktop-owned task intact. Only replace our
+                    // descriptor, carrying readable context into a new task.
+                    let response = try await request(method: "thread/read", params: ["threadId": threadID, "includeTurns": true])
+                    migratedHistory = parseHistory((response["thread"] as? [String: Any]) ?? response)
                 }
                 resumed = nil
             }
@@ -225,14 +234,19 @@ private final class HostCodexSession {
         guard turnContinuation == nil else { throw HostChatError.unavailable("上一轮学业对话仍在运行。") }
         replyItems.removeAll()
         completedItemIDs.removeAll()
-        let response = try await request(method: "turn/start", params: [
-            "threadId": threadID,
-            "input": [["type": "text", "text": text]],
-            "cwd": root.path,
-            "sandboxPolicy": ["type": "readOnly", "networkAccess": true],
-            "approvalPolicy": "never",
-            "effort": "medium"
-        ])
+        let response: [String: Any]
+        do {
+            response = try await startTurn(text)
+        } catch {
+            // The desktop app can unload a task that this connection previously
+            // resumed. This rejection occurs before a turn exists, so one resume
+            // and retry cannot duplicate a submitted turn or a proposal.
+            guard StudyRocketThreadProtocol.requiresResumeForUnloadedThread(
+                errorMessage: error.localizedDescription, threadID: threadID
+            ) else { throw error }
+            try await connect(forceResume: true)
+            response = try await startTurn(text)
+        }
         guard let turn = response["turn"] as? [String: Any], let turnID = turn["id"] as? String else {
             throw HostChatError.protocolError("Codex 没有返回本轮 turn ID。")
         }
@@ -250,6 +264,17 @@ private final class HostCodexSession {
             }
         }
         _ = try? await loadHistory()
+    }
+
+    private func startTurn(_ text: String) async throws -> [String: Any] {
+        try await request(method: "turn/start", params: [
+            "threadId": threadID,
+            "input": [["type": "text", "text": text]],
+            "cwd": root.path,
+            "sandboxPolicy": ["type": "readOnly", "networkAccess": true],
+            "approvalPolicy": "never",
+            "effort": "medium"
+        ])
     }
 
     func interrupt() {

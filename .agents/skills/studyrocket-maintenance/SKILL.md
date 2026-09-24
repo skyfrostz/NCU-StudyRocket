@@ -17,7 +17,7 @@ description: 维护和排查 NCU StudyRocket 的 macOS Desktop、Mac Host、iPho
 - Markdown 仓库是唯一事实源。应用和手机缓存都不是第二套数据库。
 - 不使用真实 `工作台/下周计划.md` 做写入测试；使用临时仓库，并在部署前后核对真实文件哈希。
 - 保留所有 `studyrocket` 管理标记、边界外正文、配对、聊天历史、缓存和用户草稿，除非用户明确授权删除。
-- 学业任务始终只读。Markdown 修改必须经 `studyrocket.propose_changes` 形成草案并由用户确认；不要使用旧工具名或通过 `exec` 包装动态工具。
+- 学业任务始终只读。Markdown 修改必须经 `studyrocket.propose_changes` 形成草案并由用户确认。按当前工具目录的正式声明调用；若 Codex 仅通过 `functions.exec` 暴露 `tools.studyrocket__propose_changes`，可使用该声明入口，仍须由 StudyRocket 接收并生成草案。不得用 shell、脚本或文件工具直接修改学业 Markdown，也不得仅因目录列出工具就认定路由可用。
 - `academicTaskProtocolVersion` 当前为 5。`thread/start` 声明规范动态工具；`thread/resume` 不传 `dynamicTools`。
 - Host 自检失败时允许首页、计划、日结、勾选和 SSE 降级运行；聊天与草案仍受动态工具门禁，不得绕过认证。
 - Mobile 必须用连接 generation 和 repository generation 隔离旧 Host、旧仓库、旧 SSE 与迟到请求。

@@ -124,6 +124,7 @@
 - 后续启动恢复同一 v5 任务。
 - `thread/start` 可以声明动态工具；`thread/resume` 不传 `dynamicTools`。
 - 动态工具声明可随任务持久化，但处理器属于发起回合的 StudyRocket 连接。直接在 Codex 桌面历史页续聊可能仍发现工具，却返回 `Unsupported dynamic tool namespace: studyrocket`；Host health 不能证明另一个连接的工具路由。应在 StudyRocket 内发起真实请求并核对待确认草案，不通过直接改 Markdown 恢复。
+- 若 `thread/resume` 明确报告该任务 `already has an active writer`，Desktop/Host 读取原任务的近期文字上下文，创建带工具声明的新固定任务；保留原任务。Host 对 `turn/start` 的精确 `thread not found` 拒绝仅恢复并重试一次；超时、认证错误等不自动重发，避免重复回合。
 - Host 子 app-server 不继承调用端的 `CODEX_SESSION_ID`、`CODEX_THREAD_ID`、`CODEX_APP_TOOLS_PIPE_PATH` 等任务绑定变量；它保留本机登录状态与 `CODEX_ACCESS_TOKEN`。
 - Desktop 与 Host 共用 Codex 单实例租约，不允许两个 `app-server` 同时拥有同一工作区会话。
 - 页面切换不终止回合；显式停止、换仓库或应用退出才清理连接。

@@ -254,6 +254,12 @@ struct ChatTurnReducerTests {
         expect(StudyRocketThreadProtocol.requiresRecreationForMissingRollout(errorMessage: "no rollout found for thread id missing-thread"), true, "a missing rollout must recreate the fixed task")
         expect(StudyRocketThreadProtocol.requiresRecreationForMissingRollout(errorMessage: "401 Unauthorized"), false, "authentication errors must not recreate a task")
         expect(StudyRocketThreadProtocol.requiresRecreationForMissingRollout(errorMessage: "thread resume timed out"), false, "generic transport failures must not recreate a task")
+        expect(StudyRocketThreadProtocol.requiresResumeForUnloadedThread(errorMessage: "thread not found: current", threadID: "current"), true, "an unloaded task must resume before one turn retry")
+        expect(StudyRocketThreadProtocol.requiresResumeForUnloadedThread(errorMessage: "thread not found: other", threadID: "current"), false, "another task must not be resumed")
+        expect(StudyRocketThreadProtocol.requiresResumeForUnloadedThread(errorMessage: "request timed out", threadID: "current"), false, "ambiguous failures must not duplicate a turn")
+        expect(StudyRocketThreadProtocol.hasConflictingWriter(errorMessage: "thread current already has an active writer", threadID: "current"), true, "a desktop-owned task needs context-preserving migration")
+        expect(StudyRocketThreadProtocol.hasConflictingWriter(errorMessage: "thread other already has an active writer", threadID: "current"), false, "unrelated writer errors must remain visible")
+        expect(StudyRocketThreadProtocol.hasConflictingWriter(errorMessage: "401 Unauthorized", threadID: "current"), false, "auth errors must not trigger migration")
     }
 
     private static func testNestedProposalRoutesToVisibleTurn() {

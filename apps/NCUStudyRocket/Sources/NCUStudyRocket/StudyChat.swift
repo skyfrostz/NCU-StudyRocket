@@ -252,8 +252,16 @@ final class CodexAppServerClient: NSObject {
                     "model": selection.model, "modelProvider": selection.modelProvider
                 ])
             } catch {
-                guard StudyRocketThreadProtocol.requiresRecreationForMissingRollout(errorMessage: error.localizedDescription) else {
+                let writerConflict = StudyRocketThreadProtocol.hasConflictingWriter(errorMessage: error.localizedDescription, threadID: threadID)
+                guard writerConflict || StudyRocketThreadProtocol.requiresRecreationForMissingRollout(errorMessage: error.localizedDescription) else {
                     throw error
+                }
+                if writerConflict {
+                    let response = try await request(method: "thread/read", params: ["threadId": threadID, "includeTurns": true])
+                    let previous = try resultObject(response)
+                    legacyHistory = await Task.detached(priority: .utility) {
+                        self.parseHistory(previous["thread"] as? [String: Any]) ?? []
+                    }.value
                 }
                 resumedResponse = nil
             }

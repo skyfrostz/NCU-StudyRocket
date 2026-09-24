@@ -93,4 +93,12 @@ public enum StudyRocketThreadProtocol {
     public static func requiresRecreationForMissingRollout(errorMessage: String?) -> Bool {
         errorMessage?.localizedCaseInsensitiveContains("no rollout found for thread id") == true
     }
+
+    public static func requiresResumeForUnloadedThread(errorMessage: String?, threadID: String) -> Bool {
+        errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines) == "thread not found: \(threadID)"
+    }
+
+    public static func hasConflictingWriter(errorMessage: String?, threadID: String) -> Bool {
+        errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines) == "thread \(threadID) already has an active writer"
+    }
 }
