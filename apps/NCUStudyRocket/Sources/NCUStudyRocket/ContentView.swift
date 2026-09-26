@@ -1106,7 +1106,7 @@ struct WeeklyPlanView: View {
         }
     }
     .sheet(item: $deletionReview) { summary in
-        WeeklyDeletionReviewSheet(summary: summary, returnToEditing: { deletionReview = nil }, confirm: { deletionReview = nil; persist() })
+        WeeklyDeletionReviewSheet(summary: summary, returnToEditing: { deletionReview = nil }, confirm: { deletionReview = nil; persist(showSuccess: false) })
     }
     .alert("保存结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? "") } }
     private func load() {
@@ -1136,9 +1136,17 @@ struct WeeklyPlanView: View {
     }
     private func save() {
         let summary = currentDeletionSummary()
-        if !summary.isEmpty { deletionReview = summary } else { persist() }
+        if !summary.isEmpty { deletionReview = summary } else { persist(showSuccess: true) }
     }
-    private func persist() {
+    private func requestPersist() {
+        let summary = currentDeletionSummary()
+        if !summary.isEmpty {
+            deletionReview = summary
+        } else {
+            persist(showSuccess: false)
+        }
+    }
+    private func persist(showSuccess: Bool) {
         let repo = MarkdownRepository(root: workspace.rootURL)
         do {
             let sourceMigrations = Dictionary(uniqueKeysWithValues: plan.deliveries.compactMap { delivery -> (String, String)? in
@@ -1153,15 +1161,26 @@ struct WeeklyPlanView: View {
                 relative: file,
                 loadedHash: loadedHash
             )
-            notice = "已保存到工作台/下周计划.md"
+            if showSuccess {
+                notice = "已保存到工作台/下周计划.md"
+            } else {
+                inlineNotice = "已自动写入工作台/下周计划.md"
+            }
             load()
             workspace.refreshGitStatus()
-        } catch { notice = error.localizedDescription }
+        } catch {
+            if showSuccess {
+                notice = error.localizedDescription
+            } else {
+                inlineNotice = error.localizedDescription
+            }
+        }
     }
     private func commitCell(_ target: WeeklyEditTarget, value: String) {
         switch target.kind {
         case .grid(let row, let column): plan.cells[row][column] = value
         }
+        requestPersist()
     }
     private func assignUnassignedTask(
         _ assignment: WeeklyPendingTaskAssignment,
@@ -1183,7 +1202,7 @@ struct WeeklyPlanView: View {
         var targetTasks = PeriodTaskParser.tasks(from: plan.cells[targetPeriod][targetDay]).map(\.text)
         targetTasks.append(editedText)
         plan.cells[targetPeriod][targetDay] = targetTasks.joined(separator: "\n")
-        inlineNotice = "已纳入安排，点击保存同步到周计划。"
+        requestPersist()
     }
     private func returnScheduledTask(row: Int, column: Int, taskID: String) {
         guard plan.cells.indices.contains(row),
@@ -1200,7 +1219,7 @@ struct WeeklyPlanView: View {
         var pendingTasks = PeriodTaskParser.tasks(from: plan.unassignedByDay[column]).map(\.text)
         pendingTasks.append(task)
         plan.unassignedByDay[column] = pendingTasks.joined(separator: "\n")
-        inlineNotice = "已退回待分时，点击保存同步到周计划。"
+        requestPersist()
     }
     private func beginEditing(_ state: WeeklyRowEditorState) {
         guard activeEditor == nil || activeEditor?.id == state.id else {
@@ -1221,6 +1240,7 @@ struct WeeklyPlanView: View {
             plan.bufferRules[index].text = activeEditor.draftText
         }
         self.activeEditor = nil
+        requestPersist()
     }
     private func cancelEditing() {
         guard let activeEditor else { return }
@@ -1246,6 +1266,7 @@ struct WeeklyPlanView: View {
         guard let index = plan.deliveries.firstIndex(where: { $0.id == id }) else { return }
         plan.deliveries[index].isCompleted.toggle()
         plan.deliveries.sort { !$0.isCompleted && $1.isCompleted }
+        requestPersist()
     }
     private func requestToggleDelivery(_ id: UUID) {
         guard let delivery = plan.deliveries.first(where: { $0.id == id }) else { return }
@@ -1260,11 +1281,15 @@ struct WeeklyPlanView: View {
             self.toggleDelivery(id)
         }
     }
-    private func removeDelivery(_ id: UUID) { plan.deliveries.removeAll { $0.id == id } }
+    private func removeDelivery(_ id: UUID) {
+        plan.deliveries.removeAll { $0.id == id }
+        requestPersist()
+    }
     private func moveDelivery(_ source: UUID, _ destination: UUID) {
         guard let from = plan.deliveries.firstIndex(where: { $0.id == source }), let to = plan.deliveries.firstIndex(where: { $0.id == destination }), plan.deliveries[from].isCompleted == plan.deliveries[to].isCompleted, from != to else { return }
         let item = plan.deliveries.remove(at: from)
         plan.deliveries.insert(item, at: plan.deliveries.firstIndex(where: { $0.id == destination }) ?? plan.deliveries.endIndex)
+        requestPersist()
     }
     private func moveDeliveryByStep(_ id: UUID, _ step: Int) {
         guard let current = plan.deliveries.first(where: { $0.id == id }) else { return }
@@ -1272,11 +1297,15 @@ struct WeeklyPlanView: View {
         guard let index = group.firstIndex(where: { $0.id == id }), group.indices.contains(index + step) else { return }
         moveDelivery(id, group[index + step].id)
     }
-    private func removeBufferRule(_ id: UUID) { plan.bufferRules.removeAll { $0.id == id } }
+    private func removeBufferRule(_ id: UUID) {
+        plan.bufferRules.removeAll { $0.id == id }
+        requestPersist()
+    }
     private func moveBufferRule(_ source: UUID, _ destination: UUID) {
         guard let from = plan.bufferRules.firstIndex(where: { $0.id == source }), let to = plan.bufferRules.firstIndex(where: { $0.id == destination }), plan.bufferRules[from].category == plan.bufferRules[to].category, from != to else { return }
         let item = plan.bufferRules.remove(at: from)
         plan.bufferRules.insert(item, at: plan.bufferRules.firstIndex(where: { $0.id == destination }) ?? plan.bufferRules.endIndex)
+        requestPersist()
     }
     private func moveBufferRuleByStep(_ id: UUID, _ step: Int) {
         guard let current = plan.bufferRules.first(where: { $0.id == id }) else { return }
@@ -1302,7 +1331,7 @@ private struct MigrationNotice: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("已生成旧计划迁移预览").font(.subheadline.weight(.semibold))
                 Text(text).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Text("预览只存在于内存；确认三个时段内容后点击保存才会更新 Markdown。").font(.caption2).foregroundStyle(.secondary)
+                Text("点击完成后会立即写入 Markdown；顶部保存按钮可用于手动重试。").font(.caption2).foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
             Button("知道了", action: dismiss).buttonStyle(.bordered)
