@@ -50,9 +50,22 @@ struct ContentView: View {
             }.background(Color(nsColor: .windowBackgroundColor))
         }
         .fileImporter(isPresented: $showBinder, allowedContentTypes: [.folder]) { result in if case .success(let url) = result { workspace.bind(to: url) } }
-        .onAppear { workspace.startMonitoring(); routePendingReminder() }
+        .onAppear {
+            workspace.startMonitoring()
+            routePendingReminder()
+            if StudyRocketSelfCheckConfiguration.current == nil { DesktopWidgetPublisher.publish(from: workspace.rootURL) }
+        }
         .onDisappear { workspace.stopMonitoring() }
         .onReceive(NotificationCenter.default.publisher(for: .studyRocketOpenChat)) { _ in requestSection(.chat) }
+        .onReceive(NotificationCenter.default.publisher(for: .studyRocketWorkspaceChanged)) { _ in
+            DesktopWidgetPublisher.publish(from: workspace.rootURL)
+        }
+        .onChange(of: workspace.rootURL) { _, root in
+            if StudyRocketSelfCheckConfiguration.current == nil { DesktopWidgetPublisher.publish(from: root) }
+        }
+        .onOpenURL { url in
+            if url.scheme == "ncustudyrocket-mac", url.host == "home" { requestSection(.home) }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .studyRocketReminderRoute)) { notification in
             let route = reminders.takePendingRoute() ?? (notification.object as? ReminderRoute)
             guard let route else { return }

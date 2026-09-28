@@ -1,6 +1,6 @@
 # NCU StudyRocket 项目知识库
 
-更新时间：2026-09-24
+更新时间：2026-09-28
 
 本文件汇总当前 Codex 项目会话中仍有维护价值的内容，并与当前源码交叉核验。它不是发布说明，也不替代 `AGENTS.md`、`README.md`、源码或测试。
 
@@ -384,6 +384,7 @@ shasum -a 256 '工作台/下周计划.md'
 - Host snapshot 必须同时覆盖周计划的主区、历史区和未来区。手机只读 Host 的 `SnapshotResponse`，因此只更新 iPhone 包不能修复运行中 Mac Host 的旧 snapshot 逻辑。
 - 新 Logo 需作为受控品牌资源同时进入 Desktop、Mobile 的 App Icon/Mark 及相应生成脚本或构建目标；替换源图后必须重建、签名并验证实际安装包，而不是只检查仓库中的 PNG。
 - iOS 主屏小组件只读取 App Group 中经过脱敏的 snapshot 投影；它不能写 Markdown、代替 Host 写入，也不能持有待同步队列或 Host 凭据。
+- macOS 桌面小组件由 `NCUStudyRocketDesktopWidget.xcodeproj` 构建，`Scripts/build_app.sh` 将其嵌入 SwiftPM 生成的主应用，并用本机 Apple Development 身份为两者签入同一个团队前缀 App Group（与 iOS 的 `group.` 标识分开）。桌面应用从当前绑定仓库的周计划和课表生成只读精简快照；大号分列显示今日课表与待办，中号显示今日课表，小号显示首条未完成任务。任务保存、课表导入、换仓库和应用运行时的定期检查会刷新快照。跨日后未刷新时显示重新打开应用的提示，不能把昨天的内容当成今日安排。首次交付应单独核验 macOS 小组件实际注册、桌面显示和点击打开应用；构建与签名通过不足以代替这些运行验收。
 
 ### 8.2 离线完成与队列恢复
 

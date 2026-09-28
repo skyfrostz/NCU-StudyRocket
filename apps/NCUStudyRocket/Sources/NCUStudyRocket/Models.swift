@@ -451,6 +451,9 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func refreshGitStatus() {
+        if selfCheckConfiguration == nil {
+            NotificationCenter.default.post(name: .studyRocketWorkspaceChanged, object: nil)
+        }
         guard gitRefreshTask == nil else { return }
         let root = rootURL
         gitRefreshTask = Task { [weak self] in
@@ -487,6 +490,10 @@ final class WorkspaceStore: ObservableObject {
             return output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "已同步" : "存在未提交修改"
         } catch { return "无法读取 Git 状态" }
     }
+}
+
+extension Notification.Name {
+    static let studyRocketWorkspaceChanged = Notification.Name("studyrocket.workspace.changed")
 }
 
 enum MarkdownError: LocalizedError { case outsideWorkspace, nonMarkdown, conflict, invalidManagedBlock
