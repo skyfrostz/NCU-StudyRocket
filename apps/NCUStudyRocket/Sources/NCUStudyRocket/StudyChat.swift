@@ -140,7 +140,6 @@ enum StudyChatError: LocalizedError {
 
 @MainActor
 final class CodexAppServerClient: NSObject {
-    private let executable = "/Applications/ChatGPT.app/Contents/Resources/codex"
     private let codexLeaseStore: CodexLeaseStore
     private var process: Process?
     private var input: FileHandle?
@@ -184,7 +183,7 @@ final class CodexAppServerClient: NSObject {
             return threadID!
         }
         if isRunning { disconnect() }
-        guard FileManager.default.isExecutableFile(atPath: executable) else {
+        guard let executable = StudyRocketCodexExecutable.resolve() else {
             throw StudyChatError.unavailable("找不到 Codex 本地程序，请先打开或更新 Codex。")
         }
         rootURL = root.standardizedFileURL

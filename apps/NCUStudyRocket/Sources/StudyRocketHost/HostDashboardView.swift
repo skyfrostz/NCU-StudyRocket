@@ -96,6 +96,11 @@ struct HostDashboardView: View {
                     .font(.system(size: 15, weight: .semibold))
                 Spacer()
                 endpointStateBadge
+                Button("刷新连接状态", systemImage: "arrow.clockwise") {
+                    host.refreshTailscale()
+                }
+                .buttonStyle(.bordered)
+                .disabled(host.isRefreshingTailscale)
             }
 
             if let address = host.tailscaleStatus.address {

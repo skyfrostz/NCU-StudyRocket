@@ -41,6 +41,8 @@ private final class MobileSyncFixture: @unchecked Sendable {
     private var forcedDeliveryError: APIErrorBody?
     private var dropDeliveryResponseAfterApply: Bool
     private var documents: [String: DocumentDetail]
+    private let codexReady: Bool
+    private let repositoryBound: Bool
     private var healthReads = 0
     private var snapshotReads = 0
     private var chatHistoryReads = 0
@@ -52,12 +54,16 @@ private final class MobileSyncFixture: @unchecked Sendable {
 
     init(
         snapshot: SnapshotResponse,
+        codexReady: Bool = true,
+        repositoryBound: Bool = true,
         forcedDeliveryError: APIErrorBody? = nil,
         dropDeliveryResponseAfterApply: Bool = false,
         documents: [String: DocumentDetail] = [:],
         chatCompletionAfterHistoryReads: Int? = nil
     ) {
         authoritative = snapshot
+        self.codexReady = codexReady
+        self.repositoryBound = repositoryBound
         self.forcedDeliveryError = forcedDeliveryError
         self.dropDeliveryResponseAfterApply = dropDeliveryResponseAfterApply
         self.documents = documents
@@ -86,12 +92,12 @@ private final class MobileSyncFixture: @unchecked Sendable {
             healthReads += 1
             return MobileStubResponse(statusCode: 200, data: try encoder.encode(HealthResponse(
                 hostVersion: "test",
-                repositoryBound: true,
-                codexReady: true,
+                repositoryBound: repositoryBound,
+                codexReady: codexReady,
                 pairedDeviceCount: 1,
                 activeThreadID: "academic",
                 repositoryID: "repo-test",
-                dynamicToolsReady: true
+                dynamicToolsReady: codexReady
             )))
         case ("GET", "/v1/snapshot"):
             snapshotReads += 1
@@ -600,6 +606,33 @@ final class MobileSessionSyncTests: XCTestCase {
         XCTAssertEqual(session.pendingPeriodCount, 0)
         XCTAssertEqual(session.legacyPendingToggleCount, 0)
         XCTAssertNotNil(session.pendingDailyDraft)
+        XCTAssertTrue(fixture.writePaths.isEmpty)
+    }
+
+    func testHostWithoutCodexStillLoadsPlanAndKeepsChatUnavailable() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), codexReady: false)
+        let session = makeSession(directory: directory, fixture: fixture)
+
+        await session.refresh()
+
+        XCTAssertEqual(session.state, .online)
+        XCTAssertEqual(session.snapshot?.revision, "r0")
+        XCTAssertFalse(session.isChatAvailable)
+        XCTAssertTrue(fixture.writePaths.isEmpty)
+    }
+
+    func testUnboundRepositoryStillRejectsConnection() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), repositoryBound: false)
+        let session = makeSession(directory: directory, fixture: fixture)
+
+        await session.refresh()
+
+        XCTAssertNotEqual(session.state, .online)
+        XCTAssertEqual(fixture.readCounts.snapshot, 0)
         XCTAssertTrue(fixture.writePaths.isEmpty)
     }
 

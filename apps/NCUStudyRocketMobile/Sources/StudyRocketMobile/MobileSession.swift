@@ -357,6 +357,7 @@ public final class MobileSession: ObservableObject {
         let attemptGeneration = pairAttemptGeneration
         let remote = StudyRocketRemoteClient(endpoint: endpoint)
         do {
+            _ = try await remote.health(timeoutInterval: 8)
             let response = try await remote.pair(code: code, deviceName: deviceName)
             guard attemptGeneration == pairAttemptGeneration else { throw MobileHostStateError.connectionChanged }
             UserDefaults.standard.set(response.deviceID, forKey: "studyrocket.deviceID")
@@ -417,7 +418,7 @@ public final class MobileSession: ObservableObject {
             if health.chatIssueCode == "provider_auth_failed" {
                 setChatIssue(code: "provider_auth_failed", message: nil)
             }
-            guard health.repositoryBound, health.codexReady else {
+            guard health.repositoryBound else {
                 throw MobileHostStateError.configurationUnavailable
             }
             let value = try await client.snapshot()
@@ -2147,6 +2148,7 @@ public actor StudyRocketRemoteClient {
         var request = URLRequest(url: endpoint.appendingPathComponent("v1/pair"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 12
         request.httpBody = try JSONEncoder().encode(PairRequest(code: code, deviceName: deviceName, publicKey: publicKey))
         let (data, response) = try await session.data(for: request)
         try validate(response, data: data)
@@ -2162,8 +2164,8 @@ public actor StudyRocketRemoteClient {
         try await get("/v1/snapshot", timeoutInterval: timeoutInterval, as: SnapshotResponse.self)
     }
 
-    public func health() async throws -> HealthResponse {
-        let value = try await get("/v1/health", as: HealthResponse.self)
+    public func health(timeoutInterval: TimeInterval? = nil) async throws -> HealthResponse {
+        let value = try await get("/v1/health", timeoutInterval: timeoutInterval, as: HealthResponse.self)
         guard value.apiVersion == StudyRocketAPI.version else {
             throw MobileHostStateError.incompatibleAPI(received: value.apiVersion)
         }

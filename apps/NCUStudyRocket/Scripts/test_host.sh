@@ -57,8 +57,8 @@ run_check() {
 mkdir -p "$RUNTIME_HOME" "$RUNTIME_TMP" "$SELF_CHECK_ROOT" "$SELF_CHECK_STATE"
 
 print -- "==> Building StudyRocketHost dependencies"
-swift build --product StudyRocketHost
-BIN_PATH="$(swift build --show-bin-path)"
+swift build --build-system native --product StudyRocketHost
+BIN_PATH="$(swift build --build-system native --show-bin-path)"
 MODULES_DIR="$BIN_PATH/Modules"
 SHARED_BUILD_DIR="$BIN_PATH/StudyRocketShared.build"
 
@@ -69,6 +69,12 @@ SHARED_OBJECTS=("$SHARED_BUILD_DIR"/*.swift.o(N))
 
 # These checks need Host internal types, so compile each test with just the Host
 # implementation it exercises rather than changing Package.swift to expose them.
+compile_check HostConnectionDiscoveryChecks \
+  -parse-as-library \
+  Sources/StudyRocketHost/TailscaleStatus.swift \
+  Sources/StudyRocketChatCore/StudyRocketCodexExecutable.swift \
+  Tests/HostConnectionDiscoveryChecks.swift
+
 compile_check HostHTTPRequestParserChecks \
   -parse-as-library \
   Sources/StudyRocketHost/HostHTTPRequestParser.swift \
@@ -101,8 +107,9 @@ compile_check WeeklyPlanModelChecks \
 # HostWriteServiceChecks uses temporary fixtures. CFFIXED_USER_HOME also keeps
 # its proposal-backup fixture out of the real Application Support directory.
 run_check HostHTTPRequestParserChecks
+run_check HostConnectionDiscoveryChecks
 run_check HostPairingStoreChecks
 run_check HostWriteServiceChecks
 run_check WeeklyPlanModelChecks
 
-print -- "Host checks passed: 4/4"
+print -- "Host checks passed: 5/5"

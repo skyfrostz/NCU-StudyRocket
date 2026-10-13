@@ -53,6 +53,10 @@ private final class HostApplicationDelegate: NSObject, NSApplicationDelegate, NS
         }
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        host.refreshTailscale()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         host.stop()
     }
@@ -145,6 +149,7 @@ private final class HostApplicationDelegate: NSObject, NSApplicationDelegate, NS
     }
 
     @objc private func showDashboard(_ sender: Any?) {
+        host.refreshDevices()
         if dashboardWindow == nil {
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 820, height: 640),
@@ -238,6 +243,8 @@ final class HostController: ObservableObject {
     private let selfCheck = StudyRocketSelfCheckConfiguration.current
     private var server: StudyRocketHTTPServer?
     private var startupDeadline: DispatchWorkItem?
+    @Published private(set) var isRefreshingTailscale = false
+    private var tailscaleRefreshTimer: Timer?
     private var terminationSources: [DispatchSourceSignal] = []
     private var rootURL: URL {
         if let selfCheck { return selfCheck.repositoryRoot }
@@ -253,11 +260,16 @@ final class HostController: ObservableObject {
     }
 
     var repositoryStatus: String { repositoryIsValid ? "仓库已绑定 · \(rootURL.lastPathComponent)" : "仓库未绑定或缺少档案" }
-    var codexIsAvailable: Bool { FileManager.default.isExecutableFile(atPath: "/Applications/ChatGPT.app/Contents/Resources/codex") }
+    var codexIsAvailable: Bool { StudyRocketCodexExecutable.resolve() != nil }
     var codexStatus: String { codexIsAvailable ? "Codex 可用" : "Codex 未找到" }
 
     init() {
         installTerminationHandlers()
+        if selfCheck == nil {
+            tailscaleRefreshTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.refreshTailscale() }
+            }
+        }
     }
 
     func start() {
@@ -399,7 +411,7 @@ final class HostController: ObservableObject {
         }
     }
 
-    deinit { server?.stop() }
+    deinit { tailscaleRefreshTimer?.invalidate(); server?.stop() }
 
     private func installTerminationHandlers() {
         for signalNumber in [SIGINT, SIGTERM] {
@@ -415,67 +427,14 @@ final class HostController: ObservableObject {
     }
 
     func refreshTailscale() {
+        guard !isRefreshingTailscale, selfCheck == nil else { return }
+        isRefreshingTailscale = true
         let task = Task.detached(priority: .utility) { TailscaleStatus.detect() }
         Task { [weak self] in
-            self?.tailscaleStatus = await task.value
+            let result = await task.value
+            self?.tailscaleStatus = result
+            self?.isRefreshingTailscale = false
         }
-    }
-}
-
-struct TailscaleStatus: Equatable {
-    enum State: Equatable { case unavailable, notServed, served }
-    let state: State
-    let address: String?
-
-    static let unavailable = TailscaleStatus(state: .unavailable, address: nil)
-
-    var title: String {
-        switch state {
-        case .unavailable: "Tailscale 未检测到"
-        case .notServed: "Tailscale 已连接，未检测 Serve"
-        case .served: "Tailscale Serve 地址可用"
-        }
-    }
-
-    var systemImage: String {
-        switch state {
-        case .unavailable: "wifi.slash"
-        case .notServed: "network"
-        case .served: "lock.shield.fill"
-        }
-    }
-
-    static func detect() -> TailscaleStatus {
-        let candidates = [
-            "/opt/homebrew/bin/tailscale",
-            "/usr/local/bin/tailscale",
-            "/usr/bin/tailscale",
-            "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
-        ]
-        for executable in candidates where FileManager.default.isExecutableFile(atPath: executable) {
-            let output = run(executable, arguments: ["status", "--json"])
-            guard let data = output.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  object["BackendState"] as? String == "Running",
-                  let selfInfo = object["Self"] as? [String: Any],
-                  let dnsName = selfInfo["DNSName"] as? String else { continue }
-            let host = dnsName.trimmingCharacters(in: CharacterSet(charactersIn: "."))
-            guard !host.isEmpty else { continue }
-            let serve = run(executable, arguments: ["serve", "status", "--json"])
-            let served = serve.contains("https://") || serve.contains("Web")
-            // The MagicDNS hostname is stable enough to enter on iPhone before
-            // Serve is enabled. Keep reachability separate from discovery.
-            return TailscaleStatus(state: served ? .served : .notServed, address: "https://\(host)/")
-        }
-        return .unavailable
-    }
-
-    private static func run(_ executable: String, arguments: [String]) -> String {
-        let process = Process(); let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments; process.standardOutput = pipe; process.standardError = Pipe()
-        do { try process.run(); let data = pipe.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit(); return String(data: data, encoding: .utf8) ?? "" }
-        catch { return "" }
     }
 }
 
@@ -709,7 +668,7 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
             let bound = FileManager.default.fileExists(atPath: root.appendingPathComponent("AGENTS.md").path) && FileManager.default.fileExists(atPath: root.appendingPathComponent("PROFILE.md").path)
             let codexReady = selfCheck?.disablesCodex == true
                 ? false
-                : FileManager.default.isExecutableFile(atPath: "/Applications/ChatGPT.app/Contents/Resources/codex")
+                : StudyRocketCodexExecutable.resolve() != nil
             let chatState = chatBridge.chatState
             let toolsReady = chatBridge.canGenerateChat && StudyRocketDynamicToolContract.declarationIsValid
             if isAuthorized(headers: headers, method: method, path: path, body: body) {

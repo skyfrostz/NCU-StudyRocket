@@ -3183,6 +3183,7 @@ private struct MobilePairingView: View {
   @State private var pairingCode = ""
   @State private var deviceName = "我的 iPhone"
   @State private var pairingMessage: String?
+  @State private var isPairing = false
   @State private var showDraftsConfirmation = false
   @FocusState private var focusedField: MobilePairingFocus?
 
@@ -3231,8 +3232,16 @@ private struct MobilePairingView: View {
           .onSubmit { focusedField = nil }
       }
       Section {
-        MobilePrimaryButton(title: "配对并连接", symbol: "link.badge.plus") {
+        MobilePrimaryButton(
+          title: isPairing ? "正在配对并连接" : "配对并连接",
+          symbol: isPairing ? nil : "link.badge.plus"
+        ) {
           requestPairing()
+        }
+        .disabled(isPairing)
+        if isPairing {
+          ProgressView("正在检查 Mac Host 并配对")
+            .frame(maxWidth: .infinity)
         }
         if let pairingMessage {
           Text(pairingMessage)
@@ -3264,9 +3273,17 @@ private struct MobilePairingView: View {
   }
 
   private func requestPairing() {
+    guard !isPairing else { return }
     focusedField = nil
-    guard URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) != nil else {
-      pairingMessage = "地址格式不正确。"
+    pairingMessage = nil
+    guard let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
+      MobileEndpointError.accepts(url)
+    else {
+      pairingMessage = MobileEndpointError.invalidEndpoint.localizedDescription
+      return
+    }
+    guard !pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      pairingMessage = "请输入 Mac Host 窗口中的一次性配对码。"
       return
     }
     if session.hasPendingDrafts && session.savedEndpoint != nil {
@@ -3280,9 +3297,14 @@ private struct MobilePairingView: View {
     guard let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else {
       return
     }
+    isPairing = true
     Task {
+      defer { isPairing = false }
       do {
-        try await session.pair(endpoint: url, code: pairingCode, deviceName: deviceName)
+        try await session.pair(
+          endpoint: url,
+          code: pairingCode.trimmingCharacters(in: .whitespacesAndNewlines),
+          deviceName: deviceName.trimmingCharacters(in: .whitespacesAndNewlines))
         dismiss()
       } catch {
         pairingMessage = error.localizedDescription

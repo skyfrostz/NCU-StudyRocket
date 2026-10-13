@@ -57,7 +57,6 @@ private enum HostCodexSessionExit {
 
 @MainActor
 private final class HostCodexSession {
-    private let executable = "/Applications/ChatGPT.app/Contents/Resources/codex"
     private let root: URL
     private let descriptorStore: StudyRocketTaskDescriptorStore
     private var threadID: String
@@ -125,7 +124,7 @@ private final class HostCodexSession {
             touchActivity()
             return
         }
-        guard FileManager.default.isExecutableFile(atPath: executable) else {
+        guard let executable = StudyRocketCodexExecutable.resolve() else {
             throw HostChatError.unavailable("找不到 Codex 本地程序。")
         }
         if !isRunning {
