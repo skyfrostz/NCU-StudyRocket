@@ -25,6 +25,9 @@ xcodebuild -project NCUStudyRocketDesktopWidget.xcodeproj \
   SYMROOT="$ROOT/.build/widget-products" \
   CODE_SIGNING_ALLOWED=NO build >/dev/null
 APP="$ROOT/.build/NCU StudyRocket.app"
+IS_PREVIEW="${STUDYROCKET_PREVIEW:-0}"
+if [[ "$CONFIGURATION" == "debug" ]]; then IS_PREVIEW=1; fi
+if [[ "$IS_PREVIEW" == "1" ]]; then APP="$ROOT/.build/NCU StudyRocket Preview.app"; fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 mkdir -p "$APP/Contents/PlugIns"
@@ -57,6 +60,15 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>StudyRocket Mac</string><key>CFBundleURLSchemes</key><array><string>ncustudyrocket-mac</string></array></dict></array>
 </dict></plist>
 PLIST
+if [[ "$IS_PREVIEW" == "1" ]]; then
+  # An appearance test must never take over Finder/Spotlight or the installed app's links.
+  plutil -replace CFBundleIdentifier -string com.skyfrost.ncustudyrocket.preview "$APP/Contents/Info.plist"
+  for key in CFBundleName CFBundleDisplayName; do
+    plutil -replace "$key" -string "StudyRocket Preview" "$APP/Contents/Info.plist"
+  done
+  plutil -remove CFBundleURLTypes "$APP/Contents/Info.plist"
+  plutil -replace CFBundleIdentifier -string com.skyfrost.ncustudyrocket.preview.widget "$APP/Contents/PlugIns/NCUStudyRocketDesktopWidget.appex/Contents/Info.plist"
+fi
 SIGN_IDENTITY="${STUDYROCKET_CODESIGN_IDENTITY:-Apple Development: skyfrostzhong@gmail.com (3AMP6XVPD4)}"
 codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ROOT/Widget/AppGroup.entitlements" "$APP/Contents/PlugIns/NCUStudyRocketDesktopWidget.appex" >/dev/null
 codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ROOT/Widget/AppGroup.entitlements" "$APP" >/dev/null

@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="${0:A:h:h}"
 APP="$ROOT/.build/NCU StudyRocket.app"
-"$ROOT/Scripts/build_app.sh" >/dev/null
+STUDYROCKET_PREVIEW=0 "$ROOT/Scripts/build_app.sh" release >/dev/null
 rm -rf "/Applications/NCU StudyRocket.app"
 cp -R "$APP" "/Applications/NCU StudyRocket.app"
 # Finder and URL launches should resolve to the installed application, even after a build was opened.
