@@ -396,6 +396,22 @@ final class MobileSessionSyncTests: XCTestCase {
         super.tearDown()
     }
 
+    func testEmptyPlanDatesRespectUnassignedCompletedAndOfflineQueuedTasks() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try writeDrafts(directory: directory, legacy: false, deliveryTexts: [], periodIDs: ["morning"], includeDaily: false)
+        let session = makeSession(directory: directory, fixture: MobileSyncFixture(snapshot: makeSnapshot()))
+        let blank = PeriodSnapshot(id: "morning", title: "上午", text: "")
+        func day(_ id: String, slot: PeriodSnapshot, unassigned: String = "") -> DaySnapshot {
+            DaySnapshot(id: id, dateLabel: id, slots: [slot], unassigned: unassigned)
+        }
+        XCTAssertFalse(session.isEmptyPlanDay(day("2026-08-19", slot: blank)))
+        XCTAssertTrue(session.isEmptyPlanDay(day("2026-08-20", slot: blank)))
+        XCTAssertFalse(session.isEmptyPlanDay(day("2026-08-20", slot: blank, unassigned: "待分时事项")))
+        let done = PeriodSnapshot(id: "morning", title: "上午", text: "完成例题", isCompleted: true)
+        XCTAssertFalse(session.isEmptyPlanDay(day("2026-08-20", slot: done)))
+    }
+
     func testLegacyTwoOfFiveQueueWaitsForReviewThenReplaysSequentially() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

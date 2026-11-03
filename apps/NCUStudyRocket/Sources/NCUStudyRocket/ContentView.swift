@@ -42,8 +42,8 @@ struct ContentView: View {
                 case .chat: StudyChatView()
                 case .week: WeeklyPlanView()
                 case .daily: DailyCheckinView()
-                case .routes: RouteView(title: "四条航线", files: ["工作台/航线/课程.md", "工作台/航线/科研.md", "工作台/航线/保研.md", "工作台/航线/生活.md"])
-                case .baoyan: RouteView(title: "保研", files: ["保研/保研进度看板.md", "保研/目标院校库.md", "保研/保研政策与时间线.md", "保研/背景提升清单.md", "工作台/航线/保研.md"])
+                case .routes: AcademicOverview(admission: false).id(AppSection.routes)
+                case .baoyan: AcademicOverview(admission: true).id(AppSection.baoyan)
                 case .library: LibraryView()
                 case .settings: SettingsView()
                 }
@@ -92,10 +92,6 @@ struct ContentView: View {
 }
 
 struct DashboardView: View {
-    private static var todayLabel: String {
-        let f = DateFormatter(); f.locale = Locale(identifier: "zh_CN"); f.timeZone = TimeZone(identifier: "Asia/Shanghai"); f.dateFormat = "M 月 d 日，EEEE"
-        return f.string(from: Date())
-    }
     let navigate: (AppSection) -> Void
     @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var chat: StudyChatStore
@@ -111,10 +107,8 @@ struct DashboardView: View {
     var body: some View {
         PageScaffold {
             VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
-                PageTitleBar(title: "今天", subtitle: Self.todayLabel) {
-                    Button("记一件事", systemImage: "square.and.pencil") { navigate(.daily) }
-                }
-                ResponsiveColumns {
+                SeasonalHeader { navigate(.daily) }
+                TodayCardsLayout {
                     let todayTasks = dashboard.todayCells.map { item in
                         TodayPeriodTask(
                             id: item.id,
@@ -134,7 +128,6 @@ struct DashboardView: View {
                         openWeek: { navigate(.week) },
                         toggle: requestPeriodToggle
                     )
-                } second: {
                     NextClassCard(snapshot: dashboard.timetable) { navigate(.timetable) }
                 }
                 DeliveryOverview(
@@ -287,7 +280,7 @@ private struct NextClassCard: View {
             let next = entries.first { ($0.startTime ?? "") > clock }
             StudySurface {
                 VStack(alignment: .leading, spacing: 12) {
-                    Label(current == nil ? "下一节课" : "正在上", systemImage: "calendar.badge.clock").font(.headline)
+                    Label(current == nil ? "下一节课" : "正在上", systemImage: "calendar.badge.clock").font(.headline).frame(minHeight: 22)
                     if let item = current ?? next {
                         Text(item.timeText).font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
                         Text(StudyRocketTimetableCourseCatalog.displayTitle(for: item.title).primary).font(.title3.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
@@ -298,8 +291,9 @@ private struct NextClassCard: View {
                         Text(snapshot.status != .available ? "当前没有可用课表" : entries.isEmpty ? "今日无课程安排" : "今日课程已结束")
                             .foregroundStyle(.secondary)
                     }
+                    Spacer(minLength: 0)
                     Divider()
-                    Button(entries.isEmpty ? "查看课表" : "查看今日全部 \(entries.count) 项") { if entries.isEmpty { open() } else { showToday = true } }.buttonStyle(.link)
+                    Button(entries.isEmpty ? "查看课表" : "查看今日全部 \(entries.count) 项") { if entries.isEmpty { open() } else { showToday = true } }.buttonStyle(.link).frame(minHeight: 22)
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -527,6 +521,17 @@ private struct TimetableStateNotice: View {
     }
 }
 
+extension TimetableEntrySnapshot {
+    var timeText: String {
+        switch (startTime, endTime) {
+        case let (start?, end?): return "\(start) - \(end)"
+        case let (start?, nil): return "\(start) 开始"
+        case let (nil, end?): return "\(end) 结束"
+        case (nil, nil): return "时间待定"
+        }
+    }
+}
+
 private extension TimetableEntrySnapshot {
     var symbol: String {
         switch kind {
@@ -535,15 +540,6 @@ private extension TimetableEntrySnapshot {
         case .officeHour: return "person.crop.circle"
         case .event: return "calendar.badge.clock"
         case .holiday: return "sun.max.fill"
-        }
-    }
-
-    var timeText: String {
-        switch (startTime, endTime) {
-        case let (start?, end?): return "\(start) - \(end)"
-        case let (start?, nil): return "\(start) 开始"
-        case let (nil, end?): return "\(end) 结束"
-        case (nil, nil): return "时间待定"
         }
     }
 
@@ -737,12 +733,13 @@ private struct TodayPlanList: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Label("今日任务", systemImage: "checklist")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.headline)
                 Spacer()
                 let assigned = tasks.filter { !$0.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                 if !assigned.isEmpty { Text("\(assigned.filter(\.isCompleted).count)/\(assigned.count) 已完成").font(.caption).foregroundStyle(.secondary) }
             }
-            .padding(.bottom, 8)
+            .frame(minHeight: 22)
+            .padding(.bottom, 12)
             let plannedPeriods = WeeklyPlan.periods.filter { period in tasks.contains { $0.period == period && !$0.task.isEmpty } }
             ForEach(plannedPeriods, id: \.self) { period in
                 let periodTasks = tasks.filter { $0.period == period }
@@ -795,14 +792,15 @@ private struct TodayPlanList: View {
                     .padding(.top, 12)
             case .unplanned:
                 Text("今天还没有安排任务。").foregroundStyle(.secondary)
-                Divider().padding(.top, 12)
-                Button("去周计划安排今天", systemImage: "calendar.badge.plus", action: openWeek)
-                .buttonStyle(.link)
-                .padding(.top, 12)
             case .task:
                 EmptyView()
             }
+            Spacer(minLength: 12)
+            Divider()
+            Button("查看周计划", systemImage: "calendar", action: openWeek)
+                .buttonStyle(.link).frame(minHeight: 22).padding(.top, 12)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .background(.background, in: RoundedRectangle(cornerRadius: StudyRocketTheme.cornerRadius, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: StudyRocketTheme.cornerRadius, style: .continuous).strokeBorder(.quaternary) }
@@ -2416,11 +2414,6 @@ struct DailyCheckinView: View {
             workspace.refreshGitStatus(); workspace.refreshMarkdownIndex()
         } catch { notice = error.localizedDescription }
     }
-}
-
-struct RouteView: View {
-    let title: String; let files: [String]
-    var body: some View { MarkdownBrowserView(title: title, suppliedFiles: files, showsSearch: false) }
 }
 
 struct LibraryView: View {

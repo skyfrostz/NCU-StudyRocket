@@ -2100,6 +2100,16 @@ public final class MobileSession: ObservableObject {
         #endif
     }
 
+    func isEmptyPlanDay(_ day: DaySnapshot) -> Bool {
+        func hasTasks(_ value: DaySnapshot) -> Bool {
+            value.slots.contains { !$0.tasks.isEmpty || !PeriodTaskParser.tasks(from: $0.text).isEmpty }
+                || !PeriodTaskParser.tasks(from: value.unassigned).isEmpty
+        }
+        let draft = pendingWeekDraft?.days.first { $0.id == day.id }
+        return !hasTasks(day) && !(draft.map(hasTasks) ?? false)
+            && !pendingPeriodStates.keys.contains { $0.hasPrefix(day.id + "|") }
+    }
+
     private func periodKey(dayID: String, periodID: String) -> String { "\(dayID)|\(periodID)" }
 
     private func taskKey(dayID: String, periodID: String, taskID: String) -> String {

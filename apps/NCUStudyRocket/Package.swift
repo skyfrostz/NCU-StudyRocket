@@ -22,7 +22,8 @@ let package = Package(
                 "StudyRocketTimetableImport",
                 .product(name: "StudyRocketShared", package: "NCUStudyRocketShared"),
                 .product(name: "MarkdownUI", package: "swift-markdown-ui")
-            ]
+            ],
+            resources: [.copy("Resources/SeasonalVerses.tsv")]
         ),
         .executableTarget(
             name: "StudyRocketHost",

@@ -2086,6 +2086,7 @@ private struct MobilePlanView: View {
   let onNavigate: (Int) -> Void
   @State private var completedDeliveriesExpanded = false
   @State private var futureRowsExpanded = false
+  @State private var expandedEmptyDates = Set<String>()
   @State private var assignment: MobilePendingTaskAssignment?
 
   var body: some View {
@@ -2123,6 +2124,7 @@ private struct MobilePlanView: View {
         .safeAreaPadding(.bottom, 8)
       }
       .navigationTitle("周计划")
+      .onChange(of: session.repositoryGeneration) { _, _ in expandedEmptyDates.removeAll() }
       #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
       #endif
@@ -2272,21 +2274,41 @@ private struct MobilePlanView: View {
   @ViewBuilder
   private func daySchedule(_ day: DaySnapshot) -> some View {
     VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 8) {
-        Text(day.dateLabel)
-          .font(.system(.title3, design: .rounded, weight: .semibold))
-        if day.id == Self.todayIDFormatter.string(from: .now) {
-          Text("今日")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(MobileTheme.brand)
+      let empty = session.isEmptyPlanDay(day)
+      dayHeading(day, empty: empty)
+      if !empty || expandedEmptyDates.contains(day.id) {
+        ForEach(Array(day.slots.enumerated()), id: \.element.id) { index, slot in
+          scheduleSlot(slot, index: index, dayID: day.id)
         }
-        Spacer(minLength: 0)
+        pendingTasks(day)
       }
-      ForEach(Array(day.slots.enumerated()), id: \.element.id) { index, slot in
-        scheduleSlot(slot, index: index, dayID: day.id)
-      }
-      pendingTasks(day)
     }
+  }
+
+  @ViewBuilder
+  private func dayHeading(_ day: DaySnapshot, empty: Bool) -> some View {
+    let parts = day.dateLabel.components(separatedBy: " · ")
+    let label = parts.count == 2 ? parts.reversed().joined(separator: " · ") : day.dateLabel
+    let header = HStack(spacing: 8) {
+      Text(label).font(.system(.headline, design: .rounded))
+      if day.id == Self.todayIDFormatter.string(from: .now) {
+        Text("今天").font(.caption.weight(.semibold)).foregroundStyle(MobileTheme.brand)
+      }
+      Spacer()
+      if empty {
+        Text("暂无安排").font(.subheadline).foregroundStyle(.secondary)
+        Image(systemName: expandedEmptyDates.contains(day.id) ? "chevron.down" : "chevron.right")
+          .font(.caption).foregroundStyle(.secondary)
+      }
+    }
+    if empty {
+      Button {
+        if expandedEmptyDates.contains(day.id) { expandedEmptyDates.remove(day.id) }
+        else { expandedEmptyDates.insert(day.id) }
+      } label: { header.frame(minHeight: 44).contentShape(Rectangle()) }
+        .buttonStyle(.plain)
+        .accessibilityValue(expandedEmptyDates.contains(day.id) ? "已展开" : "已折叠")
+    } else { header }
   }
 
   @ViewBuilder
@@ -2327,21 +2349,24 @@ private struct MobilePlanView: View {
   @ViewBuilder
   private func futureSchedule(_ row: ScheduledRowSnapshot) -> some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text(row.dateLabel)
-        .font(.system(.title3, design: .rounded, weight: .semibold))
-      ForEach(Array(row.slots.enumerated()), id: \.element.id) { index, slot in
-        scheduleSlot(slot, index: index, dayID: nil)
-      }
-      if !row.unassigned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        Label {
-          Text(PeriodTaskParser.displayText(from: row.unassigned))
-            .font(.subheadline)
-            .fixedSize(horizontal: false, vertical: true)
-        } icon: {
-          Image(systemName: "tray.full")
+      let day = DaySnapshot(id: row.id, dateLabel: row.dateLabel, slots: row.slots, unassigned: row.unassigned)
+      let empty = session.isEmptyPlanDay(day)
+      dayHeading(day, empty: empty)
+      if !empty || expandedEmptyDates.contains(day.id) {
+        ForEach(Array(row.slots.enumerated()), id: \.element.id) { index, slot in
+          scheduleSlot(slot, index: index, dayID: nil)
         }
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+        if !row.unassigned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          Label {
+            Text(PeriodTaskParser.displayText(from: row.unassigned))
+              .font(.subheadline)
+              .fixedSize(horizontal: false, vertical: true)
+          } icon: {
+            Image(systemName: "tray.full")
+          }
+          .foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+        }
       }
     }
   }

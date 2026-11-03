@@ -429,8 +429,7 @@ private struct TimetableWeekTimeline: View {
                             let day = snapshot.days[index]
                             TimetableDayTimeline(
                                 day: day,
-                                metrics: metrics,
-                                isReferenceDate: day.id == snapshot.referenceDate
+                                metrics: metrics
                             )
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .overlay(alignment: .leading) {
@@ -695,7 +694,6 @@ private struct TimetableHourGrid: View {
 private struct TimetableDayTimeline: View {
     let day: TimetableDaySnapshot
     let metrics: TimetableTimelineMetrics
-    let isReferenceDate: Bool
 
     private var placements: [TimetableTimelinePlacement] {
         TimetableTimelineLayout.placements(for: day)
@@ -738,7 +736,6 @@ private struct TimetableDayTimeline: View {
                     )
                 }
             }
-            .background(isReferenceDate ? Color.accentColor.opacity(0.04) : Color.clear)
         }
     }
 
