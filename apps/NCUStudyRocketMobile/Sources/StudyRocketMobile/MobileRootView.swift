@@ -301,7 +301,7 @@ private struct HomeScheduleSection<Content: View>: View {
           .buttonStyle(.plain)
           .accessibilityValue(expanded ? "已展开" : "已折叠")
         } else {
-          MobileSectionHeading(title: "今日安排", detail: "上午 · 中午 · 晚上", icon: "point.3.connected.trianglepath.dotted")
+          MobileSectionHeading(title: "今日安排", icon: "point.3.connected.trianglepath.dotted")
         }
         if !isEmpty || expanded { content }
       }
@@ -416,38 +416,42 @@ private struct MobileHomeView: View {
             let day = snapshot.week.days.first { $0.id == todayDayID }
             let today = DaySnapshot(id: todayDayID ?? home.dateLabel, dateLabel: home.dateLabel,
                                     slots: home.periods, unassigned: day?.unassigned ?? "")
-            HomeScheduleSection(isEmpty: session.isEmptyPlanDay(today)) {
-              MobileTodayChecklist(
-                periods: home.periods,
-                canToggle: todayDayID != nil,
-                completion: { period, task in
-                  effectiveTaskCompletion(for: period, task: task, home: home, dayID: todayDayID)
-                },
-                isPending: { period, task in
-                  guard let todayDayID else { return false }
-                  return periodTargets[taskKey(dayID: todayDayID, periodID: period.id, taskID: task.id)] != nil
-                    || session.isTaskTogglePending(dayID: todayDayID, period: period, task: task)
-                },
-                canCancelPending: { period, task in
-                  guard let todayDayID else { return false }
-                  return periodTargets[taskKey(dayID: todayDayID, periodID: period.id, taskID: task.id)] != nil
-                    || session.canCancelPendingTask(dayID: todayDayID, period: period, task: task)
-                },
-                pendingLabel: { period, task in
-                  guard let todayDayID,
-                    periodTargets[taskKey(dayID: todayDayID, periodID: period.id, taskID: task.id)] == nil
-                  else { return nil }
-                  return pendingStatusLabel(isLegacy: false)
-                },
-                hasLegacyPending: { period in
-                  guard let todayDayID else { return false }
-                  return session.isLegacyPeriodTogglePending(dayID: todayDayID, period: period)
-                },
-                onToggle: { period, task in
-                  guard let todayDayID else { return }
-                  requestTaskToggle(dayID: todayDayID, period: period, task: task)
-                }
-              )
+            let emptyDay = session.isEmptyPlanDay(today)
+            let visiblePeriods = emptyDay ? home.periods : home.periods.filter { !$0.tasks.isEmpty }
+            HomeScheduleSection(isEmpty: emptyDay) {
+              if !visiblePeriods.isEmpty {
+                MobileTodayChecklist(
+                  periods: visiblePeriods,
+                  canToggle: todayDayID != nil,
+                  completion: { period, task in
+                    effectiveTaskCompletion(for: period, task: task, home: home, dayID: todayDayID)
+                  },
+                  isPending: { period, task in
+                    guard let todayDayID else { return false }
+                    return periodTargets[taskKey(dayID: todayDayID, periodID: period.id, taskID: task.id)] != nil
+                      || session.isTaskTogglePending(dayID: todayDayID, period: period, task: task)
+                  },
+                  canCancelPending: { period, task in
+                    guard let todayDayID else { return false }
+                    return periodTargets[taskKey(dayID: todayDayID, periodID: period.id, taskID: task.id)] != nil
+                      || session.canCancelPendingTask(dayID: todayDayID, period: period, task: task)
+                  },
+                  pendingLabel: { period, task in
+                    guard let todayDayID,
+                      periodTargets[taskKey(dayID: todayDayID, periodID: period.id, taskID: task.id)] == nil
+                    else { return nil }
+                    return pendingStatusLabel(isLegacy: false)
+                  },
+                  hasLegacyPending: { period in
+                    guard let todayDayID else { return false }
+                    return session.isLegacyPeriodTogglePending(dayID: todayDayID, period: period)
+                  },
+                  onToggle: { period, task in
+                    guard let todayDayID else { return }
+                    requestTaskToggle(dayID: todayDayID, period: period, task: task)
+                  }
+                )
+              }
               let unassigned = PeriodTaskParser.tasks(from: today.unassigned)
               if !unassigned.isEmpty {
                 Text("待分时").font(.subheadline.weight(.semibold))
@@ -455,6 +459,10 @@ private struct MobileHomeView: View {
                   Label(task.text, systemImage: "tray").font(.subheadline)
                 }
                 Button("去周计划安排", action: { onNavigate(3) })
+              }
+              if !emptyDay && visiblePeriods.isEmpty && unassigned.isEmpty {
+                Label("今天有待同步的安排", systemImage: "arrow.triangle.2.circlepath")
+                  .font(.subheadline).foregroundStyle(.secondary)
               }
               if let issue = session.lastConnectionIssue, session.state != .online {
                 MobileInlineNotice(
