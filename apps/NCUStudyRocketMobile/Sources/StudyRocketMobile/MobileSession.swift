@@ -2100,6 +2100,14 @@ public final class MobileSession: ObservableObject {
         #endif
     }
 
+    func currentWeekDeliveries(at date: Date = .now) -> [DeliverySnapshot] {
+        guard let snapshot else { return [] }
+        guard WeeklyDeliveryRollover.weekStart(snapshot.fetchedAt) < WeeklyDeliveryRollover.weekStart(date) else {
+            return snapshot.week.deliveries
+        }
+        return snapshot.week.deliveries.filter { !$0.isCompleted || isDeliveryTogglePending($0) }
+    }
+
     func isEmptyPlanDay(_ day: DaySnapshot) -> Bool {
         func hasTasks(_ value: DaySnapshot) -> Bool {
             value.slots.contains { !$0.tasks.isEmpty || !PeriodTaskParser.tasks(from: $0.text).isEmpty }

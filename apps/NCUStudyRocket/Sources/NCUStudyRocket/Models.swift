@@ -238,8 +238,17 @@ final class DashboardModel: ObservableObject {
         return dated.isEmpty ? Self.weekdayIndex(for: date) : nil
     }
 
+    private var loadedDay: Date?
+    func needsPlanRefresh(from root: URL, now: Date = .now) -> Bool {
+        if loadedDay != MarkdownParser.studyCalendar.startOfDay(for: now) { return true }
+        let repo = MarkdownRepository(root: root)
+        guard let text = try? repo.read(file) else { return errorMessage == nil }
+        return repo.hash(text) != loadedHash
+    }
+
     func load(from root: URL, referenceDate: Date = .now) {
         self.root = root
+        loadedDay = MarkdownParser.studyCalendar.startOfDay(for: referenceDate)
         let repository = MarkdownRepository(root: root)
         timetable = StudyRocketTimetableParser.snapshot(
             from: try? repository.read(StudyRocketTimetableParser.sourceFile),
@@ -247,9 +256,9 @@ final class DashboardModel: ObservableObject {
         )
         do {
             let text = try repository.read(file)
-            original = text
+            original = WeeklyDeliveryRollover.projected(text, now: referenceDate, fileURL: root.appendingPathComponent(file))
             loadedHash = repository.hash(text)
-            plan = MarkdownParser.weekly(text, referenceDate: referenceDate)
+            plan = MarkdownParser.weekly(original, referenceDate: referenceDate)
             errorMessage = nil
         } catch { errorMessage = "无法读取周计划：\(error.localizedDescription)" }
     }
@@ -642,7 +651,7 @@ enum MarkdownParser {
 
     static func weekly(_ text: String, referenceDate: Date = .now) -> WeeklyPlan {
         var plan = WeeklyPlan()
-        let lines = text.components(separatedBy: .newlines)
+        let lines = WeeklyDeliveryRollover.projected(text, now: referenceDate).components(separatedBy: .newlines)
         let weeklyRange = managedWeeklyRange(in: lines) ?? lines.indices
         if let start = weeklyRange.first(where: { isStructuredWeekHeader(lines[$0]) }) {
             parseStructuredWeek(lines: lines, headerIndex: start, range: weeklyRange, referenceDate: referenceDate, into: &plan)
@@ -680,7 +689,7 @@ enum MarkdownParser {
         with plan: WeeklyPlan,
         deliverySourceMigrations: [String: String] = [:]
     ) -> String {
-        var lines = old.components(separatedBy: .newlines)
+        var lines = WeeklyDeliveryRollover.projected(old).components(separatedBy: .newlines)
         let table = structuredWeekTable(for: plan)
             + hiddenRowsTable(plan.historicalRows, markers: ("studyrocket:weekly:history:start", "studyrocket:weekly:history:end"))
             + hiddenRowsTable(plan.futureRows, markers: ("studyrocket:weekly:future:start", "studyrocket:weekly:future:end"))
@@ -695,7 +704,7 @@ enum MarkdownParser {
         }
         if let start = lines.firstIndex(where: { $0.contains("## 交付物") }) {
             let section = managedSectionContent(lines, headingIndex: start, markers: ("studyrocket:deliveries:start", "studyrocket:deliveries:end"))
-            let deliveryLines = plan.deliveries.isEmpty ? ["- [ ] 待生成"] : plan.deliveries.flatMap { delivery -> [String] in
+            let deliveryLines = plan.deliveries.flatMap { delivery -> [String] in
                 let pieces = delivery.text.components(separatedBy: .newlines)
                 guard let first = pieces.first else { return ["- [\(delivery.isCompleted ? "x" : " ")] "] }
                 return ["- [\(delivery.isCompleted ? "x" : " ")] \(first)"] + pieces.dropFirst().map { "  \($0)" }
@@ -718,11 +727,12 @@ enum MarkdownParser {
                 lines.replaceSubrange(section.content, with: ["<!-- studyrocket:buffer:start -->"] + bufferLines + ["<!-- studyrocket:buffer:end -->"])
             }
         }
-        return reconcilePeriodCompletions(
+        let updated = reconcilePeriodCompletions(
             in: lines.joined(separator: "\n"),
             with: plan,
             deliverySourceMigrations: deliverySourceMigrations
         )
+        return WeeklyDeliveryRollover.forSave(updated, previous: old)
     }
 
     static func replaceDeliveryCompletion(

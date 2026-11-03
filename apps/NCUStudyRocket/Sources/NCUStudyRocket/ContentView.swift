@@ -181,6 +181,11 @@ struct DashboardView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             reloadDashboard(from: workspace.rootURL)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .studyRocketWorkspaceChanged)) { _ in
+            if deliveryTasks.isEmpty, periodTasks.isEmpty, dashboard.needsPlanRefresh(from: workspace.rootURL) {
+                reloadDashboard(from: workspace.rootURL)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .studyRocketTimetableChanged)) { _ in
             reloadDashboard(from: workspace.rootURL)
         }
@@ -1172,8 +1177,9 @@ struct WeeklyPlanView: View {
     private func load() {
         let previousDayLabel = selectedDayLabel
         let repo = MarkdownRepository(root: workspace.rootURL)
-        original = (try? repo.read(file)) ?? ""
-        loadedHash = repo.hash(original)
+        let raw = (try? repo.read(file)) ?? ""
+        loadedHash = repo.hash(raw)
+        original = WeeklyDeliveryRollover.projected(raw, fileURL: workspace.rootURL.appendingPathComponent(file))
         plan = MarkdownParser.weekly(original)
         originalDeliveries = Dictionary(uniqueKeysWithValues: plan.deliveries.map { ($0.id, $0.text) })
         originalRules = Dictionary(uniqueKeysWithValues: plan.bufferRules.map { ($0.id, ($0.category, $0.text)) })

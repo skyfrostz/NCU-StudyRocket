@@ -16,7 +16,8 @@ final class HostSnapshotBuilder {
 
     func build(now: Date = .now) -> SnapshotResponse {
         let planText = read("工作台/下周计划.md")
-        let plan = parsePlan(planText, now: now, completions: parsePeriodCompletions(planText))
+        let activePlan = WeeklyDeliveryRollover.projected(planText, now: now, fileURL: root.appendingPathComponent("工作台/下周计划.md"))
+        let plan = parsePlan(activePlan, now: now, completions: parsePeriodCompletions(planText))
         let daily = parseDaily(now: now)
         let timetable = StudyRocketTimetableParser.snapshot(
             from: readOptional(StudyRocketTimetableParser.sourceFile),
@@ -37,7 +38,7 @@ final class HostSnapshotBuilder {
             timetable: timetable
         )
         let month = DateFormatter.monthFile.string(from: now)
-        let revision = revision(for: [
+        let revision = revision(week: WeeklyDeliveryRollover.weekStart(now), paths: [
             "工作台/下周计划.md",
             "工作台/每日记录/\(month).md",
             "工作台/进度日志.md",
@@ -278,7 +279,7 @@ final class HostSnapshotBuilder {
         let pattern = #"^\s*-\s*\[([ xX])\]\s*(.+)$"#
         guard let match = line.range(of: pattern, options: .regularExpression) else { return nil }
         let value = String(line[match])
-        let completed = value.contains("x") || value.contains("X")
+        let completed = value.range(of: #"^\s*-\s*\[[xX]\]"#, options: .regularExpression) != nil
         let text = value.replacingOccurrences(of: #"^\s*-\s*\[[ xX]\]\s*"#, with: "", options: .regularExpression)
         let date = leadingDate(in: text, reference: reference)
         return DeliverySnapshot(id: stableID("delivery", date.map(dateLabel) ?? "", text), text: text, isCompleted: completed, dateLabel: date.map(dateLabel))
@@ -439,8 +440,8 @@ final class HostSnapshotBuilder {
         line.trimmingCharacters(in: .whitespaces) == "<!-- \(marker) -->"
     }
 
-    private func revision(for paths: [String]) -> String {
-        let joined = paths.map { read($0) }.joined(separator: "\u{0}" )
+    private func revision(week: String, paths: [String]) -> String {
+        let joined = ([week] + paths.map { read($0) }).joined(separator: "\u{0}" )
         return SHA256.hash(data: Data(joined.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 

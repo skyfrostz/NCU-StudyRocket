@@ -56,7 +56,7 @@ final class HostWriteService {
         // The mobile client edits the schedule, deliveries and fallback rules in
         // one screen.  Keep those edits in the same atomic save so a successful
         // response can never silently drop two thirds of the submitted plan.
-        let scheduled = try updateWeekly(source, plan: plan)
+        let scheduled = try updateWeekly(WeeklyDeliveryRollover.projected(source, fileURL: root.appendingPathComponent(relative)), plan: plan)
         let deliveries = try updateDeliveries(scheduled, deliveries: plan.deliveries)
         let buffered = try updateBuffers(deliveries, rules: plan.bufferRules)
         let validKeys = periodCompletionKeys(in: plan)
@@ -711,7 +711,8 @@ final class HostWriteService {
             let backup = backupRoot.appendingPathComponent(relative.replacingOccurrences(of: "/", with: "_") + ".\(Int(Date().timeIntervalSince1970)).bak")
             try oldData.write(to: backup, options: .atomic)
         }
-        try Data(text.utf8).write(to: url, options: .atomic)
+        let saved = relative == "工作台/下周计划.md" ? WeeklyDeliveryRollover.forSave(text, previous: current, fileURL: url) : text
+        try Data(saved.utf8).write(to: url, options: .atomic)
         pruneBackups(in: backupRoot, prefix: relative.replacingOccurrences(of: "/", with: "_") + ".")
     }
 

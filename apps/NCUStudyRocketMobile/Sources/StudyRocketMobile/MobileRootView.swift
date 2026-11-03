@@ -278,6 +278,38 @@ private struct MobileSnapshotFreshness: View {
   }()
 }
 
+private struct HomeScheduleSection<Content: View>: View {
+  let isEmpty: Bool
+  @ViewBuilder let content: Content
+  @State private var expanded = false
+
+  var body: some View {
+    MobileSurface {
+      VStack(alignment: .leading, spacing: 14) {
+        if isEmpty {
+          Button {
+            expanded.toggle()
+          } label: {
+            HStack {
+              Label("今日安排", systemImage: "point.3.connected.trianglepath.dotted").font(.headline)
+              Spacer()
+              Text("暂无安排").font(.subheadline)
+              Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption)
+            }
+            .frame(minHeight: 44).contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .accessibilityValue(expanded ? "已展开" : "已折叠")
+        } else {
+          MobileSectionHeading(title: "今日安排", detail: "上午 · 中午 · 晚上", icon: "point.3.connected.trianglepath.dotted")
+        }
+        if !isEmpty || expanded { content }
+      }
+    }
+    .onChange(of: isEmpty) { _, _ in expanded = false }
+  }
+}
+
 private struct MobileHomeView: View {
   @ObservedObject var session: MobileSession
   let onNavigate: (Int) -> Void
@@ -381,60 +413,67 @@ private struct MobileHomeView: View {
               }
             }
 
-            MobileSurface {
-              VStack(alignment: .leading, spacing: 14) {
-                MobileSectionHeading(
-                  title: "今日安排", detail: "上午 · 中午 · 晚上",
-                  icon: "point.3.connected.trianglepath.dotted")
-                MobileTodayChecklist(
-                  periods: home.periods,
-                  canToggle: todayDayID != nil,
-                  completion: { period, task in
-                    effectiveTaskCompletion(for: period, task: task, home: home, dayID: todayDayID)
-                  },
-                  isPending: { period, task in
-                    guard let todayDayID else { return false }
-                    return periodTargets[taskKey(dayID: todayDayID, periodID: period.id, taskID: task.id)] != nil
-                      || session.isTaskTogglePending(dayID: todayDayID, period: period, task: task)
-                  },
-                  canCancelPending: { period, task in
-                    guard let todayDayID else { return false }
-                    return periodTargets[taskKey(dayID: todayDayID, periodID: period.id, taskID: task.id)] != nil
-                      || session.canCancelPendingTask(dayID: todayDayID, period: period, task: task)
-                  },
-                  pendingLabel: { period, task in
-                    guard let todayDayID,
-                      periodTargets[taskKey(dayID: todayDayID, periodID: period.id, taskID: task.id)] == nil
-                    else { return nil }
-                    return pendingStatusLabel(isLegacy: false)
-                  },
-                  hasLegacyPending: { period in
-                    guard let todayDayID else { return false }
-                    return session.isLegacyPeriodTogglePending(dayID: todayDayID, period: period)
-                  },
-                  onToggle: { period, task in
-                    guard let todayDayID else { return }
-                    requestTaskToggle(dayID: todayDayID, period: period, task: task)
-                  }
-                )
-                if let issue = session.lastConnectionIssue, session.state != .online {
-                  MobileInlineNotice(
-                    text: issue,
-                    symbol: "exclamationmark.arrow.triangle.2.circlepath",
-                    tint: .orange
-                  )
+            let day = snapshot.week.days.first { $0.id == todayDayID }
+            let today = DaySnapshot(id: todayDayID ?? home.dateLabel, dateLabel: home.dateLabel,
+                                    slots: home.periods, unassigned: day?.unassigned ?? "")
+            HomeScheduleSection(isEmpty: session.isEmptyPlanDay(today)) {
+              MobileTodayChecklist(
+                periods: home.periods,
+                canToggle: todayDayID != nil,
+                completion: { period, task in
+                  effectiveTaskCompletion(for: period, task: task, home: home, dayID: todayDayID)
+                },
+                isPending: { period, task in
+                  guard let todayDayID else { return false }
+                  return periodTargets[taskKey(dayID: todayDayID, periodID: period.id, taskID: task.id)] != nil
+                    || session.isTaskTogglePending(dayID: todayDayID, period: period, task: task)
+                },
+                canCancelPending: { period, task in
+                  guard let todayDayID else { return false }
+                  return periodTargets[taskKey(dayID: todayDayID, periodID: period.id, taskID: task.id)] != nil
+                    || session.canCancelPendingTask(dayID: todayDayID, period: period, task: task)
+                },
+                pendingLabel: { period, task in
+                  guard let todayDayID,
+                    periodTargets[taskKey(dayID: todayDayID, periodID: period.id, taskID: task.id)] == nil
+                  else { return nil }
+                  return pendingStatusLabel(isLegacy: false)
+                },
+                hasLegacyPending: { period in
+                  guard let todayDayID else { return false }
+                  return session.isLegacyPeriodTogglePending(dayID: todayDayID, period: period)
+                },
+                onToggle: { period, task in
+                  guard let todayDayID else { return }
+                  requestTaskToggle(dayID: todayDayID, period: period, task: task)
                 }
+              )
+              let unassigned = PeriodTaskParser.tasks(from: today.unassigned)
+              if !unassigned.isEmpty {
+                Text("待分时").font(.subheadline.weight(.semibold))
+                ForEach(unassigned) { task in
+                  Label(task.text, systemImage: "tray").font(.subheadline)
+                }
+                Button("去周计划安排", action: { onNavigate(3) })
+              }
+              if let issue = session.lastConnectionIssue, session.state != .online {
+                MobileInlineNotice(
+                  text: issue,
+                  symbol: "exclamationmark.arrow.triangle.2.circlepath",
+                  tint: .orange
+                )
               }
             }
+            .id("\(session.repositoryGeneration)-\(today.id)")
 
             MobileSurface {
               VStack(alignment: .leading, spacing: 10) {
-                MobileSectionHeading(title: "本周交付物", detail: "显示全部真实交付物", icon: "checklist")
+                MobileSectionHeading(title: "本周交付物", detail: "未完成及本周完成", icon: "checklist")
                 if let deliveryNotice {
                   MobileInlineNotice(text: deliveryNotice, symbol: "link.badge.plus", tint: .orange)
                 }
                 MobileDeliveryOverview(
-                  deliveries: snapshot.week.deliveries,
+                  deliveries: session.currentWeekDeliveries(at: context.date),
                   phase: deliveryChapter.phase,
                   completion: { delivery in
                     isLocallyCompleting(delivery) || session.effectiveDeliveryCompletion(delivery)
@@ -2097,7 +2136,7 @@ private struct MobilePlanView: View {
           MobileSnapshotFreshness(session: session)
           if let week = session.snapshot?.week, !week.days.isEmpty {
             scheduleContent(week)
-            deliveriesContent(week)
+            TimelineView(.everyMinute) { clock in deliveriesContent(at: clock.date) }
             if !week.futureRows.isEmpty {
               futureContent(week.futureRows)
             }
@@ -2197,13 +2236,14 @@ private struct MobilePlanView: View {
   }
 
   @ViewBuilder
-  private func deliveriesContent(_ week: WeeklyPlanSnapshot) -> some View {
-    let openDeliveries = week.deliveries.filter { !session.effectiveDeliveryCompletion($0) }
-    let completedDeliveries = week.deliveries.filter { session.effectiveDeliveryCompletion($0) }
+  private func deliveriesContent(at date: Date) -> some View {
+    let deliveries = session.currentWeekDeliveries(at: date)
+    let openDeliveries = deliveries.filter { !session.effectiveDeliveryCompletion($0) }
+    let completedDeliveries = deliveries.filter { session.effectiveDeliveryCompletion($0) }
     MobileSurface {
       VStack(alignment: .leading, spacing: 12) {
         MobileSectionHeading(title: "本周交付物", detail: "学习产出", icon: "checklist")
-        if week.deliveries.isEmpty {
+        if deliveries.isEmpty {
           MobileInlineNotice(text: "暂无学习交付物", symbol: "checklist", tint: .secondary)
         } else {
           if openDeliveries.isEmpty {

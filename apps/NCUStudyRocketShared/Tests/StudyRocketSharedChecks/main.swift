@@ -407,3 +407,36 @@ descriptorStore.remove(for: firstRoot)
 precondition(descriptorStore.load(for: firstRoot) == nil)
 try? FileManager.default.removeItem(at: descriptorRoot)
 print("StudyRocketSharedChecks: signing, DTO, lease and task descriptor checks passed")
+
+// Beijing Monday, including the Sunday evening UTC boundary and a multi-line deliverable.
+do {
+    let iso = ISO8601DateFormatter()
+    let sunday = iso.date(from: "2026-11-01T15:59:59Z")!
+    let monday = sunday.addingTimeInterval(1)
+    let open = """
+    ## 交付物清单
+    <!-- studyrocket:deliveries:start -->
+    - [ ] 总结练习
+      附上例题
+    - [ ] 跨周继续
+    <!-- studyrocket:deliveries:end -->
+    ## 缓冲
+    保留原文
+    """
+    let done = open.replacingOccurrences(of: "- [ ] 总结练习", with: "- [x] 总结练习")
+    let stamped = WeeklyDeliveryRollover.forSave(done, previous: open, now: sunday)
+    precondition(WeeklyDeliveryRollover.projected(stamped, now: sunday) == stamped)
+    let archived = WeeklyDeliveryRollover.projected(stamped, now: monday)
+    precondition(archived.contains("- [ ] 跨周继续\n<!-- studyrocket:deliveries:end -->"))
+    precondition(archived.contains("## 历史已完成交付物\n- [x] 总结练习\n  附上例题"))
+    precondition(archived.hasSuffix("## 缓冲\n保留原文"))
+    precondition(WeeklyDeliveryRollover.projected(archived, now: monday) == archived)
+    precondition(WeeklyDeliveryRollover.forSave(done, previous: stamped, now: monday) == archived)
+    let staleEdit = archived.replacingOccurrences(of: "- [ ] 跨周继续", with: "- [x] 总结练习\n  附上例题\n- [ ] 跨周继续")
+    precondition(WeeklyDeliveryRollover.forSave(staleEdit, previous: stamped, now: monday) == archived)
+    let reopened = stamped.replacingOccurrences(of: "- [x] 总结练习", with: "- [ ] 总结练习")
+    precondition(WeeklyDeliveryRollover.forSave(reopened, previous: stamped, now: sunday) == open)
+    let thisWeek = WeeklyDeliveryRollover.forSave(done, previous: open, now: monday)
+    precondition(!thisWeek.contains("历史已完成"))
+    precondition(WeeklyDeliveryRollover.projected(done, now: monday) == done)
+}
