@@ -9,12 +9,14 @@ if [[ "$CONFIGURATION" != "debug" && "$CONFIGURATION" != "release" ]]; then
 fi
 XCODE_CONFIGURATION="Release"
 if [[ "$CONFIGURATION" == "debug" ]]; then XCODE_CONFIGURATION="Debug"; fi
+mkdir -p "$ROOT/.build"
 swiftc Scripts/make_icon.swift -o .build/make-icon
 ICONSET="$ROOT/.build/NCUStudyRocket.iconset"
 rm -rf "$ICONSET"
 .build/make-icon "$ROOT/.build" >/dev/null
 iconutil -c icns "$ICONSET" -o "$ROOT/.build/NCUStudyRocket.icns"
 swift build -c "$CONFIGURATION"
+BIN_DIR="$(swift build -c "$CONFIGURATION" --show-bin-path)"
 xcodebuild -project NCUStudyRocketDesktopWidget.xcodeproj \
   -target NCUStudyRocketDesktopWidget \
   -configuration "$XCODE_CONFIGURATION" \
@@ -25,7 +27,7 @@ APP="$ROOT/.build/NCU StudyRocket.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 mkdir -p "$APP/Contents/PlugIns"
-cp ".build/arm64-apple-macosx/$CONFIGURATION/NCUStudyRocket" "$APP/Contents/MacOS/NCUStudyRocket"
+cp "$BIN_DIR/NCUStudyRocket" "$APP/Contents/MacOS/NCUStudyRocket"
 cp .build/NCUStudyRocket.icns "$APP/Contents/Resources/NCUStudyRocket.icns"
 cp -R "$ROOT/.build/widget-products/$XCODE_CONFIGURATION/NCUStudyRocketDesktopWidget.appex" "$APP/Contents/PlugIns/"
 cat > "$APP/Contents/Info.plist" <<'PLIST'

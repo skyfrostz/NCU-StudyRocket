@@ -1019,11 +1019,17 @@ public enum StudyRocketChatState: String, Codable, Equatable, Sendable {
 /// boundary. Do not persist, log, or expose the complete `config/read` result.
 public struct StudyRocketModelSelection: Equatable, Sendable {
     public let model: String
-    public let modelProvider: String
+    public let modelProvider: String?
 
-    public init(model: String, modelProvider: String) {
+    public init(model: String, modelProvider: String?) {
         self.model = model
         self.modelProvider = modelProvider
+    }
+
+    public var requestParameters: [String: String] {
+        var result = ["model": model]
+        result["modelProvider"] = modelProvider
+        return result
     }
 
     public static func configReadResult(_ value: [String: Any]) -> StudyRocketModelSelection? {
@@ -1031,14 +1037,20 @@ public struct StudyRocketModelSelection: Equatable, Sendable {
     }
 
     public static func threadResult(_ value: [String: Any]) -> StudyRocketModelSelection? {
-        selection(in: (value["thread"] as? [String: Any]) ?? value, providerKey: "modelProvider")
+        // Resume returns the effective selection alongside thread metadata.
+        let merged = ((value["thread"] as? [String: Any]) ?? [:]).merging(value) { _, top in top }
+        return selection(in: merged, providerKey: "modelProvider")
+    }
+
+    public func matches(_ effective: StudyRocketModelSelection?) -> Bool {
+        guard let effective else { return false }
+        return model == effective.model && (modelProvider == nil || modelProvider == effective.modelProvider)
     }
 
     private static func selection(in value: [String: Any], providerKey: String) -> StudyRocketModelSelection? {
-        guard let model = value["model"] as? String,
-              !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let provider = value[providerKey] as? String,
-              !provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        guard let model = value["model"] as? String, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let provider = value[providerKey] as? String
+        if let raw = value[providerKey], !(raw is NSNull), provider?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false { return nil }
         return StudyRocketModelSelection(model: model, modelProvider: provider)
     }
 }

@@ -180,10 +180,8 @@ private final class HostCodexSession {
                     "sandbox": "read-only",
                     "approvalPolicy": "never",
                     "runtimeWorkspaceRoots": [root.path],
-                    "developerInstructions": Self.developerInstructions(),
-                    "model": selection.model,
-                    "modelProvider": selection.modelProvider
-                ])
+                    "developerInstructions": Self.developerInstructions()
+                ].merging(selection.requestParameters) { _, configured in configured })
             } catch {
                 let writerConflict = StudyRocketThreadProtocol.hasConflictingWriter(errorMessage: error.localizedDescription, threadID: threadID)
                 guard writerConflict || StudyRocketThreadProtocol.requiresRecreationForMissingRollout(errorMessage: error.localizedDescription) else {
@@ -198,7 +196,7 @@ private final class HostCodexSession {
                 resumed = nil
             }
             if let resumed {
-                if StudyRocketModelSelection.threadResult(resumed) != selection {
+                if !selection.matches(StudyRocketModelSelection.threadResult(resumed)) {
                     let resumedHistory = parseHistory((resumed["thread"] as? [String: Any]) ?? resumed)
                     migratedHistory = Array((migratedHistory + resumedHistory).suffix(40))
                     threadID = try await startFixedThread(selection: selection, legacyHistory: migratedHistory)
@@ -421,10 +419,8 @@ private final class HostCodexSession {
             "runtimeWorkspaceRoots": [root.path],
             "threadSource": "studyrocket",
             "developerInstructions": Self.developerInstructions(legacyHistory: legacyHistory),
-            "dynamicTools": StudyRocketDynamicToolContract.declaration,
-            "model": selection.model,
-            "modelProvider": selection.modelProvider
-        ])
+            "dynamicTools": StudyRocketDynamicToolContract.declaration
+        ].merging(selection.requestParameters) { _, configured in configured })
         guard let newID = (try resultObject(response)["thread"] as? [String: Any])?["id"] as? String else {
             throw HostChatError.protocolError("Codex 没有返回学业任务 ID。")
         }
