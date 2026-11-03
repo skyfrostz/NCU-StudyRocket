@@ -392,7 +392,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     case home, timetable, chat, week, daily, routes, baoyan, library, settings
     var id: String { rawValue }
     var title: String {
-        switch self { case .home: "首页"; case .timetable: "课表"; case .chat: "学业对话"; case .week: "周计划"; case .daily: "每日复盘"; case .routes: "四条航线"; case .baoyan: "保研"; case .library: "资料库"; case .settings: "设置" }
+        switch self { case .home: "首页"; case .timetable: "课表"; case .chat: "学业对话"; case .week: "周计划"; case .daily: "记一件事"; case .routes: "四条航线"; case .baoyan: "保研"; case .library: "资料库"; case .settings: "设置" }
     }
     var icon: String {
         switch self { case .home: "rectangle.grid.2x2"; case .timetable: "calendar.badge.clock"; case .chat: "bubble.left.and.bubble.right"; case .week: "calendar"; case .daily: "checkmark.circle"; case .routes: "point.3.connected.trianglepath.dotted"; case .baoyan: "arrow.up.right.circle"; case .library: "books.vertical"; case .settings: "gearshape" }

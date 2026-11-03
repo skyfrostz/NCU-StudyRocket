@@ -48,7 +48,7 @@ final class HostSnapshotBuilder {
             "智库/学校文件/来源索引.md",
             StudyRocketTimetableParser.sourceFile
         ])
-        return SnapshotResponse(revision: revision, home: home, week: plan, daily: daily, summaries: summaries())
+        return SnapshotResponse(revision: revision, home: home, week: plan, daily: daily, summaries: summaries(), recentFacts: FactJournal.recent(root: root), legacyJournal: FactJournal.legacy(root: root))
     }
 
     private static let emptyPeriods = [
@@ -317,7 +317,7 @@ final class HostSnapshotBuilder {
     private func parseDaily(now: Date) -> DailySnapshot {
         let month = DateFormatter.monthFile.string(from: now)
         let source = read("工作台/每日记录/\(month).md")
-        guard let heading = source.range(of: "### \(isoDate(now))") else { return DailySnapshot(date: isoDate(now)) }
+        guard let heading = source.range(of: "(?m)^### \(isoDate(now))$", options: .regularExpression) else { return DailySnapshot(date: isoDate(now)) }
         let remainder = source[heading.upperBound...]
         let section = remainder.split(separator: "###", maxSplits: 1).first.map(String.init) ?? String(remainder)
         func field(_ names: [String]) -> String {

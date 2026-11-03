@@ -37,7 +37,7 @@ struct ContentView: View {
         } detail: {
             Group {
                 switch selection ?? .home {
-                case .home: DashboardView()
+                case .home: DashboardView(navigate: requestSection)
                 case .timetable: TimetableView()
                 case .chat: StudyChatView()
                 case .week: WeeklyPlanView()
@@ -56,6 +56,7 @@ struct ContentView: View {
             if StudyRocketSelfCheckConfiguration.current == nil { DesktopWidgetPublisher.publish(from: workspace.rootURL) }
         }
         .onDisappear { workspace.stopMonitoring() }
+        .onReceive(NotificationCenter.default.publisher(for: .studyRocketOpenFact)) { _ in requestSection(.daily) }
         .onReceive(NotificationCenter.default.publisher(for: .studyRocketOpenChat)) { _ in requestSection(.chat) }
         .onReceive(NotificationCenter.default.publisher(for: .studyRocketWorkspaceChanged)) { _ in
             DesktopWidgetPublisher.publish(from: workspace.rootURL)
@@ -69,7 +70,7 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .studyRocketReminderRoute)) { notification in
             let route = reminders.takePendingRoute() ?? (notification.object as? ReminderRoute)
             guard let route else { return }
-            chat.prepare(prompt: route.prompt); requestSection(.chat)
+            if route == .daily { requestSection(.daily) } else { chat.prepare(prompt: route.prompt); requestSection(.chat) }
         }
         .alert("无法绑定仓库", isPresented: Binding(get: { workspace.errorMessage != nil }, set: { if !$0 { workspace.errorMessage = nil } })) { Button("好", role: .cancel) {} } message: { Text(workspace.errorMessage ?? "") }
         .alert("先处理未保存修改", isPresented: $showUnsavedBindingAlert) {
@@ -86,11 +87,16 @@ struct ContentView: View {
     private func requestSection(_ next: AppSection?) { guard let next, next != selection else { return }; if document.isDirty { pendingSection = next; showUnsavedSectionDialog = true } else { selection = next } }
     private func routePendingReminder() {
         guard let route = reminders.takePendingRoute() else { return }
-        chat.prepare(prompt: route.prompt); requestSection(.chat)
+        if route == .daily { requestSection(.daily) } else { chat.prepare(prompt: route.prompt); requestSection(.chat) }
     }
 }
 
 struct DashboardView: View {
+    private static var todayLabel: String {
+        let f = DateFormatter(); f.locale = Locale(identifier: "zh_CN"); f.timeZone = TimeZone(identifier: "Asia/Shanghai"); f.dateFormat = "M 月 d 日，EEEE"
+        return f.string(from: Date())
+    }
+    let navigate: (AppSection) -> Void
     @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var chat: StudyChatStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -105,13 +111,9 @@ struct DashboardView: View {
     var body: some View {
         PageScaffold {
             VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
-                PageTitleBar(title: "今天的学习计划", subtitle: Date.now.formatted(date: .complete, time: .omitted)) {
-                    if !dashboard.filteredDeliveries.isEmpty {
-                        Text("\(dashboard.completedDeliveries) / \(dashboard.filteredDeliveries.count) 已完成")
-                            .font(.subheadline.weight(.semibold)).foregroundStyle(.teal)
-                    }
+                PageTitleBar(title: "今天", subtitle: Self.todayLabel) {
+                    Button("记一件事", systemImage: "square.and.pencil") { navigate(.daily) }
                 }
-                TimetableOverview(snapshot: dashboard.timetable)
                 ResponsiveColumns {
                     let todayTasks = dashboard.todayCells.map { item in
                         TodayPeriodTask(
@@ -129,10 +131,13 @@ struct DashboardView: View {
                         tasks: todayTasks,
                         focus: todayFocus,
                         unassigned: dashboard.todayUnassigned,
+                        openWeek: { navigate(.week) },
                         toggle: requestPeriodToggle
                     )
                 } second: {
-                    DeliveryOverview(
+                    NextClassCard(snapshot: dashboard.timetable) { navigate(.timetable) }
+                }
+                DeliveryOverview(
                         deliveries: dashboard.visibleDeliveries,
                         sealSource: deliverySealSource,
                         sealPresented: deliverySealPresented,
@@ -144,7 +149,6 @@ struct DashboardView: View {
                         completed: dashboard.filteredDeliveries.filter { deliveryTargets[$0.id] ?? $0.isCompleted }.count,
                         total: dashboard.filteredDeliveries.count
                     )
-                }
                 if let error = dashboard.errorMessage {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundStyle(.orange)
@@ -158,7 +162,7 @@ struct DashboardView: View {
                         Label("最近节点", systemImage: "calendar.badge.clock").font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
                         Text("校历与重要日期").font(.system(size: 15, weight: .medium))
                         Text("日期与推免规则仍以仓库官方文件为准").font(.caption).foregroundStyle(.secondary)
-                        Button("查看资料库", systemImage: "books.vertical") {}.buttonStyle(.link)
+                        Button("查看资料库", systemImage: "books.vertical") { navigate(.library) }.buttonStyle(.link)
                     }
                 } second: {
                     VStack(alignment: .leading, spacing: 8) {
@@ -170,8 +174,8 @@ struct DashboardView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("快速开始").font(.system(size: 15, weight: .semibold))
                     ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 10) { ChatQuickAction(title: "今天复盘", icon: "checkmark.circle", prompt: ReminderRoute.daily.prompt); ChatQuickAction(title: "排下周", icon: "calendar.badge.plus", prompt: ReminderRoute.weekly.prompt); ChatQuickAction(title: "问学业问题", icon: "questionmark.bubble", prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") }
-                        VStack(spacing: 8) { ChatQuickAction(title: "今天复盘", icon: "checkmark.circle", prompt: ReminderRoute.daily.prompt); ChatQuickAction(title: "排下周", icon: "calendar.badge.plus", prompt: ReminderRoute.weekly.prompt); ChatQuickAction(title: "问学业问题", icon: "questionmark.bubble", prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") }
+                        HStack(spacing: 10) { ChatQuickAction(title: "排下周", icon: "calendar.badge.plus", prompt: ReminderRoute.weekly.prompt); ChatQuickAction(title: "问学业问题", icon: "questionmark.bubble", prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") }
+                        VStack(spacing: 8) { ChatQuickAction(title: "排下周", icon: "calendar.badge.plus", prompt: ReminderRoute.weekly.prompt); ChatQuickAction(title: "问学业问题", icon: "questionmark.bubble", prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") }
                     }
                 }
             }
@@ -269,6 +273,50 @@ struct DashboardView: View {
         cancelPendingToggles()
         dashboard.load(from: root)
     }
+}
+
+private struct NextClassCard: View {
+    let snapshot: TimetableSnapshot
+    let open: () -> Void
+    @State private var showToday = false
+    var body: some View {
+        let entries = (snapshot.days.first { $0.id == snapshot.referenceDate }?.entries ?? []).filter { $0.kind != .holiday }
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let clock = Self.clock.string(from: context.date)
+            let current = entries.first { ($0.startTime ?? "~") <= clock && ($0.endTime ?? "") > clock }
+            let next = entries.first { ($0.startTime ?? "") > clock }
+            StudySurface {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label(current == nil ? "下一节课" : "正在上", systemImage: "calendar.badge.clock").font(.headline)
+                    if let item = current ?? next {
+                        Text(item.timeText).font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
+                        Text(StudyRocketTimetableCourseCatalog.displayTitle(for: item.title).primary).font(.title3.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                        if let location = item.location, !location.isEmpty, !location.contains("待确认") {
+                            Label(location, systemImage: "mappin").foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text(snapshot.status != .available ? "当前没有可用课表" : entries.isEmpty ? "今日无课程安排" : "今日课程已结束")
+                            .foregroundStyle(.secondary)
+                    }
+                    Divider()
+                    Button(entries.isEmpty ? "查看课表" : "查看今日全部 \(entries.count) 项") { if entries.isEmpty { open() } else { showToday = true } }.buttonStyle(.link)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .sheet(isPresented: $showToday) {
+            VStack(alignment: .leading, spacing: 12) {
+                ScrollView { TimetableOverview(snapshot: snapshot) }
+                HStack {
+                    Button("打开完整课表") { showToday = false; open() }
+                    Spacer()
+                    Button("完成") { showToday = false }.keyboardShortcut(.cancelAction)
+                }
+            }.padding(20).frame(minWidth: 480, idealWidth: 540, minHeight: 360, idealHeight: 600)
+        }
+    }
+    private static let clock: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "Asia/Shanghai"); f.dateFormat = "HH:mm"; return f
+    }()
 }
 
 private struct TimetableOverview: View {
@@ -679,22 +727,24 @@ private struct DeliveryCompletionSeal: View {
 }
 
 private struct TodayPlanList: View {
-    @EnvironmentObject private var chat: StudyChatStore
     let tasks: [TodayPeriodTask]
     let focus: DesktopTodayFocus
     let unassigned: String
+    let openWeek: () -> Void
     let toggle: (TodayPeriodTask) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Label("今日安排", systemImage: "checklist")
+                Label("今日任务", systemImage: "checklist")
                     .font(.system(size: 15, weight: .semibold))
                 Spacer()
-                if case .task = focus { Image(systemName: "flag.fill").foregroundStyle(.tint).accessibilityLabel("有待完成任务") }
+                let assigned = tasks.filter { !$0.task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                if !assigned.isEmpty { Text("\(assigned.filter(\.isCompleted).count)/\(assigned.count) 已完成").font(.caption).foregroundStyle(.secondary) }
             }
             .padding(.bottom, 8)
-            ForEach(WeeklyPlan.periods, id: \.self) { period in
+            let plannedPeriods = WeeklyPlan.periods.filter { period in tasks.contains { $0.period == period && !$0.task.isEmpty } }
+            ForEach(plannedPeriods, id: \.self) { period in
                 let periodTasks = tasks.filter { $0.period == period }
                 VStack(alignment: .leading, spacing: 0) {
                     Label(period, systemImage: periodSymbol(period))
@@ -729,7 +779,7 @@ private struct TodayPlanList: View {
                         if index < periodTasks.count - 1 { Divider().padding(.leading, 32) }
                     }
                 }
-                if period != (WeeklyPlan.periods.last ?? "") { Divider().padding(.vertical, 4) }
+                if period != plannedPeriods.last { Divider().padding(.vertical, 4) }
             }
             if !unassigned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Label("今天有待分时安排", systemImage: "exclamationmark.triangle.fill")
@@ -744,11 +794,10 @@ private struct TodayPlanList: View {
                     .foregroundStyle(.teal)
                     .padding(.top, 12)
             case .unplanned:
-                Button("去周计划安排今天", systemImage: "calendar.badge.plus") {
-                    chat.prepare(prompt: "请根据我的档案和本周约束，为今天安排可执行的时间块。先问缺失事实，不要编造。")
-                    NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil)
-                }
-                .buttonStyle(.bordered)
+                Text("今天还没有安排任务。").foregroundStyle(.secondary)
+                Divider().padding(.top, 12)
+                Button("去周计划安排今天", systemImage: "calendar.badge.plus", action: openWeek)
+                .buttonStyle(.link)
                 .padding(.top, 12)
             case .task:
                 EmptyView()
@@ -2329,87 +2378,43 @@ private struct WeeklyCompactPeriodSummary: View {
 
 struct DailyCheckinView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
-    @EnvironmentObject private var chat: StudyChatStore
-    @State private var entry = DailyEntry(id: "", date: "", deliverables: "", studyTime: "", sleep: "", exercise: "", firstTask: "")
-    @State private var original = ""
-    @State private var hash = ""
-    @State private var notice: String?
-
-    private static let dayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.calendar = MarkdownParser.studyCalendar
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = MarkdownParser.studyCalendar.timeZone
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
-
-    private var monthFile: String { "工作台/每日记录/" + String(entry.date.prefix(7)) + ".md" }
+    @State private var text = ""
+    @State private var notice = ""
+    @State private var records: [QuickFact] = []
+    @State private var legacy = ""
+    @FocusState private var focused: Bool
 
     var body: some View {
         PageScaffold {
-            VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
-                PageTitleBar(title: "每日复盘", subtitle: "三分钟行为账：只记录已经发生的事实") {
-                    StudyIconButton(systemImage: "bubble.left.and.bubble.right", label: "在学业对话中复盘") {
-                        chat.prepare(prompt: ReminderRoute.daily.prompt)
-                        NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil)
+            VStack(alignment: .leading, spacing: 20) {
+                PageTitleBar(title: "记一件事", subtitle: "写下今天做过的一件事。") { EmptyView() }
+                HStack {
+                    TextField("例如：完成高数第一章例题", text: $text)
+                        .textFieldStyle(.roundedBorder).focused($focused).onSubmit(save)
+                    Button("保存", action: save).disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if !notice.isEmpty { Text(notice).foregroundStyle(.secondary) }
+                Text("近期记录").font(.headline)
+                if records.isEmpty { Text("还没有记录。").foregroundStyle(.secondary) }
+                ForEach(records) { fact in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(fact.date).font(.caption).foregroundStyle(.secondary)
+                        Text(verbatim: fact.text).textSelection(.enabled)
                     }
                 }
-                Form {
-                    DatePicker("日期", selection: Binding(get: { dateValue }, set: { entry.date = Self.dayFormatter.string(from: $0) }), displayedComponents: .date)
-                    TextField("今日完成的具体交付物", text: $entry.deliverables)
-                    TextField("净学习时长", text: $entry.studyTime)
-                    TextField("入睡/起床", text: $entry.sleep)
-                    TextField("运动", text: $entry.exercise)
-                    TextField("明日第一任务", text: $entry.firstTask)
-                }
-                .formStyle(.grouped)
-                Button("保存行为账", systemImage: "checkmark.circle") { save() }
-                    .buttonStyle(.borderedProminent)
-            }
-        }
-        .onAppear {
-            entry.date = Self.dayFormatter.string(from: .now)
-            load()
-        }
-        .onChange(of: entry.date) { oldValue, newValue in
-            if oldValue != newValue { load() }
-        }
-        .alert("保存结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
-            Button("好", role: .cancel) {}
-        } message: {
-            Text(notice ?? "")
-        }
+                if !legacy.isEmpty { DisclosureGroup("以往的五项记录") { Text(verbatim: legacy).textSelection(.enabled) } }
+            }.frame(maxWidth: StudyRocketTheme.readingMaxWidth, alignment: .leading)
+        }.onAppear { reload(); focused = true }
+         .onChange(of: workspace.rootURL) { _, _ in text = ""; notice = ""; reload() }
+         .onReceive(NotificationCenter.default.publisher(for: .studyRocketWorkspaceChanged)) { _ in reload() }
     }
-
-    private var dateValue: Date { Self.dayFormatter.date(from: entry.date) ?? .now }
-
-    private func load() {
-        let repo = MarkdownRepository(root: workspace.rootURL)
-        original = (try? repo.read(monthFile)) ?? ""
-        hash = repo.hash(original)
-        entry = MarkdownParser.daily(original, date: entry.date)
-    }
-
+    private func reload() { records = FactJournal.recent(root: workspace.rootURL); legacy = FactJournal.legacy(root: workspace.rootURL) }
     private func save() {
-        let repo = MarkdownRepository(root: workspace.rootURL)
-        let savedEntry = entry
         do {
-            try repo.save(MarkdownParser.replaceDaily(original, entry: entry), relative: monthFile, loadedHash: hash)
-        } catch {
-            notice = error.localizedDescription
-            return
-        }
-
-        load()
-        do {
-            try HabitProfileUpdater.update(after: savedEntry, in: workspace.rootURL)
-            notice = "已保存行为账，并更新助理习惯画像。"
-        } catch {
-            notice = "行为账已保存，但助理习惯画像更新失败：\(error.localizedDescription)"
-        }
-        workspace.refreshGitStatus()
-        workspace.refreshMarkdownIndex()
+            try FactJournal.append(QuickFact(text: text), root: workspace.rootURL, backupDirectory: StudyRocketSelfCheckConfiguration.current?.backupDirectory)
+            notice = "已保存：\(text)"; text = ""; reload(); focused = true
+            workspace.refreshGitStatus(); workspace.refreshMarkdownIndex()
+        } catch { notice = error.localizedDescription }
     }
 }
 
@@ -2519,7 +2524,7 @@ struct MarkdownPreview: View {
 struct SettingsView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var reminders: ReminderScheduler
-    var body: some View { ScrollView { Form { Section("当前仓库") { Text(workspace.rootURL.path).lineLimit(1).truncationMode(.middle).textSelection(.enabled); Text("需要迁移仓库时，请使用侧边栏底部的“重新绑定仓库”。").font(.caption).foregroundStyle(.secondary) }; Section("学业对话") { LabeledContent("Codex 连接", value: "复用本机登录，不保存令牌"); Text("应用会单独续接 StudyRocket 学业助理任务，开发任务不会被读取。").font(.caption).foregroundStyle(.secondary) }; Section("原生提醒") { LabeledContent("权限", value: reminders.authorization); ForEach(ReminderRoute.allCases) { route in Toggle(route.title, isOn: Binding(get: { reminders.enabled[route] ?? true }, set: { reminders.toggle(route, isOn: $0) })); HStack { Text("下一次").font(.caption).foregroundStyle(.secondary); Spacer(); Text(nextDateText(for: route)).font(.caption.monospacedDigit()).foregroundStyle(.secondary); Button("测试") { reminders.sendTest(route) }.buttonStyle(.link) } }; Button("请求通知权限并登记") { reminders.requestPermissionAndSchedule() }.buttonStyle(.borderedProminent) }; Section("运行方式") { LabeledContent("后台服务", value: "无"); LabeledContent("数据存储", value: "Markdown 文件"); LabeledContent("旧自动任务", value: "验收前保留") }; Section("隐私") { Text("应用不保存模型凭证，不创建网络监听端口；PDF 继续使用私有云盘单独备份。学业对话继承当前 Codex 端点配置。").font(.callout).foregroundStyle(.secondary) } }.formStyle(.grouped).frame(maxWidth: 760).frame(maxWidth: .infinity).padding(24) } }
+    var body: some View { ScrollView { Form { Section("当前仓库") { Text(workspace.rootURL.path).lineLimit(1).truncationMode(.middle).textSelection(.enabled); Text("需要迁移仓库时，请使用侧边栏底部的“重新绑定仓库”。").font(.caption).foregroundStyle(.secondary) }; Section("学业对话") { LabeledContent("Codex 连接", value: "复用本机登录，不保存令牌"); Text("应用会单独续接 StudyRocket 学业助理任务，开发任务不会被读取。").font(.caption).foregroundStyle(.secondary) }; Section("原生提醒") { LabeledContent("权限", value: reminders.authorization); ForEach([ReminderRoute.weekly, .monthly]) { route in Toggle(route.title, isOn: Binding(get: { reminders.enabled[route] ?? true }, set: { reminders.toggle(route, isOn: $0) })); HStack { Text("下一次").font(.caption).foregroundStyle(.secondary); Spacer(); Text(nextDateText(for: route)).font(.caption.monospacedDigit()).foregroundStyle(.secondary); Button("测试") { reminders.sendTest(route) }.buttonStyle(.link) } }; Button("请求通知权限并登记") { reminders.requestPermissionAndSchedule() }.buttonStyle(.borderedProminent) }; Section("运行方式") { LabeledContent("后台服务", value: "无"); LabeledContent("数据存储", value: "Markdown 文件"); LabeledContent("旧自动任务", value: "验收前保留") }; Section("隐私") { Text("应用不保存模型凭证，不创建网络监听端口；PDF 继续使用私有云盘单独备份。学业对话继承当前 Codex 端点配置。").font(.callout).foregroundStyle(.secondary) } }.formStyle(.grouped).frame(maxWidth: 760).frame(maxWidth: .infinity).padding(24) } }
     private func nextDateText(for route: ReminderRoute) -> String { guard let date = reminders.nextDates[route] ?? nil else { return "待登记" }; return date.formatted(date: .abbreviated, time: .shortened) }
 }
 
@@ -3217,12 +3222,12 @@ struct ChatComposer: View {
         VStack(alignment: .leading, spacing: 8) {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
-                    ForEach(ReminderRoute.allCases) { route in Button(route.title) { prepare(route.prompt) }.buttonStyle(.borderless).font(.caption) }
+                    ForEach([ReminderRoute.weekly, .monthly]) { route in Button(route.title) { prepare(route.prompt) }.buttonStyle(.borderless).font(.caption) }
                     Button("学业答疑") { prepare("我有一个学业问题，请先读取我的档案和相关航线再回答。") }.buttonStyle(.borderless).font(.caption)
                     Spacer()
                 }
                 Menu("快捷报告") {
-                    ForEach(ReminderRoute.allCases) { route in Button(route.title) { prepare(route.prompt) } }
+                    ForEach([ReminderRoute.weekly, .monthly]) { route in Button(route.title) { prepare(route.prompt) } }
                     Button("学业答疑") { prepare("我有一个学业问题，请先读取我的档案和相关航线再回答。") }
                 }.font(.caption)
             }.foregroundStyle(.secondary)

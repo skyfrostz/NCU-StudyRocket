@@ -15,8 +15,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 mkdir -p "$CHECK_ROOT" "$CHECK_STATE"
-swift build --product NCUStudyRocket
-BIN_PATH="$(swift build --show-bin-path)"
+swift build --build-system native --product NCUStudyRocket
+BIN_PATH="$(swift build --build-system native --show-bin-path)"
 typeset -a SHARED_OBJECTS
 SHARED_OBJECTS=("$BIN_PATH/StudyRocketShared.build"/*.swift.o(N))
 (( ${#SHARED_OBJECTS} > 0 )) || {

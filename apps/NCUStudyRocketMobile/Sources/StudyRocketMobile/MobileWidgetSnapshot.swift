@@ -85,12 +85,16 @@ enum MobileWidgetSnapshotBuilder {
 }
 
 enum MobileWidgetDestination: Equatable {
+    case chat, fact, more
     case home
     case timetable
     case plan
 
     var tabIndex: Int {
         switch self {
+        case .chat: 1
+        case .fact: 4
+        case .more: 5
         case .home: 0
         case .timetable: 2
         case .plan: 3
@@ -101,6 +105,9 @@ enum MobileWidgetDestination: Equatable {
         guard url.scheme?.lowercased() == StudyRocketWidgetConfiguration.urlScheme.lowercased() else { return nil }
 
         switch url.host?.lowercased() {
+        case "chat": return .chat
+        case "fact": return .fact
+        case "more": return .more
         case "home": return .home
         case "timetable": return .timetable
         case "plan": return .plan

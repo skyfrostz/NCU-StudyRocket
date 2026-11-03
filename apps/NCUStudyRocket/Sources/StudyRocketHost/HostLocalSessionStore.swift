@@ -10,8 +10,7 @@ final class HostLocalSessionStore {
         self.url = url ?? StudyRocketLocalSession.tokenURL(fileManager: fileManager)
     }
 
-    func issue() throws -> String {
-        let token = "\(UUID().uuidString).\(UUID().uuidString)"
+    func publish(_ token: String) throws {
         try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(token.utf8).write(to: url, options: .atomic)
         do {
@@ -20,7 +19,6 @@ final class HostLocalSessionStore {
             try? fileManager.removeItem(at: url)
             throw error
         }
-        return token
     }
 
     func read() -> String? {
@@ -30,7 +28,8 @@ final class HostLocalSessionStore {
         return token.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    func clear() {
+    func clear(ifMatching token: String) {
+        guard read() == token else { return }
         try? fileManager.removeItem(at: url)
     }
 }

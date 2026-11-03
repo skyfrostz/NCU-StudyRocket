@@ -196,6 +196,19 @@ final class HostWriteService {
         return value
     }
 
+    func appendFact(_ request: FactWriteRequest) throws -> SnapshotResponse {
+        writeLock.lock(); defer { writeLock.unlock() }
+        try ensureAPIVersion(request.metadata.apiVersion)
+        guard request.repositoryID == RequestSigning.bodyHash(Data(root.path.utf8)),
+              UUID(uuidString: request.metadata.idempotencyKey) == request.entry.id else {
+            throw HostWriteError(code: "wrong_destination", message: "记录编号或目标仓库不匹配。")
+        }
+        try FactJournal.append(request.entry, root: root, backupDirectory: backupRoot) {
+            _ = try self.ensureRevision(request.metadata.baseRevision)
+        }
+        return snapshotBuilder.build()
+    }
+
     func applyDaily(_ request: DailyWriteRequest) throws -> SnapshotResponse {
         writeLock.lock(); defer { writeLock.unlock() }
         if let cached = replayedValue(for: request.metadata.idempotencyKey) { return cached }
@@ -204,20 +217,22 @@ final class HostWriteService {
             throw HostWriteError(code: "invalid_date", message: "行为账日期必须使用有效的 yyyy-MM-dd 格式。")
         }
         try ensureNoReservedMarkers(in: [request.entry.deliverables, request.entry.studyTime, request.entry.sleep, request.entry.exercise, request.entry.firstTask])
-        try ensureRevision(request.metadata.baseRevision)
-        let relative = "工作台/每日记录/\(request.entry.date.prefix(7)).md"
-        let fileURL = root.appendingPathComponent(relative).standardizedFileURL
-        let exists = fileManager.fileExists(atPath: fileURL.path)
-        let source = (try? read(relative)) ?? "# 每日行为账 · \(request.entry.date.prefix(7))\n\n"
-        let updated = updateDaily(source, entry: request.entry)
-        if exists {
-            try save(updated, relative: relative, expectedHash: hash(source))
-        } else {
-            let resolvedRoot = root.resolvingSymlinksInPath()
-            let resolvedURL = fileURL.resolvingSymlinksInPath()
-            guard resolvedURL.path.hasPrefix(resolvedRoot.path + "/"), !isSymlink(fileURL) else { throw HostWriteError(code: "path_denied", message: "目标文件不在仓库允许范围内。") }
-            try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data(updated.utf8).write(to: fileURL, options: .atomic)
+        try FactJournal.coordinated(root: root) { _ in
+            try ensureRevision(request.metadata.baseRevision)
+            let relative = "工作台/每日记录/\(request.entry.date.prefix(7)).md"
+            let fileURL = root.appendingPathComponent(relative).standardizedFileURL
+            let exists = fileManager.fileExists(atPath: fileURL.path)
+            let source = (try? read(relative)) ?? "# 每日行为账 · \(request.entry.date.prefix(7))\n\n"
+            let updated = updateDaily(source, entry: request.entry)
+            if exists {
+                try save(updated, relative: relative, expectedHash: hash(source))
+            } else {
+                let resolvedRoot = root.resolvingSymlinksInPath()
+                let resolvedURL = fileURL.resolvingSymlinksInPath()
+                guard resolvedURL.path.hasPrefix(resolvedRoot.path + "/"), !isSymlink(fileURL) else { throw HostWriteError(code: "path_denied", message: "目标文件不在仓库允许范围内。") }
+                try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data(updated.utf8).write(to: fileURL, options: .atomic)
+            }
         }
         let value = snapshotBuilder.build()
         storeReplay(value, for: request.metadata.idempotencyKey)
@@ -542,7 +557,7 @@ final class HostWriteService {
     private func updateDaily(_ source: String, entry: DailySnapshot) -> String {
         let heading = "### \(entry.date)"
         let section = "\n\(heading)\n- [ ] 今日完成的具体交付物：\(entry.deliverables)\n- 净学习时长：\(entry.studyTime)\n- 入睡/起床：\(entry.sleep)\n- 运动：\(entry.exercise)\n- 明日第一任务：\(entry.firstTask)\n"
-        if let start = source.range(of: heading) {
+        if let start = source.range(of: "(?m)^" + heading + "$", options: .regularExpression) {
             let end = source[start.upperBound...].range(of: "\n### ")?.lowerBound ?? source.endIndex
             var result = source
             result.replaceSubrange(start.lowerBound..<end, with: section)

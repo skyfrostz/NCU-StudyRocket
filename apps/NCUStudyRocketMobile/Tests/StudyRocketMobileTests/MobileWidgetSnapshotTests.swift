@@ -325,7 +325,9 @@ final class MobileWidgetSnapshotTests: XCTestCase {
         XCTAssertEqual(MobileWidgetDestination.parse(URL(string: "ncustudyrocket://home")!), .home)
         XCTAssertEqual(MobileWidgetDestination.parse(URL(string: "ncustudyrocket://timetable")!), .timetable)
         XCTAssertEqual(MobileWidgetDestination.parse(URL(string: "ncustudyrocket://plan")!), .plan)
-        XCTAssertNil(MobileWidgetDestination.parse(URL(string: "ncustudyrocket://chat")!))
+        XCTAssertEqual(MobileWidgetDestination.parse(URL(string: "ncustudyrocket://chat")!), .chat)
+        XCTAssertEqual(MobileWidgetDestination.parse(URL(string: "ncustudyrocket://fact")!), .fact)
+        XCTAssertNil(MobileWidgetDestination.parse(URL(string: "ncustudyrocket://send")!))
         XCTAssertNil(MobileWidgetDestination.parse(URL(string: "https://example.com/home")!))
     }
 

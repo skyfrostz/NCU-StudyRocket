@@ -1390,7 +1390,10 @@ final class StudyChatStore: ObservableObject {
     }
 
     func openInCodex() {
-        guard let threadID else { return }
+        // A read-only history shortcut can stay pinned to the user's original chat
+        // even if the Host had to migrate its writable protocol session.
+        let pinned = root.flatMap { UserDefaults.standard.string(forKey: "historyThread." + RequestSigning.bodyHash(Data($0.standardizedFileURL.path.utf8))) }
+        guard let threadID = pinned.flatMap({ UUID(uuidString: $0) != nil ? $0 : nil }) ?? threadID else { return }
         var components = URLComponents(); components.scheme = "codex"; components.host = "threads"; components.path = "/\(threadID)"
         if let url = components.url { NSWorkspace.shared.open(url) }
     }

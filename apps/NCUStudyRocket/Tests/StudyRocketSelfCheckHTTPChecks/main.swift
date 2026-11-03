@@ -210,6 +210,21 @@ struct StudyRocketSelfCheckHTTPChecks {
         let finalMorning = completedPeriod.week.days.first(where: { $0.id == targetDay.id })?.slots.first(where: { $0.id == "morning" })
         try require(finalMorning?.tasks.first(where: { $0.id == task.id })?.isCompleted == true, "单项时段完成状态未写入")
         try require(finalMorning?.tasks.count == 2, "单项时段操作错误影响了其他任务")
+
+        let status = try await runner.perform(method: "GET", path: "/v1/health")
+        guard let repo = try JSONDecoder().decode(HealthResponse.self, from: status.body).repositoryID else { throw SelfCheckFailure("缺少仓库标识") }
+        let fact = QuickFact(text: "隔离验证：完成一题")
+        let payload = try JSONEncoder().encode(FactWriteRequest(entry: fact, metadata: WriteMetadata(baseRevision: completedPeriod.revision, idempotencyKey: fact.id.uuidString), repositoryID: repo))
+        let denied = try await runner.perform(method: "POST", path: "/v1/facts", body: payload, signed: false)
+        try require(denied.statusCode == 401, "未认证记录写入未被拒绝")
+        for _ in 0..<2 {
+            let posted = try await runner.perform(method: "POST", path: "/v1/facts", body: payload)
+            try require(posted.statusCode == 200, "记录追加或相同请求重放失败")
+            let value = try JSONDecoder().decode(SnapshotResponse.self, from: posted.body)
+            try require(value.recentFacts?.filter { $0.id == fact.id } == [fact], "重复提交未保持唯一原文")
+            try require(value.daily == dailySnapshot.daily, "新版追加损坏旧版记录")
+        }
+
     }
 
     private static func pairingCode(at url: URL) async throws -> String {

@@ -270,15 +270,19 @@ public struct SnapshotResponse: Codable, Equatable, Sendable {
     public let home: HomeSnapshot
     public let week: WeeklyPlanSnapshot
     public let daily: DailySnapshot
+    public let recentFacts: [QuickFact]?
+    public let legacyJournal: String?
     public let summaries: [SummaryCard]
 
-    public init(revision: String, fetchedAt: Date = .now, home: HomeSnapshot, week: WeeklyPlanSnapshot, daily: DailySnapshot, summaries: [SummaryCard]) {
+    public init(revision: String, fetchedAt: Date = .now, home: HomeSnapshot, week: WeeklyPlanSnapshot, daily: DailySnapshot, summaries: [SummaryCard], recentFacts: [QuickFact]? = nil, legacyJournal: String? = nil) {
         self.revision = revision
         self.fetchedAt = fetchedAt
         self.home = home
         self.week = week
         self.daily = daily
         self.summaries = summaries
+        self.recentFacts = recentFacts
+        self.legacyJournal = legacyJournal
     }
 }
 

@@ -15,8 +15,9 @@ ICONSET="$ROOT/.build/NCUStudyRocket.iconset"
 rm -rf "$ICONSET"
 .build/make-icon "$ROOT/.build" >/dev/null
 iconutil -c icns "$ICONSET" -o "$ROOT/.build/NCUStudyRocket.icns"
-swift build -c "$CONFIGURATION"
-BIN_DIR="$(swift build -c "$CONFIGURATION" --show-bin-path)"
+MAC_SDK="$(xcrun --sdk macosx --show-sdk-path)"
+xcrun --sdk macosx swift build --build-system native --sdk "$MAC_SDK" -c "$CONFIGURATION"
+BIN_DIR="$(xcrun --sdk macosx swift build --build-system native --sdk "$MAC_SDK" -c "$CONFIGURATION" --show-bin-path)"
 xcodebuild -project NCUStudyRocketDesktopWidget.xcodeproj \
   -target NCUStudyRocketDesktopWidget \
   -configuration "$XCODE_CONFIGURATION" \
@@ -28,6 +29,13 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 mkdir -p "$APP/Contents/PlugIns"
 cp "$BIN_DIR/NCUStudyRocket" "$APP/Contents/MacOS/NCUStudyRocket"
+EXPECTED_SDK="$(xcrun --sdk macosx --show-sdk-version)"
+LINKED_SDK="$(xcrun vtool -show-build "$APP/Contents/MacOS/NCUStudyRocket" | awk '$1=="sdk"{print $2; exit}')"
+if [[ "$LINKED_SDK" != "$EXPECTED_SDK" ]]; then
+  print -u2 "Linked macOS SDK $LINKED_SDK; expected $EXPECTED_SDK"
+  exit 1
+fi
+
 cp .build/NCUStudyRocket.icns "$APP/Contents/Resources/NCUStudyRocket.icns"
 cp -R "$ROOT/.build/widget-products/$XCODE_CONFIGURATION/NCUStudyRocketDesktopWidget.appex" "$APP/Contents/PlugIns/"
 cat > "$APP/Contents/Info.plist" <<'PLIST'

@@ -1,6 +1,8 @@
 #if os(iOS)
 import Foundation
 import UserNotifications
+import StudyRocketShared
+import UIKit
 
 public enum MobileReminderRoute: String, Codable, Sendable, Equatable {
     case daily
@@ -9,7 +11,7 @@ public enum MobileReminderRoute: String, Codable, Sendable, Equatable {
 
     var prompt: String {
         switch self {
-        case .daily: "今天复盘：请先回答五项行为事实。"
+        case .daily: "今天有一件事想记下来吗？"
         case .weekly: "本周总结：请基于已完成交付物和事实记录生成复盘。"
         case .monthly: "月度复盘：请汇总本月可证行为并决定下月重点。"
         }
@@ -22,6 +24,12 @@ public final class MobileReminderScheduler: NSObject, UNUserNotificationCenterDe
     @Published public private(set) var pendingRoute: MobileReminderRoute?
     @Published public private(set) var enabled: Bool
 
+    @Published public private(set) var dailyEnabled = UserDefaults.standard.object(forKey: "studyrocket.factReminder") as? Bool ?? true
+    @Published public private(set) var authorization: UNAuthorizationStatus = .notDetermined
+    @Published public private(set) var nextDaily: Date?
+    private var recordedDays = Set<String>()
+    private var configuring = false
+    private var needsUpdate = false
     private let center = UNUserNotificationCenter.current()
 
     private override init() {
@@ -30,24 +38,69 @@ public final class MobileReminderScheduler: NSObject, UNUserNotificationCenterDe
         center.delegate = self
     }
 
-    public func configure() async {
-        guard enabled else {
-            center.removeAllPendingNotificationRequests()
-            return
-        }
-        _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
-        await scheduleDaily()
-        await scheduleWeekly()
-        await scheduleNextMonthEnd()
+    public func updateRecords(_ days: Set<String>) async {
+        recordedDays = days
+        await configure()
     }
 
-    public func scheduleDaily() async {
-        await remove("studyrocket.daily")
-        var components = DateComponents()
-        components.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        components.hour = 21
-        components.minute = 30
-        await add(identifier: "studyrocket.daily", title: "StudyRocket 今日复盘", route: .daily, trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: true))
+    public func requestPermission() async {
+        if authorization == .denied, let url = URL(string: UIApplication.openNotificationSettingsURLString) {
+            await UIApplication.shared.open(url); return
+        }
+        _ = try? await center.requestAuthorization(options: [.alert, .sound])
+        await configure()
+    }
+
+    public func setDailyEnabled(_ value: Bool) {
+        dailyEnabled = value
+        UserDefaults.standard.set(value, forKey: "studyrocket.factReminder")
+        Task { if value && authorization == .notDetermined { await requestPermission() } else { await configure() } }
+    }
+
+    public func configure() async {
+        needsUpdate = true
+        guard !configuring else { return }
+        configuring = true
+        defer { configuring = false }
+        while needsUpdate {
+            needsUpdate = false
+            authorization = await center.notificationSettings().authorizationStatus
+            let ids = await center.pendingNotificationRequests().map(\.identifier).filter { $0.hasPrefix("studyrocket.daily") }
+            center.removePendingNotificationRequests(withIdentifiers: ids)
+            if authorization == .authorized || authorization == .provisional || authorization == .ephemeral {
+                if dailyEnabled { await scheduleDaily() }
+                if enabled { await scheduleWeekly(); await scheduleNextMonthEnd() }
+            }
+            if !enabled { center.removePendingNotificationRequests(withIdentifiers: ["studyrocket.weekly", "studyrocket.monthly"]) }
+            nextDaily = await center.pendingNotificationRequests().filter { $0.identifier.hasPrefix("studyrocket.daily") }
+                .compactMap { ($0.trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate() }.min()
+
+        }
+    }
+
+    private func scheduleDaily() async {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let now = Date(), today = QuickFact.day(now)
+        var time = DateComponents()
+        time.timeZone = cal.timeZone; time.hour = 21; time.minute = 30
+        if !recordedDays.contains(today) || (cal.date(bySettingHour: 21, minute: 30, second: 0, of: now) ?? now) <= now {
+            await add(identifier: "studyrocket.daily", title: "记一件事", route: .daily, trigger: UNCalendarNotificationTrigger(dateMatching: time, repeats: true))
+            return
+        }
+        // Skip only today's notification. Other weekdays repeat indefinitely. For today's
+        // weekday queue the next year individually; the next foreground reconciles again.
+        let weekday = cal.component(.weekday, from: now)
+        for day in 1...7 where day != weekday {
+            var match = time; match.weekday = day
+            await add(identifier: "studyrocket.daily.w\(day)", title: "记一件事", route: .daily, trigger: UNCalendarNotificationTrigger(dateMatching: match, repeats: true))
+        }
+        for week in 1...52 {
+            guard let day = cal.date(byAdding: .day, value: week * 7, to: now) else { continue }
+            var match = cal.dateComponents([.year, .month, .day], from: day)
+            match.timeZone = cal.timeZone; match.hour = 21; match.minute = 30
+            await add(identifier: "studyrocket.daily.\(QuickFact.day(day))", title: "记一件事", route: .daily, trigger: UNCalendarNotificationTrigger(dateMatching: match, repeats: false))
+        }
     }
 
     public func scheduleWeekly() async {
@@ -85,7 +138,9 @@ public final class MobileReminderScheduler: NSObject, UNUserNotificationCenterDe
     }
 
     nonisolated public func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner, .sound]
+        if notification.request.content.userInfo["route"] as? String == "daily",
+           await MainActor.run(body: { recordedDays.contains(QuickFact.day()) }) { return [] }
+        return [.banner, .sound]
     }
 
     nonisolated public func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
@@ -103,7 +158,7 @@ public final class MobileReminderScheduler: NSObject, UNUserNotificationCenterDe
     public func setEnabled(_ value: Bool) {
         enabled = value
         UserDefaults.standard.set(value, forKey: "studyrocket.mobileRemindersEnabled")
-        Task { await configure() }
+        Task { if value && authorization == .notDetermined { await requestPermission() } else { await configure() } }
     }
 
     private func add(identifier: String, title: String, route: MobileReminderRoute, trigger: UNNotificationTrigger) async {

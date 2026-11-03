@@ -26,8 +26,8 @@ struct NCUStudyRocketApp: App {
         _reminders = StateObject(wrappedValue: ReminderScheduler(disabled: selfCheck != nil))
     }
     var body: some Scene {
-        WindowGroup("NCU StudyRocket") { ContentView().environmentObject(workspace).environmentObject(document).environmentObject(chat).environmentObject(reminders).frame(minWidth: 980, minHeight: 680).onAppear { appDelegate.onTerminate = { chat.disconnect() } } }
-            .commands { CommandGroup(replacing: .newItem) {}; CommandMenu("StudyRocket") { Button("打开学业对话") { NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) }.keyboardShortcut("0", modifiers: [.command, .shift]); Button("今天复盘") { chat.prepare(prompt: ReminderRoute.daily.prompt); NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) }.keyboardShortcut("1", modifiers: [.command, .shift]); Button("排下周") { chat.prepare(prompt: ReminderRoute.weekly.prompt); NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) }.keyboardShortcut("2", modifiers: [.command, .shift]) } }
+        WindowGroup("NCU StudyRocket") { ContentView().environmentObject(workspace).environmentObject(document).environmentObject(chat).environmentObject(reminders).frame(minWidth: 650, minHeight: 680).onAppear { appDelegate.onTerminate = { chat.disconnect() } } }
+            .commands { CommandGroup(replacing: .newItem) {}; CommandMenu("StudyRocket") { Button("打开学业对话") { NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) }.keyboardShortcut("0", modifiers: [.command, .shift]); Button("记一件事") { NotificationCenter.default.post(name: .studyRocketOpenFact, object: nil) }.keyboardShortcut("1", modifiers: [.command, .shift]); Button("排下周") { chat.prepare(prompt: ReminderRoute.weekly.prompt); NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) }.keyboardShortcut("2", modifiers: [.command, .shift]) } }
     }
 }
 

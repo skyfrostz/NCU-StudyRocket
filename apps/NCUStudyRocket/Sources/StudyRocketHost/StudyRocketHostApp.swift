@@ -17,6 +17,11 @@ private struct PublicHealthResponse: Encodable {
 @main
 enum StudyRocketHostApp {
     static func main() {
+        if CommandLine.arguments.contains(StudyRocketSelfCheckConfiguration.trigger),
+           StudyRocketSelfCheckConfiguration.current == nil {
+            fputs("Invalid isolated Host configuration.\n", stderr)
+            exit(64)
+        }
         let application = NSApplication.shared
         let delegate = HostApplicationDelegate()
         application.delegate = delegate
@@ -446,7 +451,9 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
     private let selfCheck: StudyRocketSelfCheckConfiguration?
     private let pairing: HostPairingStore
     private let localSession: HostLocalSessionStore
-    private let localSessionToken: String
+    private let localSessionToken = "\(UUID().uuidString).\(UUID().uuidString)"
+    private let lifecycleLock = NSLock()
+    private var stopped = false
     private let codexLeaseStore: CodexLeaseStore
     private let codexLeaseLock = NSLock()
     private var codexLease: CodexLease?
@@ -476,7 +483,6 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
         )
         let sessionStore = HostLocalSessionStore(url: selfCheck?.localSessionURL)
         localSession = sessionStore
-        localSessionToken = try sessionStore.issue()
         codexLeaseStore = CodexLeaseStore(url: selfCheck?.codexLeaseURL)
         let builder = HostSnapshotBuilder(root: root.standardizedFileURL)
         snapshotBuilder = builder
@@ -502,9 +508,17 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
         }
     }
 
-    func start(onReady: @escaping (Bool, String?) -> Void, onFailed: @escaping (NWError) -> Void) {
-        listener.stateUpdateHandler = { state in
-            if case .failed(let error) = state {
+    func start(onReady: @escaping (Bool, String?) -> Void, onFailed: @escaping (Error) -> Void) {
+        listener.stateUpdateHandler = { [weak self] state in
+            if case .ready = state, let self {
+                self.lifecycleLock.lock(); defer { self.lifecycleLock.unlock() }
+                guard !self.stopped else { return }
+                do {
+                    // A second Host which cannot bind must never replace the active Host's token.
+                    try self.localSession.publish(self.localSessionToken)
+                    self.beginChatCheck(onReady: onReady)
+                } catch { onFailed(error) }
+            } else if case .failed(let error) = state {
                 NSLog("StudyRocket Host listener failed: %@", error.localizedDescription)
                 onFailed(error)
             }
@@ -513,6 +527,9 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
             self?.accept(connection)
         }
         listener.start(queue: queue)
+    }
+
+    private func beginChatCheck(onReady: @escaping (Bool, String?) -> Void) {
         selfCheckTask?.cancel()
         if selfCheck?.disablesCodex == true {
             onReady(false, "隔离自检已禁用 Codex；计划、写入和同步接口可继续验证。")
@@ -537,8 +554,12 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
     }
 
     func stop() {
+        lifecycleLock.lock()
+        stopped = true
+        localSession.clear(ifMatching: localSessionToken)
         selfCheckTask?.cancel()
         selfCheckTask = nil
+        lifecycleLock.unlock()
         chatBridge.shutdown()
         eventHub.closeAll()
         listener.cancel()
@@ -547,12 +568,11 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
         activeConnections.removeAll()
         connectionLock.unlock()
         connections.forEach { $0.cancel() }
-        localSession.clear()
         releaseCodexLease()
     }
 
     deinit {
-        localSession.clear()
+        if !stopped { localSession.clear(ifMatching: localSessionToken) }
         releaseCodexLease()
     }
 
@@ -872,7 +892,7 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
                 status = "400 Bad Request"
             }
         } else if (["POST", "PUT"].contains(method) && ["/v1/week", "/v1/deliveries/toggle", "/v1/daily"].contains(path))
-                    || (method == "POST" && path == "/v1/periods/toggle") {
+                    || (method == "POST" && ["/v1/periods/toggle", "/v1/facts"].contains(path)) {
             guard isAuthorized(headers: headers, method: method, path: path, body: body) else {
                 payload = (try? encoder.encode(APIErrorBody(code: "unauthorized", message: "设备尚未配对或请求签名已失效。", retryable: false))) ?? Data("{}".utf8)
                 status = "401 Unauthorized"
@@ -884,6 +904,7 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
                 case "/v1/week": snapshot = try writeService.applyWeek(decoder.decode(PlanWriteRequest.self, from: body))
                 case "/v1/deliveries/toggle": snapshot = try writeService.toggleDelivery(decoder.decode(DeliveryToggleRequest.self, from: body))
                 case "/v1/periods/toggle": snapshot = try writeService.togglePeriod(decoder.decode(PeriodCompletionToggleRequest.self, from: body))
+                case "/v1/facts": snapshot = try writeService.appendFact(decoder.decode(FactWriteRequest.self, from: body))
                 default: snapshot = try writeService.applyDaily(decoder.decode(DailyWriteRequest.self, from: body))
                 }
                 eventHub.publish(snapshot)

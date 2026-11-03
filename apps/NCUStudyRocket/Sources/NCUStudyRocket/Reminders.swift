@@ -5,11 +5,11 @@ enum ReminderRoute: String, CaseIterable, Identifiable {
     case daily, weekly, monthly
     var id: String { rawValue }
     var title: String {
-        switch self { case .daily: "每日行为账"; case .weekly: "每周复盘与排期"; case .monthly: "月度复盘" }
+        switch self { case .daily: "记一件事"; case .weekly: "每周复盘与排期"; case .monthly: "月度复盘" }
     }
     var prompt: String {
         switch self {
-        case .daily: return "今天复盘：先自然回应我今天的感受和处境；如果我想多谈一谈，先倾听并最多问一个开放问题，不要立刻把对话压成清单。等我愿意转入复盘后，再询问今日完成的具体交付物、净学习时长、入睡/起床、运动和明日第一任务。只记录我确认提供的事实，不记录情绪。"
+        case .daily: return "记一件事"
         case .weekly: return "本周总结并排下周：先具体回应本周完成或受阻的部分；如果我更需要说说感受，先陪我梳理，确认我想转入行动后，再询问本周完成交付物、净学习时长、未完成原因和下周硬节点；最后给出保什么、砍什么和可勾选计划。"
         case .monthly: return "月度复盘：先自然回应本月的进展、偏差或困扰；若我想多谈一谈，先倾听并最多问一个开放问题，确认后再转入本月可证交付物、净学习时长、课程/英语/科研/保研变化和下月硬节点，随后再更新相关 Markdown。"
         }
@@ -47,6 +47,7 @@ final class ReminderScheduler: NSObject, ObservableObject {
             ], intentIdentifiers: [], options: [])
         ])
         for route in ReminderRoute.allCases {
+            if route == .daily { UserDefaults.standard.set(false, forKey: "reminder.daily") }
             if let stored = UserDefaults.standard.object(forKey: "reminder.\(route.rawValue)") as? Bool {
                 enabled[route] = stored
             } else {
@@ -106,7 +107,7 @@ final class ReminderScheduler: NSObject, ObservableObject {
     private func scheduleAll() async {
         center.removePendingNotificationRequests(withIdentifiers: ReminderRoute.allCases.flatMap { [$0.identifier, "\($0.identifier).monthly"] })
         for route in ReminderRoute.allCases { nextDates[route] = nil }
-        for route in ReminderRoute.allCases where enabled[route] == true { await schedule(route) }
+        for route in ReminderRoute.allCases where route != .daily && enabled[route] == true { await schedule(route) }
     }
 
     private func reschedule(_ route: ReminderRoute) async {
@@ -156,4 +157,5 @@ extension ReminderScheduler: UNUserNotificationCenterDelegate {
     }
 }
 
-extension Notification.Name { static let studyRocketReminderRoute = Notification.Name("studyRocketReminderRoute") }
+extension Notification.Name { static let studyRocketOpenFact = Notification.Name("studyrocket.openFact")
+    static let studyRocketReminderRoute = Notification.Name("studyRocketReminderRoute") }

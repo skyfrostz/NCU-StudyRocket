@@ -205,6 +205,31 @@ struct HostWriteServiceChecks {
         try require(source.contains("今日完成的具体交付物：每日写入交付物"), "daily write omitted deliverables")
         try require(source.contains("入睡/起床：23:30-07:00"), "daily write omitted sleep")
         try require(HostSnapshotBuilder(root: root).build().daily == entry, "daily file did not remain readable after a fresh snapshot")
+        let one = QuickFact(date: dayID, text: "整理了第一节课的笔记")
+        let two = QuickFact(date: dayID, text: "完成第二节练习")
+        let repo = RequestSigning.bodyHash(Data(root.standardizedFileURL.path.utf8))
+        let request = FactWriteRequest(entry: one, metadata: WriteMetadata(baseRevision: written.revision, idempotencyKey: one.id.uuidString), repositoryID: repo)
+        let host = HostWriteService(root: root)
+        let first = try host.appendFact(request)
+        try require(first.recentFacts == [one] && first.daily == entry, "new note damaged legacy record")
+        try FactJournal.append(two, root: root, backupDirectory: root.appendingPathComponent("backups"))
+        let second = try HostWriteService(root: root).appendFact(request)
+        try require(second.recentFacts == [two, one], "lost acknowledgement duplicated an entry after host restart")
+        try requireHostError("conflict") {
+            let new = QuickFact(text: "过期提交")
+            _ = try host.appendFact(FactWriteRequest(entry: new, metadata: WriteMetadata(baseRevision: written.revision, idempotencyKey: new.id.uuidString), repositoryID: repo))
+        }
+        try requireHostError("wrong_destination") {
+            _ = try host.appendFact(FactWriteRequest(entry: one, metadata: request.metadata, repositoryID: "other"))
+        }
+        let legacyAfter = try host.applyDaily(DailyWriteRequest(entry: entry, metadata: WriteMetadata(baseRevision: second.revision)))
+        try require(legacyAfter.recentFacts == [two, one] && legacyAfter.legacyJournal?.contains(entry.deliverables) == true, "old-client write corrupted quick notes")
+        let after = try Data(contentsOf: file)
+        do {
+            try FactJournal.append(QuickFact(id: one.id, date: dayID, text: "重复编号修改"), root: root)
+            fatalError("accepted mismatched duplicate")
+        } catch is FactError {}
+        try require(try Data(contentsOf: file) == after, "rejected duplicate modified journal")
     }
 
     private static func testDeliveryToggleStaysInsideManagedSection() throws {
@@ -704,11 +729,15 @@ struct HostWriteServiceChecks {
         try require(proposal.proposedContent.contains(expectedRow), "proposal diff was not normalized before approval")
         try require(try String(contentsOf: root.appendingPathComponent("工作台/下周计划.md"), encoding: .utf8) == source, "proposal registration changed the real file")
 
-        _ = try store.apply(ProposalApplyRequest(
+        let apply = ProposalApplyRequest(
             proposalIDs: [proposal.id],
             authorization: "test-authorization",
             metadata: WriteMetadata(baseRevision: "temporary", idempotencyKey: "proposal-normalization-apply")
-        ))
+        )
+        _ = try store.apply(apply)
+        // Simulate an acknowledged write whose response was lost before the phone saw it.
+        _ = try store.apply(apply)
+        try require(store.list().proposals.isEmpty, "a replay recreated a consumed proposal")
         let written = try String(contentsOf: root.appendingPathComponent("工作台/下周计划.md"), encoding: .utf8)
         try require(written == proposal.proposedContent, "approved proposal write differed from the displayed diff")
     }

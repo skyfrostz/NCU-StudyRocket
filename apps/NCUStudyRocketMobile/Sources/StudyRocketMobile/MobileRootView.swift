@@ -7,8 +7,23 @@ public struct StudyRocketMobileRoot: View {
   @Environment(\.scenePhase) private var scenePhase
   @StateObject private var session: MobileSession
   @State private var selectedTab = 0
+  @State private var showFact = false
+  private func navigate(_ destination: Int) {
+    if destination == 4 { showFact = true } else { showFact = false; selectedTab = destination }
+  }
   #if os(iOS)
     @StateObject private var reminders = MobileReminderScheduler.shared
+  #endif
+
+  #if os(iOS)
+    private var recordedDays: Set<String> {
+      var days = Set((session.snapshot?.recentFacts ?? []).map(\.date) + session.pendingFacts.map(\.date))
+      if let old = session.snapshot?.daily,
+         [old.deliverables, old.studyTime, old.sleep, old.exercise, old.firstTask].contains(where: { !$0.isEmpty }) {
+        days.insert(old.date)
+      }
+      return days
+    }
   #endif
 
   public init(session: MobileSession = MobileSession()) {
@@ -17,7 +32,7 @@ public struct StudyRocketMobileRoot: View {
 
   public var body: some View {
     TabView(selection: $selectedTab) {
-      MobileHomeView(session: session) { selectedTab = $0 }
+      MobileHomeView(session: session) { navigate($0) }
         .tabItem { Label("首页", systemImage: "house") }
         .tag(0)
       MobileChatView(session: session)
@@ -26,37 +41,41 @@ public struct StudyRocketMobileRoot: View {
       MobileTimetableView(session: session)
         .tabItem { Label("课表", systemImage: "calendar.badge.clock") }
         .tag(2)
-      MobilePlanView(session: session) { selectedTab = $0 }
+      MobilePlanView(session: session) { navigate($0) }
         .tabItem { Label("计划", systemImage: "calendar.badge.clock") }
         .tag(3)
-      MobileDailyView(session: session)
-        .tabItem { Label("复盘", systemImage: "checkmark.circle.fill") }
-        .tag(4)
-      MobileMoreView(session: session)
+      MobileMoreView(session: session) { showFact = true }
         .tabItem { Label("更多", systemImage: "ellipsis.circle") }
         .tag(5)
     }
+    .sheet(isPresented: $showFact) { MobileDailyView(session: session) }
     .tint(MobileTheme.brand)
     .onOpenURL { url in
       guard let destination = MobileWidgetDestination.parse(url) else { return }
-      selectedTab = destination.tabIndex
+      navigate(destination.tabIndex)
     }
     #if os(iOS)
       .task {
-        await reminders.configure()
+        await reminders.updateRecords(recordedDays)
         await session.refresh()
       }
-      .onChange(of: reminders.pendingRoute) { _, route in
+      .onChange(of: recordedDays) { _, days in Task { await reminders.updateRecords(days) } }
+      .onChange(of: reminders.pendingRoute, initial: true) { _, route in
         guard let route else { return }
-        selectedTab = 1
-        session.inputDraft = route.prompt
+        if route == .daily { showFact = true; NotificationCenter.default.post(name: .focusStudyFact, object: nil) }
+        else { selectedTab = 1; if session.inputDraft.isEmpty { session.inputDraft = route.prompt } }
         _ = reminders.takePendingRoute()
       }
     #endif
     .onChange(of: scenePhase) { _, phase in
       switch phase {
       case .active:
-        Task { await session.refresh() }
+        Task {
+          await session.refresh()
+          #if os(iOS)
+          await reminders.updateRecords(recordedDays)
+          #endif
+        }
       case .background, .inactive:
         session.stopEventStream()
       @unknown default:
@@ -507,7 +526,7 @@ private struct MobileHomeView: View {
       MobileQuickAction(
         title: "学业对话", symbol: "bubble.left.and.bubble.right", action: { onNavigate(1) })
       MobileQuickAction(title: "周计划", symbol: "calendar", action: { onNavigate(3) })
-      MobileQuickAction(title: "写日结", symbol: "checkmark.circle", action: { onNavigate(4) })
+      MobileQuickAction(title: "记一件事", symbol: "square.and.pencil", action: { onNavigate(4) })
     }
   }
 
@@ -1586,6 +1605,9 @@ private struct MobileQuickAction: View {
 
 private struct MobileChatView: View {
   @ObservedObject var session: MobileSession
+  @State private var userScrolling = false
+  @State private var readingOlder = false
+  @State private var replacement: String?
   @State private var showJumpToLatest = false
   @FocusState private var isComposerFocused: Bool
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1597,18 +1619,8 @@ private struct MobileChatView: View {
           MobileStatusBanner(session: session)
           Spacer()
           Menu {
-            Button("今天复盘") {
-              isComposerFocused = false
-              session.inputDraft = "今天复盘：请先询问我已完成的交付物、净学习时长、睡眠、运动和明日第一任务。"
-            }
-            Button("本周总结") {
-              isComposerFocused = false
-              session.inputDraft = "本周总结：请先向我收集本周已完成的具体交付物、未完成原因和下周约束。"
-            }
-            Button("排下周") {
-              isComposerFocused = false
-              session.inputDraft = "排下周：请先询问我可投入的时间、固定安排和本周遗留交付物。"
-            }
+            Button("本周总结") { proposeDraft("本周总结：请基于我实际保存的记录和交付物，帮我总结本周。") }
+            Button("排下周") { proposeDraft("排下周：请先询问我可投入的时间、固定安排和本周遗留交付物。") }
           } label: {
             Image(systemName: "bolt.circle")
               .frame(width: 44, height: 44)
@@ -1618,12 +1630,16 @@ private struct MobileChatView: View {
         }
         .padding(.horizontal, MobileTheme.pageInset)
         .padding(.vertical, 8)
-        if let message = session.chatUnavailableMessage ?? session.lastChatIssue {
+        if let message = session.conversationRefreshError ?? session.chatUnavailableMessage ?? session.lastChatIssue {
           HStack(spacing: 10) {
             MobileInlineNotice(
               text: message, symbol: "bubble.left.and.exclamationmark", tint: .orange)
-            if session.lastFailedChatText != nil {
-              Button("重新编辑并发送") { session.restoreFailedChatDraft() }
+            if session.conversationRefreshError != nil || session.chatUnavailableMessage != nil {
+              Button(session.conversationRefreshError != nil ? "重试" : "重新检查") { Task { await session.refreshConversation() } }
+                .disabled(session.refreshingConversation)
+            }
+            if let failed = session.lastFailedChatText {
+              Button("恢复到输入框") { proposeDraft(failed) }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             }
@@ -1682,30 +1698,35 @@ private struct MobileChatView: View {
                 .padding(.vertical, 18)
               }
               .background(MobileTheme.groupedBackground)
+              .refreshable { await session.refreshConversation() }
               #if os(iOS)
                 .scrollDismissesKeyboard(.interactively)
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .onScrollPhaseChange { _, phase in
+                  userScrolling = phase == .interacting || phase == .decelerating || phase == .tracking
+                }
                 .onScrollGeometryChange(for: CGFloat.self) { geometry in
                   max(0, geometry.contentSize.height - geometry.visibleRect.maxY)
                 } action: { _, distance in
-                  let shouldShow = distance > (showJumpToLatest ? 48 : 120)
-                  if shouldShow != showJumpToLatest { showJumpToLatest = shouldShow }
+                  guard userScrolling || readingOlder else { return }
+                  readingOlder = distance > (readingOlder ? 48 : 120)
+                  if !readingOlder { showJumpToLatest = false }
                 }
               #else
                 .coordinateSpace(name: "mobile-chat-scroll")
                 .onPreferenceChange(MobileChatBottomPreference.self) { bottomY in
-                  showJumpToLatest = bottomY > container.size.height + 72
+                  readingOlder = bottomY > container.size.height + 72
+                  if !readingOlder { showJumpToLatest = false }
                 }
               #endif
               .simultaneousGesture(TapGesture().onEnded { isComposerFocused = false })
-              .onChange(of: session.chatRevision) { _, _ in
-                guard !showJumpToLatest else { return }
-                proxy.scrollTo("chat-bottom", anchor: .bottom)
+              .onChange(of: [session.chatMessages.last?.id ?? "", session.chatMessages.last?.text ?? "", String(session.chatMessages.count)]) { _, _ in
+                if readingOlder { showJumpToLatest = true }
+                else { proxy.scrollTo("chat-bottom", anchor: .bottom) }
               }
               .task {
-                await session.refreshChat()
-                await session.refreshProposals()
-                await Task.yield()
                 proxy.scrollTo("chat-bottom", anchor: .bottom)
+                await session.refreshConversation()
               }
               if showJumpToLatest {
                 Button {
@@ -1731,7 +1752,6 @@ private struct MobileChatView: View {
           TextField("输入学业问题或今日事实", text: $session.inputDraft, axis: .vertical)
             .lineLimit(1...5)
             .focused($isComposerFocused)
-            .disabled(!session.isChatAvailable && !session.isChatBusy)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .background(.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -1764,6 +1784,19 @@ private struct MobileChatView: View {
         .background(.bar)
       }
       .navigationTitle("学业对话")
+      .toolbar {
+        ToolbarItem(placement: .primaryAction) {
+          Button { Task { await session.refreshConversation() } } label: {
+            if session.refreshingConversation { ProgressView().controlSize(.small) }
+            else { Label("刷新", systemImage: "arrow.clockwise") }
+          }.accessibilityLabel("刷新").disabled(session.refreshingConversation)
+        }
+      }
+      .alert("替换输入框中的草稿？", isPresented: Binding(get: { replacement != nil }, set: { if !$0 { replacement = nil } })) {
+        Button("替换") { if let replacement { session.inputDraft = replacement }; replacement = nil; isComposerFocused = true }
+        Button("保留当前草稿", role: .cancel) { replacement = nil }
+      }
+      .onChange(of: session.repositoryGeneration) { _, _ in replacement = nil; readingOlder = false; showJumpToLatest = false }
       #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -1775,6 +1808,10 @@ private struct MobileChatView: View {
       #endif
       .onDisappear { isComposerFocused = false }
     }
+  }
+  private func proposeDraft(_ value: String) {
+    if !session.inputDraft.isEmpty && session.inputDraft != value { replacement = value }
+    else { session.inputDraft = value; isComposerFocused = true }
   }
 }
 
@@ -2516,172 +2553,65 @@ private struct MobilePendingTaskAssignmentSheet: View {
   }
 }
 
+private extension Notification.Name { static let focusStudyFact = Notification.Name("studyrocket.focusFact") }
+
 private struct MobileDailyView: View {
+  @Environment(\.dismiss) private var dismiss
   @ObservedObject var session: MobileSession
-  @State private var deliverables = ""
-  @State private var studyTime = ""
-  @State private var sleep = ""
-  @State private var exercise = ""
-  @State private var firstTask = ""
-  @State private var loadedDaily: DailySnapshot?
-  @State private var loadedRevision = ""
-  @State private var incomingRevision: String?
-  @State private var isSaving = false
-  @State private var saveMessage: String?
-  @FocusState private var focusedField: MobileDailyField?
+  @State private var text = ""
+  @State private var notice = ""
+  @State private var lastFact: QuickFact?
+  @FocusState private var focus: Bool
 
   var body: some View {
     NavigationStack {
-      ScrollView {
-        VStack(alignment: .leading, spacing: 18) {
-          ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top) {
-              dailyHeaderText
-              Spacer()
-              MobileStatusBanner(session: session)
-            }
-            VStack(alignment: .leading, spacing: 8) {
-              dailyHeaderText
-              MobileStatusBanner(session: session)
-            }
-          }
-          MobileSurface {
-            VStack(alignment: .leading, spacing: 16) {
-              MobileSectionHeading(title: "今天的五项事实", detail: "仅保存你确认的内容", icon: "checkmark.circle")
-              if incomingRevision != nil {
-                MobileInlineNotice(
-                  text: "Mac 端的今日记录已更新，当前输入仍保留，不会自动覆盖。",
-                  symbol: "arrow.triangle.2.circlepath",
-                  tint: .orange
-                )
-                Button("放弃当前输入并重新载入") {
-                  focusedField = nil
-                  loadLatestSnapshot()
-                }
-                .buttonStyle(.bordered)
-              }
-              MobileFactField(
-                title: "完成交付物", symbol: "checklist", placeholder: "完成了什么", text: $deliverables,
-                field: .deliverables, focus: $focusedField, multiline: true)
-              MobileFactField(
-                title: "净学习时长", symbol: "clock", placeholder: "例如 3 小时 20 分钟", text: $studyTime,
-                field: .studyTime, focus: $focusedField)
-              MobileFactField(
-                title: "睡眠", symbol: "bed.double", placeholder: "入睡 / 起床时间", text: $sleep,
-                field: .sleep, focus: $focusedField)
-              MobileFactField(
-                title: "运动", symbol: "figure.run", placeholder: "项目和时长", text: $exercise,
-                field: .exercise, focus: $focusedField)
-              MobileFactField(
-                title: "明日第一任务", symbol: "arrow.right.circle", placeholder: "从哪一步开始",
-                text: $firstTask, field: .firstTask, focus: $focusedField, multiline: true)
-              Button("保存行为账") {
-                guard incomingRevision == nil else { return }
-                focusedField = nil
-                let date = currentDailyDate
-                guard !date.isEmpty else {
-                  saveMessage = "尚未取得有效日期，请先连接并刷新 Mac Host。"
-                  return
-                }
-                let entry = DailySnapshot(
-                  date: date, deliverables: deliverables, studyTime: studyTime, sleep: sleep,
-                  exercise: exercise, firstTask: firstTask)
-                isSaving = true
-                Task {
-                  await session.saveDaily(entry)
-                  if session.state == .online { loadLatestSnapshot() }
-                  saveMessage = session.state == .online ? "已提交保存。" : "已保存到本机草稿，联网后可比较并提交。"
-                  isSaving = false
-                }
-              }
-              .buttonStyle(.borderedProminent)
-              .controlSize(.large)
-              .disabled(incomingRevision != nil || isSaving || currentDailyDate.isEmpty)
-              if let saveMessage {
-                MobileInlineNotice(
-                  text: saveMessage, symbol: "checkmark.circle",
-                  tint: session.state == .online ? .teal : .orange)
-              }
-            }
+      List {
+        Section("写下今天做过的一件事") {
+          TextField("例如：完成高数第一章例题", text: $text).focused($focus).onSubmit(save)
+          Button("保存", action: save).disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
+          if !notice.isEmpty { Text(notice).foregroundStyle(.secondary) }
+          if let fact = lastFact {
+            Text((session.pendingFacts.contains(fact) ? "已存本机草稿：" : "已保存：") + fact.text)
           }
         }
-        .padding(MobileTheme.pageInset)
-        .safeAreaPadding(.bottom, 8)
+        if !session.pendingFacts.isEmpty {
+          Section("本机草稿 · 待同步") {
+            ForEach(session.pendingFacts) { fact in Text(verbatim: fact.text) }
+            if let error = session.factSyncError { Text(error).font(.caption).foregroundStyle(.secondary) }
+            Button("重新同步") { Task { await session.refresh() } }
+          }
+        }
+        Section("近期记录") {
+          let facts = session.snapshot?.recentFacts ?? []
+          if facts.isEmpty { Text("还没有已保存的记录。").foregroundStyle(.secondary) }
+          ForEach(facts) { fact in
+            VStack(alignment: .leading) { Text(fact.date).font(.caption).foregroundStyle(.secondary); Text(verbatim: fact.text) }
+          }
+        }
+        if let old = session.pendingDailyDraft {
+          Section("旧版五项草稿 · 尚未提交") {
+            Text(verbatim: [old.date, old.deliverables, old.studyTime, old.sleep, old.exercise, old.firstTask].joined(separator: "\n")).textSelection(.enabled)
+            Text("可复制原文追加为新记录，或在“更多”处理旧草稿。").font(.caption)
+          }
+        }
+        if let old = session.snapshot?.legacyJournal, !old.isEmpty {
+          DisclosureGroup("以往的五项记录") { Text(verbatim: old).textSelection(.enabled) }
+        }
       }
-      .background(MobileTheme.groupedBackground)
-      #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-      #endif
-      .onAppear { handleSnapshotRevisionChange() }
-      .onChange(of: session.snapshot?.revision) { _, _ in handleSnapshotRevisionChange() }
-      .onDisappear { focusedField = nil }
-      #if os(iOS)
-        .scrollDismissesKeyboard(.interactively)
-        .toolbar {
-          ToolbarItemGroup(placement: .keyboard) {
-            Spacer()
-            Button("完成") { focusedField = nil }
-          }
-        }
-      #endif
+      .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
+      .navigationTitle("记一件事").onAppear { focus = true }
+      .onReceive(NotificationCenter.default.publisher(for: .focusStudyFact)) { _ in focus = true }
+      .onChange(of: session.repositoryGeneration) { _, _ in lastFact = nil; text = ""; notice = "" }
+      .refreshable { await session.refresh() }
     }
   }
-
-  private var isDailyDirty: Bool {
-    guard let daily = loadedDaily else { return false }
-    return deliverables != daily.deliverables
-      || studyTime != daily.studyTime
-      || sleep != daily.sleep
-      || exercise != daily.exercise
-      || firstTask != daily.firstTask
-  }
-
-  private var currentDailyDate: String {
-    loadedDaily?.date ?? session.snapshot?.daily.date ?? ""
-  }
-
-  private var dailyHeaderText: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      Text("每日复盘")
-        .font(.system(.title2, design: .rounded, weight: .bold))
-      Text(currentDailyDate.isEmpty ? "等待 Mac Host" : currentDailyDate)
-        .font(.subheadline)
-        .foregroundStyle(.secondary)
-    }
-  }
-
-  private func handleSnapshotRevisionChange() {
-    guard !isSaving, let snapshot = session.snapshot, snapshot.revision != loadedRevision else {
-      return
-    }
-    if loadedRevision.isEmpty {
-      loadLatestSnapshot()
-      return
-    }
-    if let loadedDaily, snapshot.daily == loadedDaily {
-      loadedRevision = snapshot.revision
-      incomingRevision = nil
-      return
-    }
-    guard !isDailyDirty, focusedField == nil else {
-      incomingRevision = snapshot.revision
-      return
-    }
-    loadLatestSnapshot()
-  }
-
-  private func loadLatestSnapshot() {
-    guard let snapshot = session.snapshot else { return }
-    let daily = snapshot.daily
-    loadedDaily = daily
-    loadedRevision = snapshot.revision
-    incomingRevision = nil
-    saveMessage = nil
-    deliverables = daily.deliverables
-    studyTime = daily.studyTime
-    sleep = daily.sleep
-    exercise = daily.exercise
-    firstTask = daily.firstTask
+  private func save() {
+    do {
+      let fact = QuickFact(text: text)
+      try session.enqueueFact(fact)
+      lastFact = fact; text = ""; notice = ""
+      Task { await session.syncFacts() }
+    } catch { notice = error.localizedDescription }
   }
 }
 
@@ -2789,6 +2719,7 @@ private struct MobileConnectionStatusRow: View {
 
 private struct MobileMoreView: View {
   @ObservedObject var session: MobileSession
+  let openFact: () -> Void
   @State private var showDiscardDraftsConfirmation = false
   @State private var showClearCacheConfirmation = false
   #if os(iOS)
@@ -2798,6 +2729,21 @@ private struct MobileMoreView: View {
   var body: some View {
     NavigationStack {
       List {
+        Section { Button("记一件事", systemImage: "square.and.pencil", action: openFact) }
+        #if os(iOS)
+          Section("提醒") {
+            Toggle("记一件事 · 北京时间 21:30", isOn: Binding(get: { reminders.dailyEnabled }, set: { reminders.setDailyEnabled($0) }))
+            Toggle("每周与每月复盘", isOn: Binding(get: { reminders.enabled }, set: { reminders.setEnabled($0) }))
+            LabeledContent("通知权限", value: reminders.authorization == .denied ? "未允许" : reminders.authorization == .notDetermined ? "未请求" : "已允许")
+            if let next = reminders.nextDaily {
+              LabeledContent("下一次轻提醒", value: next.formatted(.dateTime.locale(Locale(identifier: "zh_CN")).month().day().hour().minute()))
+            }
+            if reminders.authorization == .notDetermined || reminders.authorization == .denied {
+              Button(reminders.authorization == .denied ? "打开系统通知设置" : "允许手机通知") { Task { await reminders.requestPermission() } }
+            }
+            Text("当天已记录就跳过晚间提醒；点击提醒直接记一件事。").font(.footnote).foregroundStyle(.secondary)
+          }
+        #endif
         Section("Mac Host 连接") {
           MobileConnectionSummary(session: session)
           if let endpoint = session.savedEndpoint {
@@ -2910,17 +2856,6 @@ private struct MobileMoreView: View {
             showClearCacheConfirmation = true
           }
         }
-        #if os(iOS)
-          Section("提醒") {
-            Toggle(
-              "手机日 / 周 / 月复盘提醒",
-              isOn: Binding(get: { reminders.enabled }, set: { reminders.setEnabled($0) }))
-            Text("每日 21:30、每周日 19:30、每月最后一天 19:30 独立提醒；点击后只预填问题，不自动发送。")
-              .font(.footnote)
-              .foregroundStyle(.secondary)
-              .fixedSize(horizontal: false, vertical: true)
-          }
-        #endif
       }
       .navigationTitle("更多")
       .confirmationDialog(
@@ -2937,7 +2872,7 @@ private struct MobileMoreView: View {
         Button("清除缓存", role: .destructive) { session.clearLocalCache() }
         Button("取消", role: .cancel) {}
       } message: {
-        Text("将删除快照、已读资料缓存、输入草稿和待提交草稿；Host 地址与配对身份保留。")
+        Text("将删除快照、资料缓存、对话输入和旧版待提交修改。“记一件事”的待同步记录、Host 地址和配对身份保留。")
       }
       #if os(iOS)
         .scrollDismissesKeyboard(.interactively)

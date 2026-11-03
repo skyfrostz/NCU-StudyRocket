@@ -27,3 +27,7 @@
 - 构建 Host：`apps/NCUStudyRocket/Scripts/build_host_app.sh`；安装 Host：`apps/NCUStudyRocket/Scripts/install_host_app.sh`。这两个脚本不重建或替换 `/Applications/NCU StudyRocket.app`。
 
 当前 SwiftPM 目标可在 Mac 上用于编译检查；真机签名和通知权限必须在完整 Xcode 中验收。
+
+首页和“更多”均可打开“记一件事”。已连接过仓库后可离线保存多条本机草稿；连接恢复后用同一编号提交，Host 确认后才显示“已保存”。旧五项草稿在记录页可查看原文。
+
+在“更多 → 提醒”查看 iOS 权限及实际登记的下一次提醒。每日提醒由 iPhone 在北京时间 21:30 发送；点击进入记录输入框。当天已记录且手机已知时跳过，周月复盘沿用原设置。对话页支持右上角刷新和下拉刷新，失败消息可以恢复到输入框后自行编辑、发送。

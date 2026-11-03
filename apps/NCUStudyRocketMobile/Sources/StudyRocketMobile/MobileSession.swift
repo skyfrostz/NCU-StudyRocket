@@ -213,6 +213,27 @@ public final class MobileSession: ObservableObject {
         didSet { UserDefaults.standard.set(inputDraft, forKey: "studyrocket.inputDraft") }
     }
 
+    @Published public private(set) var refreshingConversation = false
+    @Published public private(set) var conversationRefreshError: String?
+    private var conversationTask: Task<Void, Never>?
+    private var conversationToken = UUID()
+
+    private struct QueuedFact: Codable {
+        let repositoryID: String
+        let endpoint: URL?
+        let fact: QuickFact
+    }
+    @Published private var factQueue: [QueuedFact] = []
+    @Published private(set) var factSyncError: String?
+    private var factSyncToken: UUID?
+    private let factsURL: URL
+    var pendingFacts: [QuickFact] {
+        factQueue.filter { queued in
+            guard let current = clientEndpoint, queued.repositoryID == activeRepositoryID else { return false }
+            return queued.endpoint == nil || Self.sameEndpoint(queued.endpoint, current)
+        }.map(\.fact)
+    }
+
     private let cacheURL: URL
     private let draftsURL: URL
     private let documentsURL: URL
@@ -256,6 +277,7 @@ public final class MobileSession: ObservableObject {
         let applicationSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         let base = cacheDirectory ?? applicationSupport.appendingPathComponent("NCU StudyRocket Mobile", isDirectory: true)
+        factsURL = base.appendingPathComponent("pending-facts.json")
         cacheURL = base.appendingPathComponent("snapshot.json")
         draftsURL = base.appendingPathComponent("pending-drafts.json")
         documentsURL = base.appendingPathComponent("documents", isDirectory: true)
@@ -263,6 +285,10 @@ public final class MobileSession: ObservableObject {
         self.chatRecoveryDelays = chatRecoveryDelays.isEmpty ? [.seconds(2)] : chatRecoveryDelays
         inputDraft = UserDefaults.standard.string(forKey: "studyrocket.inputDraft") ?? ""
         activeRepositoryID = UserDefaults.standard.string(forKey: repositoryIDKey)
+        if let data = try? Data(contentsOf: factsURL) {
+            do { factQueue = try JSONDecoder().decode([QueuedFact].self, from: data) }
+            catch { factSyncError = "无法读取本机记录草稿，请保留缓存。" }
+        }
         loadCache()
         loadDrafts()
         if let client {
@@ -429,6 +455,8 @@ public final class MobileSession: ObservableObject {
             lastConnectionIssue = nil
             saveCache(value)
             startEventStream()
+            await syncFacts()
+            guard generation == clientGeneration else { return }
             prepareLegacyPendingReviewIfNeeded()
             if legacyPendingToggleCount == 0 {
                 await replayPendingToggles()
@@ -458,7 +486,7 @@ public final class MobileSession: ObservableObject {
         do {
             let acceptedHistory = try await client.sendChat(text: text)
             guard generation == clientGeneration else { return }
-            inputDraft = ""
+            if inputDraft.trimmingCharacters(in: .whitespacesAndNewlines) == text { inputDraft = "" }
             if let acceptedHistory { mergeHistory(acceptedHistory) }
             if isChatBusy {
                 if chatProgress != .responding { chatProgress = .thinking }
@@ -496,6 +524,47 @@ public final class MobileSession: ObservableObject {
         finishChatActivity()
     }
 
+    public func refreshConversation() async {
+        if let conversationTask { await conversationTask.value; return }
+        let token = UUID(), generation = clientGeneration
+        conversationToken = token
+        refreshingConversation = true
+        conversationRefreshError = nil
+        let task = Task { @MainActor in
+            guard let client else { conversationRefreshError = "请先在“更多”连接 Mac。"; return }
+            do {
+                let latest = try await client.health()
+                guard generation == clientGeneration else { return }
+                guard latest.repositoryBound else { throw MobileHostStateError.configurationUnavailable }
+                if latest.repositoryID != activeRepositoryID || snapshot == nil {
+                    await refresh()
+                    guard generation == clientGeneration, state == .online else { return }
+                }
+                health = latest
+                state = .online
+                lastConnectionIssue = nil
+                if latest.chatIssueCode != "provider_auth_failed", lastChatIssueCode == "provider_auth_failed" {
+                    lastChatIssueCode = nil; lastChatIssue = nil
+                }
+                startEventStream()
+                guard isChatAvailable else { return }
+                let history = try await client.chatHistory()
+                guard generation == clientGeneration else { return }
+                mergeHistory(history)
+                let pending = try await client.proposals()
+                guard generation == clientGeneration else { return }
+                proposals = pending.proposals
+            } catch {
+                guard generation == clientGeneration else { return }
+                conversationRefreshError = "刷新失败：" + error.localizedDescription
+                recordConnectionFailureIfNeeded(error)
+            }
+        }
+        conversationTask = task
+        await task.value
+        if token == conversationToken { conversationTask = nil; refreshingConversation = false }
+    }
+
     public func refreshChat() async {
         guard let client, canViewProposals else { return }
         let currentStreamGeneration = streamGeneration
@@ -506,6 +575,7 @@ public final class MobileSession: ObservableObject {
                   endpointGeneration == clientGeneration else { return }
             mergeHistory(history)
         } catch {
+            guard currentStreamGeneration == streamGeneration, endpointGeneration == clientGeneration else { return }
             if let remoteError = error as? StudyRocketRemoteError, remoteError.body.code == "codex_starting" {
                 markChatUnavailable()
             } else {
@@ -851,7 +921,7 @@ public final class MobileSession: ObservableObject {
                 if (status == "completed" || status == "interrupted" || status == "failed"), turnID != activeHistoryTurnID {
                     completedTurnIDs.insert(turnID)
                 }
-                completedItemKeys.insert(streamKey(turnID: turnID, itemID: message.id))
+                if let status, Self.isTerminalChatStatus(status) { completedItemKeys.insert(streamKey(turnID: turnID, itemID: message.id)) }
             }
             return ChatMessageDTO(id: message.id, role: message.role, text: message.text, date: message.date, turnID: message.turnID, phase: message.phase, status: status)
         }
@@ -862,7 +932,11 @@ public final class MobileSession: ObservableObject {
                 continue
             }
             if let index = merged.firstIndex(where: { $0.id == historyMessage.id }) {
-                merged[index] = historyMessage
+                if historyMessage.status.map(Self.isTerminalChatStatus) != true, !completedTurnIDs.contains(turnID) {
+                    merged[index] = ChatMessageDTO(id: message.id, role: message.role,
+                        text: message.text.count >= historyMessage.text.count ? message.text : historyMessage.text,
+                        date: message.date, turnID: turnID, phase: message.phase, status: "inProgress")
+                } else { merged[index] = historyMessage }
             }
         }
         for message in pendingMessages where !history.contains(where: { $0.role == "user" && $0.text == message.text }) {
@@ -1396,6 +1470,50 @@ public final class MobileSession: ObservableObject {
         }
     }
 
+    func enqueueFact(_ fact: QuickFact) throws {
+        try fact.validate()
+        guard let activeRepositoryID else { throw FactError("请先连接一次 Mac，确认记录所属仓库。") }
+        let next = factQueue + [QueuedFact(repositoryID: activeRepositoryID, endpoint: clientEndpoint, fact: fact)]
+        try persistFacts(next)
+    }
+
+    private func persistFacts(_ next: [QueuedFact]) throws {
+        if FileManager.default.fileExists(atPath: factsURL.path) {
+            // Never overwrite an unreadable queue.
+            _ = try JSONDecoder().decode([QueuedFact].self, from: Data(contentsOf: factsURL))
+        }
+        try FileManager.default.createDirectory(at: factsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(next).write(to: factsURL, options: .atomic)
+        factQueue = next
+    }
+
+    func syncFacts() async {
+        guard factSyncToken == nil, let repo = activeRepositoryID, let client, state == .online else { return }
+        let token = UUID(), generation = clientGeneration
+        factSyncToken = token
+        defer { if factSyncToken == token { factSyncToken = nil } }
+        while let fact = pendingFacts.first, let current = snapshot {
+            do {
+                let value: SnapshotResponse
+                do { value = try await client.appendFact(fact, repo: repo, revision: current.revision) }
+                catch let error as StudyRocketRemoteError where error.body.code == "conflict" {
+                    guard generation == clientGeneration else { return }
+                    let latest = try await client.snapshot()
+                    guard generation == clientGeneration else { return }
+                    value = try await client.appendFact(fact, repo: repo, revision: latest.revision)
+                }
+                guard generation == clientGeneration else { return }
+                // A 200 receipt for this signed, idempotent request confirms even an older month.
+                try persistFacts(factQueue.filter { !($0.repositoryID == repo && $0.fact.id == fact.id) })
+                snapshot = value; saveCache(value); factSyncError = nil
+            } catch {
+                guard generation == clientGeneration else { return }
+                factSyncError = error.localizedDescription
+                return
+            }
+        }
+    }
+
     public func saveDaily(_ entry: DailySnapshot) async {
         guard let client, let current = snapshot, state == .online, !isReplayingPendingToggles else {
             pendingDailyDraft = entry
@@ -1832,6 +1950,10 @@ public final class MobileSession: ObservableObject {
     }
 
     private func advanceRepositoryGeneration() {
+        conversationToken = UUID(); conversationTask?.cancel(); conversationTask = nil
+        refreshingConversation = false; conversationRefreshError = nil
+        lastChatIssue = nil; lastChatIssueCode = nil; lastFailedChatText = nil
+        factSyncToken = nil; factSyncError = nil
         pendingReplayTask?.cancel()
         pendingReplayTask = nil
         isReplayingPendingToggles = false
@@ -2303,6 +2425,10 @@ public actor StudyRocketRemoteClient {
             timeoutInterval: timeoutInterval,
             as: SnapshotResponse.self
         )
+    }
+
+    public func appendFact(_ fact: QuickFact, repo: String, revision: String) async throws -> SnapshotResponse {
+        try await post("/v1/facts", body: FactWriteRequest(entry: fact, metadata: WriteMetadata(baseRevision: revision, idempotencyKey: fact.id.uuidString), repositoryID: repo), as: SnapshotResponse.self)
     }
 
     public func saveDaily(entry: DailySnapshot, baseRevision: String) async throws -> SnapshotResponse {

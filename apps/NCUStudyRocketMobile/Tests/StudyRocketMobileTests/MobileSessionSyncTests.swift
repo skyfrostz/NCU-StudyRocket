@@ -41,7 +41,10 @@ private final class MobileSyncFixture: @unchecked Sendable {
     private var forcedDeliveryError: APIErrorBody?
     private var dropDeliveryResponseAfterApply: Bool
     private var documents: [String: DocumentDetail]
-    private let codexReady: Bool
+    private var codexReady: Bool
+    private var facts = [QuickFact]()
+    private var dropFactReceipt = true
+    func setReady(_ value: Bool) { lock.lock(); defer { lock.unlock() }; codexReady = value }
     private let repositoryBound: Bool
     private var healthReads = 0
     private var snapshotReads = 0
@@ -101,6 +104,16 @@ private final class MobileSyncFixture: @unchecked Sendable {
             )))
         case ("GET", "/v1/snapshot"):
             snapshotReads += 1
+            return MobileStubResponse(statusCode: 200, data: try encoder.encode(authoritative))
+        case ("GET", "/v1/proposals"):
+            return MobileStubResponse(statusCode: 200, data: try encoder.encode(ProposalListResponse(proposals: [])))
+        case ("POST", "/v1/facts"):
+            let write = try JSONDecoder().decode(FactWriteRequest.self, from: Self.bodyData(for: request))
+            guard write.repositoryID == "repo-test", UUID(uuidString: write.metadata.idempotencyKey) == write.entry.id else { throw URLError(.badServerResponse) }
+            if !facts.contains(write.entry) { facts.append(write.entry) }
+            record(path: path, revision: write.metadata.baseRevision)
+            if dropFactReceipt { dropFactReceipt = false; throw URLError(.networkConnectionLost) }
+            authoritative = SnapshotResponse(revision: "facts", home: authoritative.home, week: authoritative.week, daily: authoritative.daily, summaries: [], recentFacts: facts)
             return MobileStubResponse(statusCode: 200, data: try encoder.encode(authoritative))
         case ("POST", "/v1/week"):
             let value = try JSONDecoder().decode(PlanWriteRequest.self, from: Self.bodyData(for: request))
@@ -703,6 +716,57 @@ final class MobileSessionSyncTests: XCTestCase {
         XCTAssertEqual(session.pendingPeriodCount, 0)
         XCTAssertEqual(session.state, .online)
         XCTAssertNil(session.pendingToggleSyncIssue)
+    }
+
+    func testFactQueueSurvivesLostReceiptAndRelaunch() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot())
+        let first = makeSession(directory: directory, fixture: fixture)
+        await first.refresh()
+        let fact = QuickFact(text: "完成例题")
+        try first.enqueueFact(fact)
+        await first.syncFacts()
+        XCTAssertEqual(first.pendingFacts, [fact])
+        let next = makeSession(directory: directory, fixture: fixture)
+        XCTAssertEqual(next.pendingFacts, [fact])
+        await next.refresh()
+        XCTAssertEqual(next.snapshot?.recentFacts, [fact])
+        XCTAssertTrue(next.pendingFacts.isEmpty)
+        XCTAssertEqual(fixture.writePaths, ["/v1/facts", "/v1/facts"])
+    }
+
+    func testConversationRefreshCoalescesAndKeepsDraftAndTurn() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), codexReady: false, chatCompletionAfterHistoryReads: 10)
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(10)])
+        await session.refresh()
+        XCTAssertFalse(session.isChatAvailable)
+        fixture.setReady(true)
+        async let button: Void = session.refreshConversation()
+        async let pull: Void = session.refreshConversation()
+        _ = await (button, pull)
+        XCTAssertTrue(session.isChatAvailable)
+        XCTAssertEqual(fixture.readCounts.health, 2)
+        session.inputDraft = "一条测试问题"
+        await session.sendDraft()
+        session.inputDraft = "正在输入的下一条"
+        await session.refreshConversation()
+        XCTAssertEqual(session.inputDraft, "正在输入的下一条")
+        XCTAssertTrue(session.isChatBusy)
+        XCTAssertNil(session.conversationRefreshError)
+        XCTAssertEqual(session.chatMessages.filter { $0.role == "user" }.count, 1)
+        let prior = session.chatMessages
+        MobileStubURLProtocol.handler = { _ in throw URLError(.notConnectedToInternet) }
+        await session.refreshConversation()
+        XCTAssertNotNil(session.conversationRefreshError)
+        XCTAssertEqual(session.chatMessages, prior)
+        MobileStubURLProtocol.handler = fixture.response
+        await session.refreshConversation()
+        XCTAssertNil(session.conversationRefreshError)
+        XCTAssertEqual(session.inputDraft, "正在输入的下一条")
+        XCTAssertTrue(fixture.writePaths.isEmpty)
     }
 
     func testChatRecoversFinalResponseWhenSSEIsUnavailable() async throws {

@@ -89,6 +89,8 @@ description: 维护和排查 NCU StudyRocket 的 macOS Desktop、Mac Host、iPho
 - 更新 Logo 或图标时，检查 Desktop 资源、Mobile App Icon/Mark、Host 图标生成与目标成员关系；安装包中的图标、签名和实际设备展示是不同证据，不能互相替代。
 - 交付时区分：源码已实现、自动检查通过、模拟器通过、真机通过、真实 Tailscale 链路通过、仍待用户确认。
 
+- 验收“记一件事”使用临时仓库的 `POST /v1/facts`：测同日多条、丢回执后用原编号重放、旧五项接口往返和仓库不匹配拒绝。Mac / Host 安装包用 `vtool -show-build` 核对链接 SDK；iPhone 每日提醒要以“更多”中实际权限及下次触发时间为准。
+
 ## 输出要求
 
 - 先报告结果和仍有风险，再列关键文件与验证。
