@@ -597,10 +597,11 @@ final class StudyChatStore: ObservableObject {
     private func threadProtocolKey(for root: URL) -> String { "\(threadKey(for: root)).protocolVersion" }
     private func legacyThreadKey(for root: URL) -> String { "\(threadKey(for: root)).legacyThreadID" }
 
-    init(configuration: StudyRocketSelfCheckConfiguration? = StudyRocketSelfCheckConfiguration.current) {
+    init(configuration: StudyRocketSelfCheckConfiguration? = StudyRocketSelfCheckConfiguration.current,
+         hostClient: StudyRocketHostClient? = nil) {
         selfCheckConfiguration = configuration
         client = CodexAppServerClient(codexLeaseStore: CodexLeaseStore(url: configuration?.codexLeaseURL))
-        hostClient = StudyRocketHostClient(configuration: configuration)
+        self.hostClient = hostClient ?? StudyRocketHostClient(configuration: configuration)
         taskDescriptorStore = StudyRocketTaskDescriptorStore(directory: configuration?.taskDescriptorDirectory)
         client.onTurnStarted = { [weak self] turnID, startedAt in
             guard let self else { return }
@@ -805,7 +806,9 @@ final class StudyChatStore: ObservableObject {
         if !forceCreate, self.root?.standardizedFileURL == root.standardizedFileURL, client.isRunning {
             // A Host that became available takes ownership of the fixed task;
             // otherwise keep the already-running legacy client untouched.
+            let previousGeneration = connectionGeneration
             let hostAvailable = await hostClient.waitUntilAvailable(for: root)
+            guard previousGeneration == connectionGeneration, !Task.isCancelled else { return }
             if !hostAvailable { return }
             client.disconnect()
         }
@@ -827,6 +830,11 @@ final class StudyChatStore: ObservableObject {
             transcript.clearForNewRepository()
             scrollPolicy = ChatScrollPolicy()
         }
+        hostStreamText.reset()
+        hostProposalIDs.removeAll()
+        hostSkillProposalIDs.removeAll()
+        pendingSubmissionID = nil
+        isBusy = false
         transcript.setLoadState(.loading)
         pendingUnknownMessages.removeAll(); errorMessage = nil; setState(.connecting)
         let key = threadKey(for: root)
@@ -855,8 +863,10 @@ final class StudyChatStore: ObservableObject {
         // If it is absent or cannot resume the fixed task, retain the original
         // stdio path below so the desktop app remains usable by itself.
         if !forceCreate, await hostClient.waitUntilAvailable(for: root) {
+            guard generation == connectionGeneration, !Task.isCancelled else { return }
             do {
                 let health = try await hostClient.health(for: root)
+                guard generation == connectionGeneration, !Task.isCancelled else { return }
                 let history = try await hostClient.history()
                 guard generation == connectionGeneration, let activeThreadID = health.activeThreadID else { throw StudyChatError.protocolError("StudyRocket Host 没有返回学业任务 ID。") }
                 usingHost = true
@@ -870,9 +880,11 @@ final class StudyChatStore: ObservableObject {
                 if let pendingPrompt { draft = pendingPrompt; self.pendingPrompt = nil }
                 return
             } catch {
+                guard generation == connectionGeneration, !Task.isCancelled else { return }
                 usingHost = false
             }
         }
+        guard generation == connectionGeneration, !Task.isCancelled else { return }
         do {
             let id = try await client.connect(root: root, threadID: active, legacyThreadID: legacy)
             guard generation == connectionGeneration else { return }
@@ -1000,11 +1012,14 @@ final class StudyChatStore: ObservableObject {
             sendThroughHost(text)
             return
         }
+        let generation = connectionGeneration
         Task {
             do {
                 let result = try await client.send(text)
+                guard generation == connectionGeneration, !Task.isCancelled else { return }
                 if result.status == .interrupted { setState(.stopped) }
             } catch {
+                guard generation == connectionGeneration, !Task.isCancelled else { return }
                 isBusy = false; setState(.failed); errorMessage = error.localizedDescription; if draft.isEmpty { draft = text }
             }
         }
@@ -1116,6 +1131,7 @@ final class StudyChatStore: ObservableObject {
 
     private func sendThroughHost(_ text: String) {
         hostTurnTask?.cancel()
+        let generation = connectionGeneration
         hostTurnTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -1123,11 +1139,13 @@ final class StudyChatStore: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
+                guard generation == connectionGeneration, !Task.isCancelled else { return }
                 isBusy = false
                 setState(.failed)
                 errorMessage = error.localizedDescription
                 if draft.isEmpty { draft = text }
             }
+            guard generation == connectionGeneration, !Task.isCancelled else { return }
             hostTurnTask = nil
         }
     }
@@ -1268,10 +1286,11 @@ final class StudyChatStore: ObservableObject {
     }
 
     private func reconcileHostHistory(finalState: ChatTurnState, generation: Int? = nil) async {
-        guard usingHost, (generation == nil || generation == connectionGeneration) else { return }
+        let generation = generation ?? connectionGeneration
+        guard usingHost, generation == connectionGeneration, !Task.isCancelled else { return }
         do {
             let response = try await hostClient.history()
-            guard usingHost, (generation == nil || generation == connectionGeneration) else { return }
+            guard usingHost, generation == connectionGeneration, !Task.isCancelled else { return }
             let messages = Self.messages(from: response)
             publishHistory(messages)
             if finalState == .inProgress,
@@ -1301,6 +1320,7 @@ final class StudyChatStore: ObservableObject {
             }
             await refreshHostProposals()
         } catch {
+            guard usingHost, generation == connectionGeneration, !Task.isCancelled else { return }
             isBusy = false
             setState(.failed)
             errorMessage = error.localizedDescription
@@ -1309,7 +1329,9 @@ final class StudyChatStore: ObservableObject {
 
     private func refreshHostProposals() async {
         guard usingHost else { return }
+        let generation = connectionGeneration
         guard let value = try? await hostClient.proposals() else { return }
+        guard usingHost, generation == connectionGeneration, !Task.isCancelled else { return }
         var markdown: [MarkdownChangeProposal] = []
         var skills: [SkillChangeProposal] = []
         var markdownIDs: [UUID: String] = [:]
@@ -1336,14 +1358,25 @@ final class StudyChatStore: ObservableObject {
         let selected = transcript.proposals.filter { $0.turnID == turnID && $0.isSelected }; guard !selected.isEmpty else { return }
         if usingHost {
             let ids = selected.compactMap { hostProposalIDs[$0.id] }
+            let generation = connectionGeneration
+            let expectedRoot = workspace.rootURL.standardizedFileURL
             Task {
+                guard generation == connectionGeneration, usingHost else { return }
                 do {
                     let snapshot = try await hostClient.snapshot()
+                    guard generation == connectionGeneration, usingHost,
+                          workspace.rootURL.standardizedFileURL == expectedRoot,
+                          !Task.isCancelled else { return }
                     let response = try await hostClient.applyProposals(ids: ids, baseRevision: snapshot.revision)
+                    guard generation == connectionGeneration, usingHost, !Task.isCancelled else { return }
                     await refreshHostProposals()
+                    guard generation == connectionGeneration, usingHost, !Task.isCancelled else { return }
                     if response.remaining.proposals.isEmpty { transcript.expandedProposalTurnIDs.remove(turnID) }
                     workspace.refreshGitStatus()
-                } catch { errorMessage = error.localizedDescription }
+                } catch {
+                    guard generation == connectionGeneration, usingHost, !Task.isCancelled else { return }
+                    errorMessage = error.localizedDescription
+                }
             }
             return
         }
@@ -1362,14 +1395,25 @@ final class StudyChatStore: ObservableObject {
         guard !selected.isEmpty else { return }
         if usingHost {
             let ids = selected.compactMap { hostSkillProposalIDs[$0.id] }
+            let generation = connectionGeneration
+            let expectedRoot = workspace.rootURL.standardizedFileURL
             Task {
+                guard generation == connectionGeneration, usingHost else { return }
                 do {
                     let snapshot = try await hostClient.snapshot()
+                    guard generation == connectionGeneration, usingHost,
+                          workspace.rootURL.standardizedFileURL == expectedRoot,
+                          !Task.isCancelled else { return }
                     let response = try await hostClient.applyProposals(ids: ids, baseRevision: snapshot.revision)
+                    guard generation == connectionGeneration, usingHost, !Task.isCancelled else { return }
                     await refreshHostProposals()
+                    guard generation == connectionGeneration, usingHost, !Task.isCancelled else { return }
                     if response.remaining.proposals.isEmpty { transcript.expandedProposalTurnIDs.remove(turnID) }
                     workspace.refreshGitStatus()
-                } catch { errorMessage = error.localizedDescription }
+                } catch {
+                    guard generation == connectionGeneration, usingHost, !Task.isCancelled else { return }
+                    errorMessage = error.localizedDescription
+                }
             }
             return
         }
@@ -1478,6 +1522,8 @@ extension MarkdownRepository {
 
     func saveBatch(_ changes: [Change]) throws {
         guard !changes.isEmpty else { return }
+        let targets = changes.map { url($0.relative).standardizedFileURL.resolvingSymlinksInPath() }
+        guard Set(targets).count == changes.count else { throw MarkdownError.conflict }
         var originals: [(URL, Data)] = []
         for change in changes {
             guard isAllowedStudyPath(change.relative) else { throw MarkdownError.outsideWorkspace }

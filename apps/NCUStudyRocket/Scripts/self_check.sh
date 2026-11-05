@@ -531,6 +531,7 @@ run_automated() {
   run_in_directory "$ROOT" desktop-debug-build /usr/bin/swift build
   run_in_directory "$ROOT" desktop-release-build /usr/bin/swift build -c release
   run_in_directory "$ROOT" desktop-chat-checks /usr/bin/swift run NCUStudyRocketTests
+  run_in_directory "$ROOT" desktop-chat-integration-checks /bin/zsh Scripts/test_desktop_chat.sh
   run_isolated_http
 
   run_in_directory "$MOBILE_ROOT" mobile-swift-tests /usr/bin/swift test

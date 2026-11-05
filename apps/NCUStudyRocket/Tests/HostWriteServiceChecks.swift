@@ -157,6 +157,7 @@ struct HostWriteServiceChecks {
         try testIndependentPeriodTasksAndLegacyCompatibility()
         try testTimedUnassignedTasksStayPendingForManualScheduling()
         try testWeeklyProposalIsNormalizedBeforeApproval()
+        try testConflictingProposalsCannotOverwriteEachOther()
         try testHistoricalAndFutureCompletionRecordsSurviveSave()
         try testCurrentWindowRowsPromoteAcrossSections()
         try testMalformedMarkersAndMarkerInjectionAreRejected()
@@ -740,6 +741,28 @@ struct HostWriteServiceChecks {
         try require(store.list().proposals.isEmpty, "a replay recreated a consumed proposal")
         let written = try String(contentsOf: root.appendingPathComponent("工作台/下周计划.md"), encoding: .utf8)
         try require(written == proposal.proposedContent, "approved proposal write differed from the displayed diff")
+    }
+
+    private static func testConflictingProposalsCannotOverwriteEachOther() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("proposal-conflict-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("PROFILE.md")
+        try Data("original".utf8).write(to: target)
+        let store = HostProposalStore(root: root, backupRoot: root.appendingPathComponent("backups"))
+        for turn in ["one", "two"] {
+            let result = store.register(arguments: ["path": "PROFILE.md", "content": turn, "reason": "fixture"], tool: "propose_changes", turnID: turn)
+            try require(result["success"] as? Bool == true, "register conflicting proposal")
+        }
+        let ids = store.list().proposals.map(\.id)
+        do {
+            _ = try store.apply(ProposalApplyRequest(proposalIDs: ids, authorization: "fixture", metadata: WriteMetadata(baseRevision: "fixture")))
+            throw NSError(domain: "Checks", code: 1, userInfo: [NSLocalizedDescriptionKey: "conflicting proposals silently overwrote one another"])
+        } catch let error as HostWriteError {
+            try require(error.code == "conflict", "unexpected conflict error")
+        }
+        try require(try String(contentsOf: target, encoding: .utf8) == "original", "conflicting batch wrote a file")
+        try require(store.list().proposals.count == 2, "conflicting proposals were consumed")
     }
 
     private static func testSnapshotRejectsExternalSymlinks() throws {

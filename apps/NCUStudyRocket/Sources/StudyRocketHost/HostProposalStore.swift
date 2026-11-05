@@ -59,6 +59,10 @@ final class HostProposalStore: @unchecked Sendable {
         let selected = request.proposalIDs.compactMap { values[$0] }
         lock.unlock()
         guard selected.count == Set(request.proposalIDs).count else { throw HostWriteError(code: "proposal_not_found", message: "部分草案已不存在，请重新加载。") }
+        let targets = selected.map { root.appendingPathComponent($0.relativePath).standardizedFileURL.resolvingSymlinksInPath() }
+        guard Set(targets).count == selected.count else {
+            throw HostWriteError(code: "conflict", message: "多份草案修改了同一文件，请分别查看并选择一份应用。")
+        }
 
         let fileManager = FileManager.default
         var originals: [(ProposalDTO, Data)] = []
