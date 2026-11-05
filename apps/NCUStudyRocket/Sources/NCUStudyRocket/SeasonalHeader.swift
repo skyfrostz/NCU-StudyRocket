@@ -38,11 +38,14 @@ struct SeasonalHeader: View {
     let record: () -> Void
     @State private var showSource = false
     @State private var anchor = Date.now
-    private static let weekdayLabel = Date.FormatStyle(
-        locale: Locale(identifier: "en_US"),
-        calendar: SeasonalVerse.calendar,
-        timeZone: SeasonalVerse.calendar.timeZone
-    ).weekday(.wide)
+    private static func greeting(at date: Date) -> String {
+        switch SeasonalVerse.calendar.component(.hour, from: date) {
+        case 5..<11: return "早上好，桦桦。"
+        case 11..<14: return "中午好，桦桦。"
+        case 14..<18: return "下午好，桦桦。"
+        default: return "晚上好，桦桦。"
+        }
+    }
     private static let dateLabel: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
@@ -55,7 +58,7 @@ struct SeasonalHeader: View {
         TimelineView(.periodic(from: SeasonalVerse.calendar.startOfDay(for: anchor), by: 60)) { context in
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(verbatim: context.date.formatted(Self.weekdayLabel))
+                    Text(verbatim: Self.greeting(at: context.date))
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.secondary)
                     if let verse = SeasonalVerse.on(context.date) {
