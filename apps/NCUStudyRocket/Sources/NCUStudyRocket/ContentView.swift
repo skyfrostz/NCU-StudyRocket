@@ -2609,7 +2609,6 @@ private struct ChatTranscript: View {
                             if row.showsDateDivider { ChatDateDivider(date: row.turn.date) }
                             ChatTurnView(
                                 turn: row.turn,
-                                canvasWidth: 840,
                                 status: status,
                                 processExpanded: row.processExpanded,
                                 toggleProcess: {
@@ -2863,7 +2862,6 @@ struct ChatDateDivider: View {
 
 struct ChatTurnView: View {
     let turn: ChatTurnPresentation
-    let canvasWidth: CGFloat
     let status: String
     let processExpanded: Bool
     let toggleProcess: () -> Void
@@ -2874,7 +2872,7 @@ struct ChatTurnView: View {
     @State private var showTime = false
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let user = turn.userMessage { UserMessageView(message: user, showTime: $showTime, canvasWidth: canvasWidth) }
+            if let user = turn.userMessage { UserMessageView(message: user, showTime: $showTime) }
             ForEach(turn.finalMessages) { message in AssistantMessageView(message: message) }
             if turn.status == .inProgress, turn.finalMessages.isEmpty { ThinkingRow(status: status) }
             if !turn.processMessages.isEmpty {
@@ -2896,37 +2894,6 @@ struct ChatTurnView: View {
             if !skillProposals.isEmpty { InlineSkillProposalPanel(turnID: turn.id, proposals: skillProposals) }
             if let error = turn.errorMessage { Label(error, systemImage: "exclamationmark.triangle.fill").font(.system(size: StudyRocketTheme.bodySize)).foregroundStyle(.orange).padding(.leading, 42) }
         }.frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-struct UserMessageView: View {
-    let message: ChatMessage
-    @Binding var showTime: Bool
-    let canvasWidth: CGFloat
-    var body: some View {
-        HStack(spacing: 0) {
-            Spacer(minLength: 0)
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(message.text)
-                    .font(.system(size: StudyRocketTheme.bodySize))
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: min(600, canvasWidth * 0.7), alignment: .leading)
-                    .padding(.horizontal, 14).padding(.vertical, 11)
-                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous)).foregroundStyle(.white)
-                    .contextMenu { Button("复制", systemImage: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.text, forType: .string) } }
-                HStack(spacing: 5) {
-                    if let state = message.turnState, state != .completed { Text(state == .interrupted ? "已中断" : state == .failed ? "未完成" : "进行中") }
-                    Text(message.date.formatted(date: .omitted, time: .shortened))
-                        .opacity(showTime ? 1 : 0)
-                        .accessibilityHidden(!showTime)
-                }
-                .font(.caption2).foregroundStyle(.secondary)
-                .frame(minHeight: 16, alignment: .top)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .trailing)
-        .onHover { showTime = $0 }
     }
 }
 
