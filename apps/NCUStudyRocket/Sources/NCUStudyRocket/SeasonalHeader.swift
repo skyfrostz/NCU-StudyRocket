@@ -7,6 +7,8 @@ struct SeasonalVerse: Identifiable {
     let work: String
     let source: URL
 
+    var punctuatedText: String { text.hasSuffix("。") ? text : text + "。" }
+
     static let calendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
@@ -36,6 +38,11 @@ struct SeasonalHeader: View {
     let record: () -> Void
     @State private var showSource = false
     @State private var anchor = Date.now
+    private static let weekdayLabel = Date.FormatStyle(
+        locale: Locale(identifier: "en_US"),
+        calendar: SeasonalVerse.calendar,
+        timeZone: SeasonalVerse.calendar.timeZone
+    ).weekday(.wide)
     private static let dateLabel: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
@@ -48,16 +55,19 @@ struct SeasonalHeader: View {
         TimelineView(.periodic(from: SeasonalVerse.calendar.startOfDay(for: anchor), by: 60)) { context in
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
+                    Text(verbatim: context.date.formatted(Self.weekdayLabel))
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
                     if let verse = SeasonalVerse.on(context.date) {
                         Button { showSource.toggle() } label: {
-                            Text(verbatim: verse.text).font(.system(size: 24, weight: .semibold))
+                            Text(verbatim: verse.punctuatedText).font(.system(size: 24, weight: .semibold))
                                 .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
                         }
                         .buttonStyle(.plain).help("查看诗句出处")
                         .accessibilityHint("查看作者与篇名")
                         .popover(isPresented: $showSource) {
                             VStack(alignment: .leading, spacing: 8) {
-                                Text(verse.text).font(.headline)
+                                Text(verse.punctuatedText).font(.headline)
                                 Text("宋 · \(verse.author)《\(verse.work)》").foregroundStyle(.secondary)
                                 Link("阅读原文", destination: verse.source)
                             }.padding(18).frame(maxWidth: 360, alignment: .leading)
