@@ -117,14 +117,16 @@ public enum FactJournal {
     }
 
     public static func append(_ fact: QuickFact, root: URL, backupDirectory: URL? = nil,
-                              checkRevision: () throws -> Void = {}) throws {
+                              recordLocalHistory: Bool = false, checkRevision: () throws -> Void = {}) throws {
         try fact.validate()
         try coordinated(root: root) { dir in
-            try appendLocked(fact, dir: dir, backupDirectory: backupDirectory, checkRevision: checkRevision)
+            try appendLocked(fact, root: root, dir: dir, backupDirectory: backupDirectory,
+                             recordLocalHistory: recordLocalHistory, checkRevision: checkRevision)
         }
     }
 
-    private static func appendLocked(_ fact: QuickFact, dir: URL, backupDirectory: URL?, checkRevision: () throws -> Void) throws {
+    private static func appendLocked(_ fact: QuickFact, root: URL, dir: URL, backupDirectory: URL?,
+                                     recordLocalHistory: Bool, checkRevision: () throws -> Void) throws {
         let fm = FileManager.default
         let month = String(fact.date.prefix(7)), url = dir.appendingPathComponent(month + ".md")
         guard safe(url) else { throw FactError("记录文件不能是符号链接。") }
@@ -152,6 +154,14 @@ public enum FactJournal {
             try fm.createDirectory(at: backups, withIntermediateDirectories: true)
             try fm.copyItem(at: url, to: backups.appendingPathComponent("\(month)-\(UUID().uuidString).md"))
         }
-        try Data(updated.utf8).write(to: url, options: .atomic)
+        let written = Data(updated.utf8)
+        try written.write(to: url, options: .atomic)
+        #if os(macOS)
+        if recordLocalHistory {
+            let change = LocalSaveHistory.Change(relative: "工作台/每日记录/\(month).md",
+                                                 before: exists ? Data(original.utf8) : nil, after: written)
+            LocalSaveHistory.shared.record([change], in: root)
+        }
+        #endif
     }
 }

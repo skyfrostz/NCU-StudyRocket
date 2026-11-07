@@ -194,7 +194,7 @@ struct AcademicOverview: View {
             }.frame(minWidth: 580, minHeight: 420)
             .interactiveDismissDisabled(document.isDirty)
             .confirmationDialog("保存原文修改？", isPresented: $confirmClose) {
-                Button("保存并关闭") { if document.save() { workspace.refreshGitStatus(); editor = false } }
+                Button("保存并关闭") { if document.save() { workspace.notifyWorkspaceChanged(); editor = false } }
                 Button("放弃修改", role: .destructive) { document.text = document.original; editor = false }
                 Button("继续编辑", role: .cancel) {}
             }

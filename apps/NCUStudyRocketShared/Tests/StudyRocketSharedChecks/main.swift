@@ -440,3 +440,7 @@ do {
     precondition(!thisWeek.contains("历史已完成"))
     precondition(WeeklyDeliveryRollover.projected(done, now: monday) == done)
 }
+
+#if os(macOS)
+try checkLocalSaveHistory()
+#endif

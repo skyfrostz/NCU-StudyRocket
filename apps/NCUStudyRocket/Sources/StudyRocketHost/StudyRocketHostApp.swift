@@ -64,6 +64,7 @@ private final class HostApplicationDelegate: NSObject, NSApplicationDelegate, NS
 
     func applicationWillTerminate(_ notification: Notification) {
         host.stop()
+        LocalSaveHistory.shared.flush()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -489,15 +490,18 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
         eventHub = StudyRocketEventHub(snapshotProvider: { builder.build() })
         writeService = HostWriteService(
             root: root.standardizedFileURL,
-            backupRoot: selfCheck?.backupDirectory
+            backupRoot: selfCheck?.backupDirectory,
+            recordLocalHistory: selfCheck == nil
         )
         let descriptorStore = StudyRocketTaskDescriptorStore(directory: selfCheck?.taskDescriptorDirectory)
         chatBridge = HostChatBridge(
             root: root.standardizedFileURL,
             descriptorStore: descriptorStore,
             proposalBackupRoot: selfCheck?.proposalBackupDirectory,
-            disablesCodex: selfCheck?.disablesCodex ?? false
+            disablesCodex: selfCheck?.disablesCodex ?? false,
+            recordLocalHistory: selfCheck == nil
         )
+        if selfCheck == nil { LocalSaveHistory.shared.resume(in: root) }
         chatBridge.onEvent = { [weak self] event in
             guard let self else { return }
             eventHub.publish(event: event, snapshot: snapshotBuilder.build())

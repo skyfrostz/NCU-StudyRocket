@@ -5,13 +5,15 @@ import StudyRocketShared
 final class HostProposalStore: @unchecked Sendable {
     private let root: URL
     private let backupRoot: URL
+    private let recordLocalHistory: Bool
     private let lock = NSLock()
     private let mutationLock = NSLock()
     private var values: [String: ProposalDTO] = [:]
     private var appliedReplays: [String: ProposalListResponse] = [:]
     private let skillNames = Set(["daily-checkin", "knowledge-ingest", "ncu-planner", "node-countdown", "retro-monthly", "retro-weekly", "term-roadmap", "weekly-reslot"])
 
-    init(root: URL, backupRoot: URL? = nil) {
+    init(root: URL, backupRoot: URL? = nil, recordLocalHistory: Bool = false) {
+        self.recordLocalHistory = recordLocalHistory
         self.root = root.standardizedFileURL
         self.backupRoot = backupRoot?.standardizedFileURL
             ?? FileManager.default.homeDirectoryForCurrentUser
@@ -89,6 +91,12 @@ final class HostProposalStore: @unchecked Sendable {
         } catch {
             for (proposal, data) in originals { try? data.write(to: root.appendingPathComponent(proposal.relativePath), options: .atomic) }
             throw HostWriteError(code: "write_failed", message: "草案批量写入失败，已回滚。")
+        }
+        if recordLocalHistory {
+            let changes = originals.filter { $0.0.kind == "markdown" }.map { proposal, before in
+                LocalSaveHistory.Change(relative: proposal.relativePath, before: before, after: Data(proposal.proposedContent.utf8))
+            }
+            LocalSaveHistory.shared.record(changes, in: root)
         }
         lock.lock()
         for proposal in selected { values.removeValue(forKey: proposal.id) }

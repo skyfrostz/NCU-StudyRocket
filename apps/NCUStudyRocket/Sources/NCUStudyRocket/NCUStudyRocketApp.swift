@@ -6,6 +6,7 @@ final class StudyRocketAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         onTerminate?()
+        LocalSaveHistory.shared.flush()
     }
 }
 

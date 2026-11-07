@@ -25,8 +25,6 @@ struct ContentView: View {
             .safeAreaInset(edge: .bottom) {
                 VStack(alignment: .leading, spacing: 8) {
                     Divider()
-                    Label(workspace.gitStatus, systemImage: workspace.gitStatus == "已同步" ? "checkmark.seal" : "circle.dotted")
-                        .font(.caption).foregroundStyle(workspace.gitStatus == "已同步" ? .teal : .orange)
                     Button("重新绑定仓库", systemImage: "folder") {
                         if document.isDirty { showUnsavedBindingAlert = true }
                         else { showBinder = true }
@@ -79,7 +77,7 @@ struct ContentView: View {
             Text("请先保存或放弃当前 Markdown 修改，再重新绑定仓库。")
         }
         .confirmationDialog("未保存的 Markdown 修改", isPresented: $showUnsavedSectionDialog, titleVisibility: .visible) {
-            Button("保存并切换") { if document.save(), let pendingSection { selection = pendingSection; self.pendingSection = nil; workspace.refreshGitStatus() } }
+            Button("保存并切换") { if document.save(), let pendingSection { selection = pendingSection; self.pendingSection = nil; workspace.notifyWorkspaceChanged() } }
             Button("放弃修改并切换", role: .destructive) { if let pendingSection { selection = pendingSection; self.pendingSection = nil } }
             Button("取消", role: .cancel) { pendingSection = nil }
         } message: { Text("当前文件有未保存的内容。") }
@@ -1233,7 +1231,7 @@ struct WeeklyPlanView: View {
                 inlineNotice = "已自动写入工作台/下周计划.md"
             }
             load()
-            workspace.refreshGitStatus()
+            workspace.notifyWorkspaceChanged()
         } catch {
             if showSuccess {
                 notice = error.localizedDescription
@@ -2415,9 +2413,9 @@ struct DailyCheckinView: View {
     private func reload() { records = FactJournal.recent(root: workspace.rootURL); legacy = FactJournal.legacy(root: workspace.rootURL) }
     private func save() {
         do {
-            try FactJournal.append(QuickFact(text: text), root: workspace.rootURL, backupDirectory: StudyRocketSelfCheckConfiguration.current?.backupDirectory)
+            try FactJournal.append(QuickFact(text: text), root: workspace.rootURL, backupDirectory: StudyRocketSelfCheckConfiguration.current?.backupDirectory, recordLocalHistory: true)
             notice = "已保存：\(text)"; text = ""; reload(); focused = true
-            workspace.refreshGitStatus(); workspace.refreshMarkdownIndex()
+            workspace.notifyWorkspaceChanged(); workspace.refreshMarkdownIndex()
         } catch { notice = error.localizedDescription }
     }
 }
@@ -2465,7 +2463,7 @@ struct MarkdownBrowserView: View {
         .onChange(of: title) { _, _ in configureAndLoad() }
         .onChange(of: workspace.rootURL) { _, _ in configureAndLoad() }
         .confirmationDialog("未保存的 Markdown 修改", isPresented: $showUnsavedDialog, titleVisibility: .visible) {
-            Button("保存并切换") { if document.save(), let pendingSelection { selected = pendingSelection; document.load(pendingSelection); workspace.refreshGitStatus(); self.pendingSelection = nil } }
+            Button("保存并切换") { if document.save(), let pendingSelection { selected = pendingSelection; document.load(pendingSelection); workspace.notifyWorkspaceChanged(); self.pendingSelection = nil } }
             Button("放弃修改并切换", role: .destructive) { if let pendingSelection { selected = pendingSelection; document.discardAndLoad(pendingSelection); self.pendingSelection = nil } }
             Button("取消", role: .cancel) { pendingSelection = nil }
         } message: { Text("当前文件有未保存的内容。") }
@@ -2500,7 +2498,7 @@ struct MarkdownDocumentView: View {
         }
         .alert("Markdown", isPresented: Binding(get: { notice != nil || document.errorMessage != nil }, set: { if !$0 { notice = nil; document.errorMessage = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? document.errorMessage ?? "") }
     }
-    private func save() { if document.save() { workspace.refreshGitStatus(); notice = "已保存" } }
+    private func save() { if document.save() { workspace.notifyWorkspaceChanged(); notice = "已保存" } }
 }
 
 struct MarkdownPreview: View {
@@ -2523,7 +2521,7 @@ struct MarkdownPreview: View {
 struct SettingsView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var reminders: ReminderScheduler
-    var body: some View { ScrollView { Form { Section("当前仓库") { Text(workspace.rootURL.path).lineLimit(1).truncationMode(.middle).textSelection(.enabled); Text("需要迁移仓库时，请使用侧边栏底部的“重新绑定仓库”。").font(.caption).foregroundStyle(.secondary) }; Section("学业对话") { LabeledContent("Codex 连接", value: "复用本机登录，不保存令牌"); Text("应用会单独续接 StudyRocket 学业助理任务，开发任务不会被读取。").font(.caption).foregroundStyle(.secondary) }; Section("原生提醒") { LabeledContent("权限", value: reminders.authorization); ForEach([ReminderRoute.weekly, .monthly]) { route in Toggle(route.title, isOn: Binding(get: { reminders.enabled[route] ?? true }, set: { reminders.toggle(route, isOn: $0) })); HStack { Text("下一次").font(.caption).foregroundStyle(.secondary); Spacer(); Text(nextDateText(for: route)).font(.caption.monospacedDigit()).foregroundStyle(.secondary); Button("测试") { reminders.sendTest(route) }.buttonStyle(.link) } }; Button("请求通知权限并登记") { reminders.requestPermissionAndSchedule() }.buttonStyle(.borderedProminent) }; Section("运行方式") { LabeledContent("后台服务", value: "无"); LabeledContent("数据存储", value: "Markdown 文件"); LabeledContent("旧自动任务", value: "验收前保留") }; Section("隐私") { Text("应用不保存模型凭证，不创建网络监听端口；PDF 继续使用私有云盘单独备份。学业对话继承当前 Codex 端点配置。").font(.callout).foregroundStyle(.secondary) } }.formStyle(.grouped).frame(maxWidth: 760).frame(maxWidth: .infinity).padding(24) } }
+    var body: some View { ScrollView { Form { LocalSaveHistorySection(root: workspace.rootURL); Section("当前仓库") { Text(workspace.rootURL.path).lineLimit(1).truncationMode(.middle).textSelection(.enabled); Text("需要迁移仓库时，请使用侧边栏底部的“重新绑定仓库”。").font(.caption).foregroundStyle(.secondary) }; Section("学业对话") { LabeledContent("Codex 连接", value: "复用本机登录，不保存令牌"); Text("应用会单独续接 StudyRocket 学业助理任务，开发任务不会被读取。").font(.caption).foregroundStyle(.secondary) }; Section("原生提醒") { LabeledContent("权限", value: reminders.authorization); ForEach([ReminderRoute.weekly, .monthly]) { route in Toggle(route.title, isOn: Binding(get: { reminders.enabled[route] ?? true }, set: { reminders.toggle(route, isOn: $0) })); HStack { Text("下一次").font(.caption).foregroundStyle(.secondary); Spacer(); Text(nextDateText(for: route)).font(.caption.monospacedDigit()).foregroundStyle(.secondary); Button("测试") { reminders.sendTest(route) }.buttonStyle(.link) } }; Button("请求通知权限并登记") { reminders.requestPermissionAndSchedule() }.buttonStyle(.borderedProminent) }; Section("运行方式") { LabeledContent("后台服务", value: "无"); LabeledContent("数据存储", value: "Markdown 文件"); LabeledContent("旧自动任务", value: "验收前保留") }; Section("隐私") { Text("应用不保存模型凭证，不创建网络监听端口；PDF 继续使用私有云盘单独备份。学业对话继承当前 Codex 端点配置。").font(.callout).foregroundStyle(.secondary) } }.formStyle(.grouped).frame(maxWidth: 760).frame(maxWidth: .infinity).padding(24) } }
     private func nextDateText(for route: ReminderRoute) -> String { guard let date = reminders.nextDates[route] ?? nil else { return "待登记" }; return date.formatted(date: .abbreviated, time: .shortened) }
 }
 

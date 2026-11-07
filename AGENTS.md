@@ -75,7 +75,7 @@
 - `apps/NCUStudyRocketMobile/` 是 iOS 26 SwiftUI 客户端源码；手机不运行 Codex、不保存 Markdown 事实，离线只读缓存。完整 Xcode 26、签名和 Tailscale Serve 由用户在真机阶段配置，CommandLineTools 不足以完成 iOS 安装验收。
 - 应用编辑周计划、每日行为账或 Markdown 时，先保存到内存，点击“保存”后才写文件；Codex 修改文件后重新打开应用即可刷新。
 - Skill 负责生成规划、复盘和知识结论；先展示拟写入草案，用户确认后再修改 Markdown。应用出现“文件已被其他程序修改”时，先重新加载并比较差异，不直接覆盖。
-- 应用只读显示 Git 状态，不自动提交或推送；构建/安装使用 `apps/NCUStudyRocket/Scripts/install_app.sh`，不创建后台服务。
+- 应用在保存学业 Markdown 后合并记录到本机独立 Git 历史，不自动推送。Git 记录状态可在设置中查看。构建/安装使用 `apps/NCUStudyRocket/Scripts/install_app.sh`，不创建后台服务。
 - 应用内“学业对话”固定连接独立的 `StudyRocket 学业助理` Codex 任务；开发维护继续在当前开发任务中进行，禁止使用最近任务或复用开发会话。
 - 学业对话使用只读 Codex 沙箱；任何 Markdown 修改必须先通过 `studyrocket.propose_changes` 形成草案，由应用展示差异并在用户确认后原子写入。禁止修改 `apps/`、`.agents/`、`.codex/`、脚本、PDF、`PDF提取文本/`、`AGENTS.md` 和 `README.md`。
 - “记一件事”只把用户输入的事实按北京时间追加到 `工作台/每日记录/` 的月文件；手机仅收到 Host 回执才算保存。旧五项行为账仍可读取。规划、复盘与答疑前应读取 `工作台/助理偏好与习惯.md`，只能用它调整任务粒度、时间块和表达方式；不采集页面点击、功能使用次数、情绪或高敏信息。

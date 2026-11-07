@@ -584,12 +584,13 @@ final class HostChatBridge: @unchecked Sendable {
         root: URL,
         descriptorStore: StudyRocketTaskDescriptorStore = StudyRocketTaskDescriptorStore(),
         proposalBackupRoot: URL? = nil,
-        disablesCodex: Bool = false
+        disablesCodex: Bool = false,
+        recordLocalHistory: Bool = false
     ) {
         self.root = root.standardizedFileURL
         self.descriptorStore = descriptorStore
         self.disablesCodex = disablesCodex
-        proposalStore = HostProposalStore(root: root.standardizedFileURL, backupRoot: proposalBackupRoot)
+        proposalStore = HostProposalStore(root: root.standardizedFileURL, backupRoot: proposalBackupRoot, recordLocalHistory: recordLocalHistory)
         if disablesCodex {
             setChatState(.unavailable, issueCode: "self_check_no_codex")
         }

@@ -1372,7 +1372,7 @@ final class StudyChatStore: ObservableObject {
                     await refreshHostProposals()
                     guard generation == connectionGeneration, usingHost, !Task.isCancelled else { return }
                     if response.remaining.proposals.isEmpty { transcript.expandedProposalTurnIDs.remove(turnID) }
-                    workspace.refreshGitStatus()
+                    workspace.notifyWorkspaceChanged()
                 } catch {
                     guard generation == connectionGeneration, usingHost, !Task.isCancelled else { return }
                     errorMessage = error.localizedDescription
@@ -1383,7 +1383,7 @@ final class StudyChatStore: ObservableObject {
         do {
             let changes = selected.map { MarkdownRepository.Change(relative: $0.relativePath, content: $0.proposedContent, loadedHash: $0.baseHash) }
             try MarkdownRepository(root: workspace.rootURL).saveBatch(changes)
-            transcript.proposals.removeAll { selected.contains($0) }; workspace.refreshGitStatus()
+            transcript.proposals.removeAll { selected.contains($0) }; workspace.notifyWorkspaceChanged()
             if !transcript.proposals.contains(where: { $0.turnID == turnID }) {
                 transcript.expandedProposalTurnIDs.remove(turnID)
             }
@@ -1409,7 +1409,7 @@ final class StudyChatStore: ObservableObject {
                     await refreshHostProposals()
                     guard generation == connectionGeneration, usingHost, !Task.isCancelled else { return }
                     if response.remaining.proposals.isEmpty { transcript.expandedProposalTurnIDs.remove(turnID) }
-                    workspace.refreshGitStatus()
+                    workspace.notifyWorkspaceChanged()
                 } catch {
                     guard generation == connectionGeneration, usingHost, !Task.isCancelled else { return }
                     errorMessage = error.localizedDescription
@@ -1429,7 +1429,7 @@ final class StudyChatStore: ObservableObject {
                 try repository.save(proposal.proposedContent, relative: proposal.relativePath, loadedHash: proposal.baseHash)
             }
             transcript.skillProposals.removeAll { selected.contains($0) }
-            workspace.refreshGitStatus()
+            workspace.notifyWorkspaceChanged()
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -1534,11 +1534,15 @@ extension MarkdownRepository {
             guard hash(currentText) == change.loadedHash else { throw MarkdownError.conflict }
             originals.append((target, current))
         }
+        var written: [LocalSaveHistory.Change] = []
         do {
-            for change in changes { try save(change.content, relative: change.relative, loadedHash: change.loadedHash) }
+            for change in changes {
+                written.append(try save(change.content, relative: change.relative, loadedHash: change.loadedHash, recordHistory: false))
+            }
         } catch {
             for (target, data) in originals { try? data.write(to: target, options: .atomic) }
             throw error
         }
+        LocalSaveHistory.shared.record(written, in: root)
     }
 }

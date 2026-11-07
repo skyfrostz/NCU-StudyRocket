@@ -286,7 +286,7 @@ final class DashboardModel: ObservableObject {
             loadedHash = repository.hash(replacement)
             plan = MarkdownParser.weekly(replacement)
             errorMessage = nil
-            workspace.refreshGitStatus()
+            workspace.notifyWorkspaceChanged()
             return true
         } catch {
             plan.deliveries[index].isCompleted.toggle()
@@ -328,7 +328,7 @@ final class DashboardModel: ObservableObject {
             loadedHash = repository.hash(replacement)
             plan = MarkdownParser.weekly(replacement)
             errorMessage = nil
-            workspace.refreshGitStatus()
+            workspace.notifyWorkspaceChanged()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -411,11 +411,9 @@ enum AppSection: String, CaseIterable, Identifiable {
 @MainActor
 final class WorkspaceStore: ObservableObject {
     @Published var rootURL: URL
-    @Published var gitStatus = "读取中..."
     @Published var errorMessage: String?
     @Published private(set) var markdownIndex: [String] = []
     private var timer: Timer?
-    private var gitRefreshTask: Task<Void, Never>?
     private var indexTask: Task<Void, Never>?
     private let selfCheckConfiguration: StudyRocketSelfCheckConfiguration?
 
@@ -425,7 +423,8 @@ final class WorkspaceStore: ObservableObject {
             ? UserDefaults.standard.string(forKey: "workspaceRoot").map(URL.init(fileURLWithPath:))
             : nil
         rootURL = configuration?.repositoryRoot ?? saved ?? URL(fileURLWithPath: "/Users/skyfrost/Desktop/大学")
-        refreshGitStatus()
+        LocalSaveHistory.shared.resume(in: rootURL)
+        notifyWorkspaceChanged()
         refreshMarkdownIndex()
     }
 
@@ -433,43 +432,32 @@ final class WorkspaceStore: ObservableObject {
 
     func bind(to url: URL) {
         guard FileManager.default.fileExists(atPath: url.appendingPathComponent("AGENTS.md").path), FileManager.default.fileExists(atPath: url.appendingPathComponent("PROFILE.md").path) else { errorMessage = "所选目录不是 StudyRocket 仓库：缺少 AGENTS.md 或 PROFILE.md。"; return }
-        gitRefreshTask?.cancel()
-        gitRefreshTask = nil
         indexTask?.cancel()
         indexTask = nil
         rootURL = url.standardizedFileURL
         if selfCheckConfiguration == nil {
             UserDefaults.standard.set(rootURL.path, forKey: "workspaceRoot")
         }
-        refreshGitStatus()
+        LocalSaveHistory.shared.resume(in: rootURL)
+        notifyWorkspaceChanged()
         refreshMarkdownIndex()
     }
 
     func startMonitoring() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in Task { @MainActor in self?.refreshGitStatus() } }
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in Task { @MainActor in self?.notifyWorkspaceChanged() } }
     }
 
     func stopMonitoring() {
         timer?.invalidate()
         timer = nil
-        gitRefreshTask?.cancel()
-        gitRefreshTask = nil
         indexTask?.cancel()
         indexTask = nil
     }
 
-    func refreshGitStatus() {
+    func notifyWorkspaceChanged() {
         if selfCheckConfiguration == nil {
             NotificationCenter.default.post(name: .studyRocketWorkspaceChanged, object: nil)
-        }
-        guard gitRefreshTask == nil else { return }
-        let root = rootURL
-        gitRefreshTask = Task { [weak self] in
-            let result = await Task.detached(priority: .utility) { Self.gitStatus(at: root) }.value
-            guard !Task.isCancelled, let self, self.rootURL == root else { return }
-            self.gitStatus = result
-            self.gitRefreshTask = nil
         }
     }
 
@@ -482,22 +470,6 @@ final class WorkspaceStore: ObservableObject {
             self.markdownIndex = index
             self.indexTask = nil
         }
-    }
-
-    private nonisolated static func gitStatus(at root: URL) -> String {
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = ["-C", root.path, "status", "--porcelain"]
-        process.standardOutput = pipe
-        process.standardError = pipe
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "已同步" : "存在未提交修改"
-        } catch { return "无法读取 Git 状态" }
     }
 }
 
@@ -530,14 +502,20 @@ final class MarkdownRepository {
     func hash(_ content: String) -> String {
         SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
     }
-    func save(_ content: String, relative: String, loadedHash: String) throws {
+    @discardableResult
+    func save(_ content: String, relative: String, loadedHash: String, recordHistory: Bool = true) throws -> LocalSaveHistory.Change {
         let target = try validatedMarkdownURL(relative)
-        let current = (try? String(contentsOf: target, encoding: .utf8)) ?? ""
+        let previous = try? Data(contentsOf: target)
+        let current = previous.flatMap { String(data: $0, encoding: .utf8) } ?? ""
         guard hash(current) == loadedHash else { throw MarkdownError.conflict }
         try FileManager.default.createDirectory(at: backupRoot, withIntermediateDirectories: true)
         if let old = try? Data(contentsOf: target) { let name = relative.replacingOccurrences(of: "/", with: "_") + "." + String(Int(Date().timeIntervalSince1970)); try? old.write(to: backupRoot.appendingPathComponent(name)) }
-        try Data(content.utf8).write(to: target, options: .atomic)
+        let written = Data(content.utf8)
+        try written.write(to: target, options: .atomic)
         pruneBackups(in: backupRoot, prefix: relative.replacingOccurrences(of: "/", with: "_") + ".")
+        let change = LocalSaveHistory.Change(relative: relative, before: previous, after: written)
+        if recordHistory { LocalSaveHistory.shared.record([change], in: root) }
+        return change
     }
 
     private func validatedMarkdownURL(_ relative: String) throws -> URL {

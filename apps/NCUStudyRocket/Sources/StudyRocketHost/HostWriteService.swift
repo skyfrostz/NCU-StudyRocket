@@ -13,6 +13,7 @@ final class HostWriteService {
     private let snapshotBuilder: HostSnapshotBuilder
     private let fileManager = FileManager.default
     private let backupRoot: URL
+    private let recordLocalHistory: Bool
     private var calendar: Calendar
     private let writeLock = NSLock()
     private let replayLock = NSLock()
@@ -20,9 +21,11 @@ final class HostWriteService {
 
     init(
         root: URL,
-        backupRoot: URL? = StudyRocketSelfCheckConfiguration.current?.backupDirectory
+        backupRoot: URL? = StudyRocketSelfCheckConfiguration.current?.backupDirectory,
+        recordLocalHistory: Bool = false
     ) {
         self.root = root.standardizedFileURL
+        self.recordLocalHistory = recordLocalHistory
         snapshotBuilder = HostSnapshotBuilder(root: root.standardizedFileURL)
         self.backupRoot = (backupRoot
             ?? FileManager.default.homeDirectoryForCurrentUser
@@ -203,7 +206,7 @@ final class HostWriteService {
               UUID(uuidString: request.metadata.idempotencyKey) == request.entry.id else {
             throw HostWriteError(code: "wrong_destination", message: "记录编号或目标仓库不匹配。")
         }
-        try FactJournal.append(request.entry, root: root, backupDirectory: backupRoot) {
+        try FactJournal.append(request.entry, root: root, backupDirectory: backupRoot, recordLocalHistory: recordLocalHistory) {
             _ = try self.ensureRevision(request.metadata.baseRevision)
         }
         return snapshotBuilder.build()
@@ -231,7 +234,11 @@ final class HostWriteService {
                 let resolvedURL = fileURL.resolvingSymlinksInPath()
                 guard resolvedURL.path.hasPrefix(resolvedRoot.path + "/"), !isSymlink(fileURL) else { throw HostWriteError(code: "path_denied", message: "目标文件不在仓库允许范围内。") }
                 try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try Data(updated.utf8).write(to: fileURL, options: .atomic)
+                let written = Data(updated.utf8)
+                try written.write(to: fileURL, options: .atomic)
+                if recordLocalHistory {
+                    LocalSaveHistory.shared.record([.init(relative: relative, before: nil, after: written)], in: root)
+                }
             }
         }
         let value = snapshotBuilder.build()
@@ -712,7 +719,11 @@ final class HostWriteService {
             try oldData.write(to: backup, options: .atomic)
         }
         let saved = relative == "工作台/下周计划.md" ? WeeklyDeliveryRollover.forSave(text, previous: current, fileURL: url) : text
-        try Data(saved.utf8).write(to: url, options: .atomic)
+        let written = Data(saved.utf8)
+        try written.write(to: url, options: .atomic)
+        if recordLocalHistory {
+            LocalSaveHistory.shared.record([.init(relative: relative, before: Data(current.utf8), after: written)], in: root)
+        }
         pruneBackups(in: backupRoot, prefix: relative.replacingOccurrences(of: "/", with: "_") + ".")
     }
 

@@ -186,7 +186,7 @@ private final class TimetablePageModel: ObservableObject {
             self.pendingImport = nil
             errorMessage = nil
             workspace.refreshMarkdownIndex()
-            workspace.refreshGitStatus()
+            workspace.notifyWorkspaceChanged()
             NotificationCenter.default.post(name: .studyRocketTimetableChanged, object: nil)
         } catch {
             errorMessage = error.localizedDescription
