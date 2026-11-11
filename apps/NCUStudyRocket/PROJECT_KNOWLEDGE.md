@@ -462,3 +462,25 @@ shasum -a 256 '工作台/下周计划.md'
 - 自动检查新增稳定关联、跨日跨周结转、改期后旧安排补交、同名项目隔离、整体确认/撤销、活动分流及冲突、成组保存冲突、丢失回执等 fixture。构建/安装证据与真机跨网、前后台、小组件现场验收分别记录，不互相替代。
 
 本次自动验证：Shared checks、Markdown checks、Host 5 组专项、Desktop chat checks、18 项 reducer 检查及 Mobile 58 项测试通过；Shared/Mac/Mobile 的 Debug/Release 与 Xcode 模拟器 Debug、设备 Release 构建通过。隔离模拟器使用合成缓存检查任务和活动分流及关联页；真实计划迁移、真机跨网补交和小组件现场显示仍需实际使用确认。
+
+## 2026-11-11：云客户端迁移实现（尚未安装或生产验收）
+
+以下为本次分支的代码与隔离测试结论；此前“Mac 是唯一事实源、必须保持 Host 在线”的描述仅适用于没有云绑定标记的旧模式。
+
+- `.studyrocket-cloud.json` 保存版本、`mode: cloud`、HTTPS 端点和服务端稳定仓库 UUID。配对写标记持有 `PlanningRepositoryLock`；标记存在但损坏或版本未知时同样禁止旧本机写入。已绑定云模式遇到网络、模型或认证失败不会启动本机 Codex 或回退本机正式写入。
+- Desktop 的 Markdown、计划、勾选、课表导入、单条事实及成组草案入口已改为异步云 API。授权保存先持久记录原操作 ID 与 CAS revision，再发送；确认回执前不显示最终保存成功。网络不明、409 或编辑期间冲突保留独立草稿，重试不换操作 ID，也不升级原基线覆盖新版本。
+- 云 Markdown 是权威。Desktop 正式视图、资料索引、记录列表与小组件读取 Application Support 中的独立云缓存；本机工作文件有外部修改时保留原文件并保存完整差异草稿，绝不自动覆盖。只有工作文件仍等于同步基线才自动镜像云正文。用户在双栏差异中明确采用云版本时，再同时核对所预览的本机与云哈希。
+- `Cloud/<root+UUID hash>/mirror` 是展示缓存；`Cloud/drafts-<UUID hash>` 是待提交内容，不是事实库。同 UUID 换地址或路径保留可见草稿；不同 UUID 的草稿在设置中只读查看，不能直接提交。旧本机 Git 历史保留，不再为云保存新建本机事实版本；云版本历史和完整文字历史均由签名 API 分页读取。
+- Mobile 的 endpoint/repository generation 继续隔离迟到结果。同稳定 UUID 重新配对保留计划、日结、勾选、记录与不确定聊天操作的原 ID/revision；跨地址同 UUID 重绑传输地址。换 UUID 前先将旧队列原始字节写入 `preserved-queues` 并回读校验，失败则拒绝切换。旧记录队列不删除，未审核旧任务不自动重放。
+- 两端云聊天沿用 `SendChatRequest.clientRequestID`。不确定请求持久保留原 ID，明确终态或权威历史确认后才释放；重连先校准历史与草案，不盲目重发。SSE 使用 `Last-Event-ID`，只有完整解析事件后才推进游标。模型认证错误不再误导为本机 Codex 登录问题。
+- Mac 自动备份与 Markdown 镜像分开。成功同步后检查云服务提供的最新一致备份，按最多 256 KiB 分块下载 Markdown、SQLite 快照和原清单；核对每块偏移、总长度及最终 SHA-256。所有文件完成后才原子发布 `CloudBackups/<UUID hash>/<backupID>` 和 `_download-receipt.json`。坏块或断线不产生完成标记；重启会重新校验既有备份，损坏副本保留后再下载。备份包含的是服务端事务锁内创建的 SQLite 快照，不复制在线数据库，也不含模型环境凭证。
+- 云绑定不创建系统常驻服务。自动同步和备份仅在 Mac 应用运行时执行；Mac 关闭不会阻止 iPhone 访问云服务。iPhone 后台仍不保证 SSE 或补交运行。
+
+本次隔离验证：Desktop 云 fixture（离线、回执、原 ID 重试、三哈希外改保护、独立权威缓存、409、明确采用云版、分块备份坏哈希拒绝及损坏副本重下）通过；Markdown 与 Desktop 聊天检查通过；Mobile 63 项测试通过，包含 4 项队列迁移和终态释放请求 ID 检查。macOS Release 与 iOS generic-device Release 已构建通过。iOS 使用现有 `NCUStudyRocketMobile-SelfCheck` scheme 并显式指定 `Release`，产物 bundle ID 仍为正式 Mobile ID，未签名、未安装、未启动真机。生产 TLS、实际配对、真实旧队列审核、两端同会话、长历史滚动、真机前后台、网络切换和备份恢复演练须另行验收，不能由构建或 fixture 替代。
+
+### 2026-11-11：首次云身份映射及手机旧队列审核补齐
+
+- 认证 health 返回可选 legacyRepositoryID。Mobile 切换身份前原样归档 snapshot 与全部旧队列；首迁移不自动补交。
+- 更多提供逐项事实/任务审核：fact UUID 不变；勾选必须稳定身份与旧缓存内容指纹一致，只有完成状态可不同；使用明确确认的当前云 CAS，原操作编号不变。无法证明基线的整份周计划、日结和活动仅对照，不提交。
+- 日结草稿新增 dailyBaseRevision/dailyOperationID，离线和 409 后均保留原基线/编号；旧缺基线稿禁止写入。草稿提交入口提供实际内容对照和独立确认。
+- 新 fixture 覆盖旧 hash→UUID 身份不匹配、缺缓存、内容变化禁写、逐项迁移保留操作编号、fact 丢回执/重启去重，以及离线日结 A 遇另一端 B 时不覆盖。仍不代表真机迁移验收。

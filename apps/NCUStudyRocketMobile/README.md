@@ -31,3 +31,38 @@
 首页和“更多”均可打开“记一件事”。已连接过仓库后可离线保存多条本机草稿；连接恢复后用同一编号提交，Host 确认后才显示“已保存”。旧五项草稿在记录页可查看原文。
 
 在“更多 → 提醒”查看 iOS 权限及实际登记的下一次提醒。每日提醒由 iPhone 在北京时间 21:30 发送；点击进入记录输入框。当天已记录且手机已知时跳过，周月复盘沿用原设置。对话页支持右上角刷新和下拉刷新，失败消息可以恢复到输入框后自行编辑、发送。
+
+## Cloud mode (implemented; production/device acceptance pending)
+
+The pairing screen also accepts the configured public HTTPS cloud service. The
+service owns the Markdown repository and the shared academic conversation; the
+Mac does not need to stay online. Existing v1 P-256 request signatures, proposal
+challenge/confirmation, revision checks, and explicit offline target states are
+retained. Model credentials stay on the server.
+
+Changing services first saves and verifies the old queue bytes. Pairing the same
+stable repository UUID preserves original operation IDs and revisions, including
+uncertain chat requests; an endpoint move rebinds their transport addresses.
+Changing repository UUID isolates the previous drafts in **More → old-service
+review drafts**. No old queue is silently replayed into another repository. A
+backup failure prevents the switch. Business errors such as 409 remain write
+issues and do not mark a working connection offline.
+
+**More** provides paginated full text history and read-only cloud file versions.
+SSE reconnects with an event cursor and reconciles authoritative history. Known
+terminal turns release persisted request IDs; unknown outcomes keep their IDs
+and input. Foreground refresh remains necessary after iOS suspends the app.
+
+Verification includes 63 Swift tests and a generic-device Release build. The
+existing shared `NCUStudyRocketMobile-SelfCheck` scheme can build the production
+configuration with `-configuration Release`; this does not run the SelfCheck
+launch action. Tests use temporary fixtures. These results do not establish
+production TLS, real-device pairing, old queue review, or installation success.
+
+### 首次云身份迁移与旧队列审核
+
+认证后的 health 可返回 `legacyRepositoryID`，将旧 Host 路径身份映射至云 UUID。身份变化时，手机先原样归档 pending drafts/facts/chats、未发送文字及旧 snapshot，随后隔离旧队列；映射本身不会自动重放。更多 → 旧服务待审核草稿按事实、交付物、时段任务、整份计划分别显示原稿和当前云内容。
+
+事实经逐项确认以原 fact UUID 提交，丢回执仍重用 UUID；服务器同时核对历史 Markdown 中相同 UUID 的内容。勾选只有稳定 ID、操作编号及旧缓存的内容指纹可验证时才可提交；指纹包含所有任务、安排、日期和关联子项，只忽略完成状态字段。确认使用当前已展示的云 snapshot 做 CAS，保留原操作编号和目标状态；云内容若在确认期间变化则停止。整份周计划、活动、缺基线旧日结只供对照，不能把旧 revision 直接换成最新 revision。已确认项目保存独立 receipt，原始归档持续保留。
+
+常规离线日结现在持久保存原始 revision 和 operation ID；断网、409、重启后按原编号/原基线重试。没有原基线的旧稿不允许提交。草稿入口先显示原稿与云内容，再单独确认提交，服务端冲突不能覆盖另一端修改。

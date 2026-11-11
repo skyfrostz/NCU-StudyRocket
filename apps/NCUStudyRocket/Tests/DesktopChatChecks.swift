@@ -78,7 +78,7 @@ struct DesktopChatChecks {
         let repository = MarkdownRepository(root: root, backupRoot: root.appendingPathComponent("backups"))
         try Data("original".utf8).write(to: root.appendingPathComponent("PROFILE.md"))
         do {
-            try repository.saveBatch([
+            try await repository.saveBatch([
                 .init(relative: "PROFILE.md", content: "first", loadedHash: repository.hash("original")),
                 .init(relative: "PROFILE.md", content: "second", loadedHash: repository.hash("original"))
             ])

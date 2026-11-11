@@ -44,6 +44,10 @@ private final class MobileSyncFixture: @unchecked Sendable {
     private var codexReady: Bool
     private var facts = [QuickFact]()
     private var dropFactReceipt = true
+    var legacyRepositoryID: String?
+    private(set) var dailyRequests: [DailyWriteRequest] = []
+    private(set) var factRequests: [FactWriteRequest] = []
+    private(set) var migratedDeliveryRequests: [DeliveryToggleRequest] = []
     func setReady(_ value: Bool) { lock.lock(); defer { lock.unlock() }; codexReady = value }
     private let repositoryBound: Bool
     private var healthReads = 0
@@ -101,7 +105,7 @@ private final class MobileSyncFixture: @unchecked Sendable {
                 pairedDeviceCount: 1,
                 activeThreadID: "academic",
                 repositoryID: "repo-test",
-                dynamicToolsReady: codexReady
+                dynamicToolsReady: codexReady, backend: legacyRepositoryID == nil ? nil : "cloud", legacyRepositoryID: legacyRepositoryID
             )))
         case ("GET", "/v1/snapshot"):
             snapshotReads += 1
@@ -110,11 +114,20 @@ private final class MobileSyncFixture: @unchecked Sendable {
             return MobileStubResponse(statusCode: 200, data: try encoder.encode(ProposalListResponse(proposals: [])))
         case ("POST", "/v1/facts"):
             let write = try JSONDecoder().decode(FactWriteRequest.self, from: Self.bodyData(for: request))
+            factRequests.append(write)
             guard write.repositoryID == "repo-test", UUID(uuidString: write.metadata.idempotencyKey) == write.entry.id else { throw URLError(.badServerResponse) }
             if !facts.contains(write.entry) { facts.append(write.entry) }
             record(path: path, revision: write.metadata.baseRevision)
             if dropFactReceipt { dropFactReceipt = false; throw URLError(.networkConnectionLost) }
             authoritative = SnapshotResponse(revision: "facts", home: authoritative.home, week: authoritative.week, daily: authoritative.daily, summaries: [], recentFacts: facts)
+            return MobileStubResponse(statusCode: 200, data: try encoder.encode(authoritative))
+        case ("POST", "/v1/daily"):
+            let write = try JSONDecoder().decode(DailyWriteRequest.self, from: Self.bodyData(for: request))
+            dailyRequests.append(write)
+            guard write.metadata.baseRevision == authoritative.revision else {
+                return MobileStubResponse(statusCode: 409, data: try encoder.encode(APIErrorBody(code: "conflict", message: "daily revision changed")))
+            }
+            authoritative = SnapshotResponse(revision: "daily-saved", home: authoritative.home, week: authoritative.week, daily: write.entry, summaries: [])
             return MobileStubResponse(statusCode: 200, data: try encoder.encode(authoritative))
         case ("POST", "/v1/week"):
             let value = try JSONDecoder().decode(PlanWriteRequest.self, from: Self.bodyData(for: request))
@@ -167,6 +180,7 @@ private final class MobileSyncFixture: @unchecked Sendable {
                 return MobileStubResponse(statusCode: error.code == "conflict" ? 409 : 422, data: try encoder.encode(error))
             }
             let value = try JSONDecoder().decode(DeliveryToggleRequest.self, from: Self.bodyData(for: request))
+            migratedDeliveryRequests.append(value)
             record(path: path, revision: value.metadata.baseRevision)
             deliveryTargets.append(value.isCompleted)
             guard value.metadata.baseRevision == authoritative.revision else {
@@ -1198,6 +1212,165 @@ final class MobileSessionSyncTests: XCTestCase {
         XCTAssertEqual(fixture.linkedPeriodRequests.first?.logicalTaskID, task.id)
         await session.refresh(); await session.commitPendingDrafts()
         XCTAssertEqual(fixture.linkedPeriodRequests.count, 1)
+    }
+
+    func testPersistedChatIDsClearOnlyForKnownTerminalTurns() async throws {
+        for status in ["completed", "failed", "interrupted", "inProgress", "unknown"] {
+            let directory = try temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let fixture = MobileSyncFixture(snapshot: makeSnapshot())
+            let session = makeSession(directory: directory, fixture: fixture)
+            await session.refresh()
+            session.inputDraft = ""
+            let operationID = UUID().uuidString
+            let pending = directory.appendingPathComponent("pending-cloud-chats.json")
+            try JSONSerialization.data(withJSONObject: [["id": operationID, "text": "synthetic pending chat", "endpoint": "https://studyrocket.test", "repositoryID": "repo-test"]]).write(to: pending)
+            MobileStubURLProtocol.handler = { request in
+                if request.url?.path == "/v1/chat/history" {
+                    let terminal = ChatTurnTerminalDTO(turnID: operationID, status: status)
+                    let response = ChatHistoryResponse(revision: "fixture", messages: [], terminalTurns: [terminal])
+                    return MobileStubResponse(statusCode: 200, data: try JSONEncoder().encode(response))
+                }
+                return try fixture.response(for: request)
+            }
+            await session.refreshChat()
+            let remaining = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: pending)) as? [[String: Any]])
+            let knownTerminal = ["completed", "failed", "interrupted"].contains(status)
+            XCTAssertEqual(remaining.isEmpty, knownTerminal, "Only authoritative terminal state may release the original idempotency key: " + status)
+            if !knownTerminal { XCTAssertEqual(remaining.first?["id"] as? String, operationID); XCTAssertEqual(session.inputDraft, "synthetic pending chat") }
+        }
+    }
+
+    func testDailyOfflineDraftKeepsOriginalCASAndOperationAcrossConflictAndRelaunch() async throws {
+        let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let cached = makeSnapshot()
+        try JSONEncoder().encode(cached).write(to: directory.appendingPathComponent("snapshot.json"))
+        let offline = MobileSession(cacheDirectory: directory)
+        let draft = DailySnapshot(date: cached.daily.date, deliverables: "offline A")
+        await offline.saveDaily(draft)
+        let stored = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("pending-drafts.json"))) as? [String: Any])
+        let operation = try XCTUnwrap(stored["dailyOperationID"] as? String)
+        XCTAssertEqual(stored["dailyBaseRevision"] as? String, "r0")
+        let other = DailySnapshot(date: cached.daily.date, deliverables: "other device B")
+        let newer = SnapshotResponse(revision: "r1", home: cached.home, week: cached.week, daily: other, summaries: [])
+        let fixture = MobileSyncFixture(snapshot: newer)
+        let online = makeSession(directory: directory, fixture: fixture)
+        await online.refresh(); await online.commitPendingDrafts()
+        XCTAssertEqual(fixture.snapshot.daily, other)
+        XCTAssertEqual(online.pendingDailyDraft, draft)
+        XCTAssertEqual(online.state, .online)
+        let relaunched = makeSession(directory: directory, fixture: fixture)
+        await relaunched.refresh(); await relaunched.commitPendingDrafts()
+        XCTAssertEqual(fixture.dailyRequests.count, 2)
+        XCTAssertEqual(fixture.dailyRequests.map { $0.metadata.baseRevision }, ["r0", "r0"])
+        XCTAssertEqual(fixture.dailyRequests.map { $0.metadata.idempotencyKey }, [operation, operation])
+        XCTAssertEqual(fixture.snapshot.daily, other)
+    }
+
+    func testLegacyDailyWithoutBaseNeverSubmits() async throws {
+        let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let current = makeSnapshot()
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(current.daily))
+        try JSONSerialization.data(withJSONObject: ["daily": object, "deliveries": [], "periods": []]).write(to: directory.appendingPathComponent("pending-drafts.json"))
+        let fixture = MobileSyncFixture(snapshot: current)
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh(); await session.commitPendingDrafts()
+        XCTAssertTrue(fixture.dailyRequests.isEmpty)
+        XCTAssertNotNil(session.pendingDailyDraft)
+        XCTAssertTrue(session.pendingPlanComparison.contains("不可直接提交"))
+    }
+
+    func testFirstCloudMigrationRequiresMappingAndPreservedContentBeforeSingleItemCAS() async throws {
+        let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let old = makeSnapshot()
+        try JSONEncoder().encode(old).write(to: directory.appendingPathComponent("snapshot.json"))
+        UserDefaults.standard.set("legacy-root-hash", forKey: "studyrocket.repositoryID")
+        let operation = UUID().uuidString
+        let draft: [String: Any] = ["deliveries": [["deliveryID": "d3", "text": "交付物 3", "isCompleted": true, "idempotencyKey": operation]], "periods": []]
+        try JSONSerialization.data(withJSONObject: draft).write(to: directory.appendingPathComponent("pending-drafts.json"))
+        let cloud = SnapshotResponse(revision: "cloud-uuid-revision", home: old.home, week: old.week, daily: old.daily, summaries: [])
+        let fixture = MobileSyncFixture(snapshot: cloud)
+        fixture.legacyRepositoryID = "unrelated-hash"
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        let archive = try XCTUnwrap(session.preservedQueues.first)
+        XCTAssertEqual(try JSONDecoder().decode(SnapshotResponse.self, from: XCTUnwrap(archive.cachedSnapshot)), old)
+        XCTAssertFalse(try XCTUnwrap(session.queueMigrationItems(archive).first).canSubmit)
+        XCTAssertTrue(fixture.writePaths.isEmpty)
+        fixture.legacyRepositoryID = "legacy-root-hash"
+        await session.refresh()
+        XCTAssertTrue(try XCTUnwrap(session.queueMigrationItems(archive).first).canSubmit)
+        try await session.submitQueueMigrationItem(archive, itemID: "delivery:0")
+        XCTAssertEqual(fixture.migratedDeliveryRequests.first?.metadata.idempotencyKey, operation)
+        XCTAssertEqual(fixture.migratedDeliveryRequests.first?.metadata.baseRevision, "cloud-uuid-revision")
+        XCTAssertTrue(fixture.snapshot.week.deliveries.first { $0.id == "d3" }!.isCompleted)
+        XCTAssertFalse(try XCTUnwrap(session.queueMigrationItems(archive).first).canSubmit)
+        XCTAssertEqual(session.preservedQueues.first?.drafts, archive.drafts)
+    }
+
+    func testFirstCloudMigrationMissingCacheOrChangedContentStaysReadOnly() async throws {
+        for hasCache in [false, true] {
+            let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+            let old = makeSnapshot()
+            if hasCache { try JSONEncoder().encode(old).write(to: directory.appendingPathComponent("snapshot.json")) }
+            UserDefaults.standard.set("legacy-root-hash", forKey: "studyrocket.repositoryID")
+            let plan = try JSONSerialization.jsonObject(with: JSONEncoder().encode(old.week))
+            try JSONSerialization.data(withJSONObject: ["week": plan, "deliveries": [["deliveryID": "d3", "text": "交付物 3", "isCompleted": true, "idempotencyKey": UUID().uuidString]], "periods": []]).write(to: directory.appendingPathComponent("pending-drafts.json"))
+            let changed = makeSnapshot(periods: [PeriodSnapshot(id: "morning", title: "上午", text: "changed content")])
+            let fixture = MobileSyncFixture(snapshot: changed); fixture.legacyRepositoryID = "legacy-root-hash"
+            let session = makeSession(directory: directory, fixture: fixture)
+            await session.refresh()
+            let archive = try XCTUnwrap(session.preservedQueues.first)
+            XCTAssertTrue(session.queueMigrationItems(archive).allSatisfy { !$0.canSubmit })
+            do { try await session.submitQueueMigrationItem(archive, itemID: "delivery:0"); XCTFail("Changed/unknown baseline must not write") } catch {}
+            XCTAssertTrue(fixture.writePaths.isEmpty)
+        }
+    }
+
+    func testLegacyFactMigrationPreservesUUIDAcrossLostReceiptAndNeedsExplicitReview() async throws {
+        let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        UserDefaults.standard.set("legacy-root-hash", forKey: "studyrocket.repositoryID")
+        let fact = QuickFact(date: "2026-08-19", text: "synthetic migrated fact")
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(fact))
+        try JSONSerialization.data(withJSONObject: [["repositoryID": "legacy-root-hash", "endpoint": "https://studyrocket.test", "fact": object]]).write(to: directory.appendingPathComponent("pending-facts.json"))
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot()); fixture.legacyRepositoryID = "legacy-root-hash"
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        let archive = try XCTUnwrap(session.preservedQueues.first)
+        XCTAssertTrue(fixture.factRequests.isEmpty, "Mapping must never auto-replay old queue")
+        let itemID = "fact:" + fact.id.uuidString
+        XCTAssertTrue(try XCTUnwrap(session.queueMigrationItems(archive).first).canSubmit)
+        do { try await session.submitQueueMigrationItem(archive, itemID: itemID); XCTFail("First receipt is deliberately lost") } catch {}
+        XCTAssertTrue(try XCTUnwrap(session.queueMigrationItems(archive).first).canSubmit)
+        try await session.submitQueueMigrationItem(archive, itemID: itemID)
+        XCTAssertEqual(fixture.factRequests.map { $0.entry }, [fact, fact])
+        XCTAssertEqual(fixture.factRequests.map { $0.metadata.idempotencyKey }, [fact.id.uuidString, fact.id.uuidString])
+        XCTAssertEqual(fixture.factRequests.map { $0.repositoryID }, ["repo-test", "repo-test"])
+        XCTAssertFalse(try XCTUnwrap(session.queueMigrationItems(archive).first).canSubmit)
+        XCTAssertEqual(fixture.snapshot.recentFacts, [fact])
+        let relaunched = makeSession(directory: directory, fixture: fixture)
+        await relaunched.refresh()
+        XCTAssertFalse(try XCTUnwrap(relaunched.queueMigrationItems(archive).first).canSubmit, "Receipt survives restart")
+    }
+
+    func testStablePeriodMigrationUsesOriginalTaskIDAndExplicitTarget() async throws {
+        let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let old = makeSnapshot()
+        let task = try XCTUnwrap(old.week.days.first?.slots.first?.tasks.first)
+        try JSONEncoder().encode(old).write(to: directory.appendingPathComponent("snapshot.json"))
+        UserDefaults.standard.set("legacy-root-hash", forKey: "studyrocket.repositoryID")
+        let operation = UUID().uuidString
+        try JSONSerialization.data(withJSONObject: ["deliveries": [], "periods": [["dayID": "2026-08-19", "periodID": "morning", "taskID": task.id, "isCompleted": true, "idempotencyKey": operation]]]).write(to: directory.appendingPathComponent("pending-drafts.json"))
+        let cloud = SnapshotResponse(revision: "cloud-new-identity", home: old.home, week: old.week, daily: old.daily, summaries: [])
+        let fixture = MobileSyncFixture(snapshot: cloud); fixture.legacyRepositoryID = "legacy-root-hash"
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        let archive = try XCTUnwrap(session.preservedQueues.first)
+        XCTAssertTrue(try XCTUnwrap(session.queueMigrationItems(archive).first).canSubmit)
+        try await session.submitQueueMigrationItem(archive, itemID: "period:0")
+        XCTAssertTrue(fixture.snapshot.week.days[0].slots[0].tasks.first { $0.id == task.id }!.isCompleted)
+        XCTAssertEqual(fixture.baseRevisions, ["cloud-new-identity"])
+        XCTAssertFalse(try XCTUnwrap(session.queueMigrationItems(archive).first).canSubmit)
     }
 
     private func makeSession(

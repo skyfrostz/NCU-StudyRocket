@@ -259,7 +259,7 @@ final class DashboardModel: ObservableObject {
         )
         do {
             let text = try repository.read(file)
-            original = WeeklyDeliveryRollover.projected(text, now: referenceDate, fileURL: root.appendingPathComponent(file))
+            original = WeeklyDeliveryRollover.projected(text, now: referenceDate, fileURL: repository.readingRoot.appendingPathComponent(file))
             loadedHash = repository.hash(text)
             plan = MarkdownParser.weekly(original, referenceDate: referenceDate)
             errorMessage = nil
@@ -267,7 +267,7 @@ final class DashboardModel: ObservableObject {
     }
 
     @discardableResult
-    func toggleDelivery(_ id: UUID, workspace: WorkspaceStore, confirmedTaskIDs: [String]? = nil) -> Bool {
+    func toggleDelivery(_ id: UUID, workspace: WorkspaceStore, confirmedTaskIDs: [String]? = nil) async -> Bool {
         guard let index = plan.deliveries.firstIndex(where: { $0.id == id }) else { return false }
         let delivery = plan.deliveries[index]
         plan.deliveries[index].isCompleted.toggle()
@@ -285,16 +285,14 @@ final class DashboardModel: ObservableObject {
                 isCompleted: plan.deliveries[index].isCompleted,
                 confirmedTaskIDs: confirmedTaskIDs
             )
-            try repository.save(replacement, relative: file, loadedHash: loadedHash)
-            original = replacement
-            loadedHash = repository.hash(replacement)
-            plan = MarkdownParser.weekly(replacement)
+            try await repository.save(replacement, relative: file, loadedHash: loadedHash)
+            guard self.root == root else { return false }
+            load(from: root)
             errorMessage = nil
             workspace.notifyWorkspaceChanged()
             return true
         } catch {
-            plan.deliveries[index].isCompleted.toggle()
-            errorMessage = error.localizedDescription
+            if self.root == root { load(from: root); errorMessage = error.localizedDescription }
             return false
         }
     }
@@ -304,7 +302,7 @@ final class DashboardModel: ObservableObject {
         isCompleted: Bool,
         on date: Date = .now,
         workspace: WorkspaceStore
-    ) {
+    ) async {
         guard let dayID = task.dayID,
               let taskID = task.taskID,
               let day = dayIndex(for: date),
@@ -327,10 +325,9 @@ final class DashboardModel: ObservableObject {
                 taskID: taskID,
                 isCompleted: isCompleted
             )
-            try repository.save(replacement, relative: file, loadedHash: loadedHash)
-            original = replacement
-            loadedHash = repository.hash(replacement)
-            plan = MarkdownParser.weekly(replacement)
+            try await repository.save(replacement, relative: file, loadedHash: loadedHash)
+            guard self.root == root else { return }
+            load(from: root)
             errorMessage = nil
             workspace.notifyWorkspaceChanged()
         } catch {
@@ -363,19 +360,14 @@ final class DashboardModel: ObservableObject {
 enum HabitProfileUpdater {
     private static let file = "工作台/助理偏好与习惯.md"
 
-    static func update(after entry: DailyEntry, in root: URL) throws {
+    static func update(after entry: DailyEntry, in root: URL) async throws {
         let repository = MarkdownRepository(root: root)
-        let existing = (try? repository.read(file)) ?? "# 助理偏好与习惯\n\n> 仅记录可证据的学习规律与用户明确表达的规划偏好；不记录情绪、页面点击、账号或隐私信息。\n\n## 已确认偏好\n\n- [待补]\n\n## 近 14 日行为摘要\n\n<!-- studyrocket:habits:start -->\n<!-- studyrocket:habits:end -->\n\n## 计划阻力规律\n\n<!-- studyrocket:friction:start -->\n- 证据不足：尚未有 3 次以上同类可证记录，不调整默认计划规则。\n<!-- studyrocket:friction:end -->\n\n## 候选习惯\n\n- 证据不足：连续至少 3 次可证记录后，才可在周复盘中建议调整工作流程。\n\n## 最后更新\n\n- 待补\n"
+        let loaded = try? repository.read(file)
+        let existing = loaded ?? "# 助理偏好与习惯\n\n> 仅记录可证据的学习规律与用户明确表达的规划偏好；不记录情绪、页面点击、账号或隐私信息。\n\n## 已确认偏好\n\n- [待补]\n\n## 近 14 日行为摘要\n\n<!-- studyrocket:habits:start -->\n<!-- studyrocket:habits:end -->\n\n## 计划阻力规律\n\n<!-- studyrocket:friction:start -->\n- 证据不足：尚未有 3 次以上同类可证记录，不调整默认计划规则。\n<!-- studyrocket:friction:end -->\n\n## 候选习惯\n\n- 证据不足：连续至少 3 次可证记录后，才可在周复盘中建议调整工作流程。\n\n## 最后更新\n\n- 待补\n"
         let observation = "- \(entry.date)｜交付物：\(clean(entry.deliverables))｜净学习：\(clean(entry.studyTime))｜睡眠：\(clean(entry.sleep))｜运动：\(clean(entry.exercise))｜明日第一任务：\(clean(entry.firstTask))"
         let updated = replaceObservation(in: existing, date: entry.date, with: observation)
-        let hash = repository.hash(existing)
-        if FileManager.default.fileExists(atPath: repository.url(file).path) {
-            try repository.save(updated, relative: file, loadedHash: hash)
-        } else {
-            let target = repository.url(file)
-            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data(updated.utf8).write(to: target, options: .atomic)
-        }
+        try await repository.save(updated, relative: file, loadedHash: repository.hash(loaded ?? ""))
+
     }
 
     private static func clean(_ value: String) -> String {
@@ -417,6 +409,8 @@ final class WorkspaceStore: ObservableObject {
     @Published var rootURL: URL
     @Published var errorMessage: String?
     @Published private(set) var markdownIndex: [String] = []
+    @Published private(set) var cloudPendingCount = 0
+    @Published private(set) var cloudSyncStatus = "云缓存尚未刷新"
     private var timer: Timer?
     private var indexTask: Task<Void, Never>?
     private let selfCheckConfiguration: StudyRocketSelfCheckConfiguration?
@@ -427,7 +421,7 @@ final class WorkspaceStore: ObservableObject {
             ? UserDefaults.standard.string(forKey: "workspaceRoot").map(URL.init(fileURLWithPath:))
             : nil
         rootURL = configuration?.repositoryRoot ?? saved ?? URL(fileURLWithPath: "/Users/skyfrost/Desktop/大学")
-        LocalSaveHistory.shared.resume(in: rootURL)
+        if !DesktopCloudBinding.isManaged(rootURL) { LocalSaveHistory.shared.resume(in: rootURL) }
         notifyWorkspaceChanged()
         refreshMarkdownIndex()
     }
@@ -442,14 +436,35 @@ final class WorkspaceStore: ObservableObject {
         if selfCheckConfiguration == nil {
             UserDefaults.standard.set(rootURL.path, forKey: "workspaceRoot")
         }
-        LocalSaveHistory.shared.resume(in: rootURL)
+        if !DesktopCloudBinding.isManaged(rootURL) { LocalSaveHistory.shared.resume(in: rootURL) }
         notifyWorkspaceChanged()
         refreshMarkdownIndex()
     }
 
     func startMonitoring() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in Task { @MainActor in self?.notifyWorkspaceChanged() } }
+        synchronizeCloud()
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in Task { @MainActor in self?.synchronizeCloud(); self?.notifyWorkspaceChanged() } }
+    }
+
+    func synchronizeCloud() {
+        let root = rootURL
+        guard DesktopCloudBinding.isManaged(root) else { return }
+        Task {
+            do {
+                try await DesktopCloudWorkspace.shared.synchronize(root: root)
+                if root == rootURL { cloudSyncStatus = "云缓存已更新"; refreshMarkdownIndex(); refreshCloudDraftStatus(); Task { await DesktopCloudBackup.shared.refreshAutomatically(root: root) } }
+            } catch { if root == rootURL { cloudSyncStatus = "离线或同步失败：" + error.localizedDescription; refreshCloudDraftStatus() } }
+        }
+    }
+
+    func refreshCloudDraftStatus() {
+        let root = rootURL
+        guard DesktopCloudBinding.isManaged(root) else { cloudPendingCount = 0; return }
+        Task {
+            let count = (try? await DesktopCloudWorkspace.shared.drafts(root: root).count) ?? 0
+            if rootURL == root { cloudPendingCount = count }
+        }
     }
 
     func stopMonitoring() {
@@ -478,6 +493,8 @@ final class WorkspaceStore: ObservableObject {
 }
 
 extension Notification.Name {
+    static let studyRocketCloudStateChanged = Notification.Name("studyrocket.cloud.state.changed")
+    static let studyRocketCloudBindingChanged = Notification.Name("studyrocket.cloud.binding.changed")
     static let studyRocketWorkspaceChanged = Notification.Name("studyrocket.workspace.changed")
 }
 
@@ -500,19 +517,34 @@ final class MarkdownRepository {
         ).standardizedFileURL
     }
     func url(_ relative: String) -> URL { root.appendingPathComponent(relative) }
+    var readingRoot: URL {
+        if DesktopCloudBinding.isManaged(root) { return (try? DesktopCloudBinding.cacheRoot(root)) ?? root.appendingPathComponent(".cloud-unavailable") }
+        return root
+    }
     func read(_ relative: String) throws -> String {
-        try String(contentsOf: validatedMarkdownURL(relative), encoding: .utf8)
+        _ = try validatedMarkdownURL(relative)
+        if DesktopCloudBinding.isManaged(root) {
+            return try String(contentsOf: DesktopCloudBinding.cacheRoot(root).appendingPathComponent(relative), encoding: .utf8)
+        }
+        return try String(contentsOf: validatedMarkdownURL(relative), encoding: .utf8)
     }
     func hash(_ content: String) -> String {
         SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     @discardableResult
-    func save(_ content: String, relative: String, loadedHash: String, recordHistory: Bool = true) throws -> LocalSaveHistory.Change {
-        let repositoryLock = try PlanningRepositoryLock.acquire(root: root); defer { repositoryLock.unlock() }
+    func save(_ content: String, relative: String, loadedHash: String, recordHistory: Bool = true) async throws -> LocalSaveHistory.Change {
         let target = try validatedMarkdownURL(relative)
+        if DesktopCloudBinding.isManaged(root) {
+            let previous = (try? read(relative)).map { Data($0.utf8) }
+            try await DesktopCloudWorkspace.shared.commit(root: root, files: [.init(path: relative, baseHash: previous == nil ? nil : loadedHash, content: content)])
+            return LocalSaveHistory.Change(relative: relative, before: previous, after: Data((try read(relative)).utf8))
+        }
+        let repositoryLock = try PlanningRepositoryLock.acquire(root: root); defer { repositoryLock.unlock() }
+        guard !DesktopCloudBinding.isManaged(root) else { throw DesktopCloudError.message("仓库已切换为云管理，请重新保存。") }
         let previous = try? Data(contentsOf: target)
         let current = previous.flatMap { String(data: $0, encoding: .utf8) } ?? ""
         guard hash(current) == loadedHash else { throw MarkdownError.conflict }
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: backupRoot, withIntermediateDirectories: true)
         if let old = try? Data(contentsOf: target) { let name = relative.replacingOccurrences(of: "/", with: "_") + "." + String(Int(Date().timeIntervalSince1970)); try? old.write(to: backupRoot.appendingPathComponent(name)) }
         let written = Data(content.utf8)
@@ -536,10 +568,11 @@ final class MarkdownRepository {
     private func pruneBackups(in dir: URL, prefix: String) { let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey]))?.filter { $0.lastPathComponent.hasPrefix(prefix) }.sorted { $0.lastPathComponent > $1.lastPathComponent } ?? []; for file in files.dropFirst(20) { try? FileManager.default.removeItem(at: file) } }
     func markdownFiles() -> [String] {
         let excluded = Set([".git", ".build", "PDF提取文本", "Backups"])
-        let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles])
+        let sourceRoot = readingRoot
+        let enumerator = FileManager.default.enumerator(at: sourceRoot, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles])
         return enumerator?.compactMap { item in
             guard let url = item as? URL else { return nil }
-            let relative = url.path.replacingOccurrences(of: root.path + "/", with: "")
+            let relative = url.path.replacingOccurrences(of: sourceRoot.path + "/", with: "")
             if relative.split(separator: "/").contains(where: { excluded.contains(String($0)) }) { return nil }
             guard url.pathExtension.lowercased() == "md", !Self.isSymbolicLink(url) else { return nil }
             return relative
@@ -599,10 +632,19 @@ final class MarkdownDocumentModel: ObservableObject {
         catch { errorMessage = "无法读取 \(relative)：\(error.localizedDescription)" }
     }
     func discardAndLoad(_ relative: String) { load(relative) }
-    func save() -> Bool {
+    func save() async -> Bool {
         guard let relative else { return true }
-        do { let repo = MarkdownRepository(root: root); try repo.save(text, relative: relative, loadedHash: loadedHash); original = text; loadedHash = repo.hash(text); errorMessage = nil; return true }
-        catch { errorMessage = error.localizedDescription; return false }
+        let submitted = text, expectedRoot = root, expectedHash = loadedHash
+        do {
+            let repo = MarkdownRepository(root: expectedRoot)
+            try await repo.save(submitted, relative: relative, loadedHash: expectedHash)
+            guard root == expectedRoot, self.relative == relative else { return false }
+            let authoritative = try repo.read(relative)
+            original = authoritative; loadedHash = repo.hash(authoritative)
+            if text == submitted { text = authoritative }
+            errorMessage = nil
+            return text == original
+        } catch { if root == expectedRoot, self.relative == relative { errorMessage = error.localizedDescription }; return false }
     }
 }
 

@@ -6,7 +6,7 @@ struct MarkdownChecks {
         guard condition() else { fputs("FAIL: \(message)\n", stderr); exit(1) }
     }
 
-    static func main() {
+    static func main() async {
         let source = "# 计划\n\n| 时段 | 周一 | 周二 | 周三 | 周四 | 周五 | 周六 | 周日 |\n|------|------|------|------|------|------|------|------|\n| 上午 | 数学 | | | | | | 复盘+重排 |\n| 下午 | | | | | | | |\n| 晚上 | | | | | | | |\n\n## 交付物清单\n- [ ] 读完第一章\n\n## 缓冲\n- 每天留白"
         let rollingWindowReference = MarkdownParser.studyCalendar.date(from: DateComponents(year: 2026, month: 8, day: 13))!
         var plan = MarkdownParser.weekly(source, referenceDate: rollingWindowReference)
@@ -62,16 +62,16 @@ struct MarkdownChecks {
         check(document.mode == .preview, "documents default to preview")
         let repository = MarkdownRepository(root: root)
         let first = try! repository.read("科研.md")
-        try! repository.save("# 科研\n已保存", relative: "科研.md", loadedHash: repository.hash(first))
+        try! await repository.save("# 科研\n已保存", relative: "科研.md", loadedHash: repository.hash(first))
         check((try! repository.read("科研.md")).contains("已保存"), "repository saves current version")
         let staleHash = repository.hash("# 科研\n已保存")
         try! Data("# 科研\n外部修改".utf8).write(to: root.appendingPathComponent("科研.md"))
-        do { try repository.save("# 科研\n覆盖", relative: "科研.md", loadedHash: staleHash); check(false, "conflict must reject overwrite") }
+        do { try await repository.save("# 科研\n覆盖", relative: "科研.md", loadedHash: staleHash); check(false, "conflict must reject overwrite") }
         catch MarkdownError.conflict { }
         catch { check(false, "conflict reports correct error") }
         let habitEntry = DailyEntry(id: "2026-08-13", date: "2026-08-13", deliverables: "完成小测", studyTime: "2h", sleep: "23:00 / 07:00", exercise: "散步", firstTask: "预习")
-        try! HabitProfileUpdater.update(after: habitEntry, in: root)
-        try! HabitProfileUpdater.update(after: habitEntry, in: root)
+        try! await HabitProfileUpdater.update(after: habitEntry, in: root)
+        try! await HabitProfileUpdater.update(after: habitEntry, in: root)
         let habits = try! repository.read("工作台/助理偏好与习惯.md")
         check(habits.components(separatedBy: "- 2026-08-13｜").count - 1 == 1, "habit update is idempotent")
         print("Markdown checks passed")

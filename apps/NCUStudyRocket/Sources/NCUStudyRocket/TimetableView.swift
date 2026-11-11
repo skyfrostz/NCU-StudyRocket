@@ -34,7 +34,7 @@ struct TimetableView: View {
                 if let pending = model.pendingImport {
                     TimetableImportPreviewCard(
                         pending: pending,
-                        save: { model.savePendingImport(workspace: workspace) },
+                        save: { Task { await model.savePendingImport(workspace: workspace) } },
                         discard: model.discardPendingImport
                     )
                 }
@@ -68,7 +68,7 @@ struct TimetableView: View {
             }
         }
         .sheet(isPresented: $showEventEditor) {
-            OneOffEventEditor(source: model.source) { events in try model.saveEvents(events, workspace: workspace) }
+            OneOffEventEditor(source: model.source) { events in try await model.saveEvents(events, workspace: workspace) }
                 .frame(minWidth: 580, minHeight: 560)
         }
         .fileImporter(
@@ -159,11 +159,11 @@ private final class TimetablePageModel: ObservableObject {
         selectedSnapshot = StudyRocketTimetableParser.snapshot(from: source, teachingWeek: week)
     }
 
-    func saveEvents(_ events: [OneOffEvent], workspace: WorkspaceStore) throws {
+    func saveEvents(_ events: [OneOffEvent], workspace: WorkspaceStore) async throws {
         do {
             let repository = MarkdownRepository(root: workspace.rootURL)
             let updated = try OneOffSchedule.write(events, in: source)
-            try repository.save(updated, relative: StudyRocketTimetableParser.sourceFile, loadedHash: loadedHash)
+            try await repository.save(updated, relative: StudyRocketTimetableParser.sourceFile, loadedHash: loadedHash)
             load(from: workspace.rootURL)
             workspace.notifyWorkspaceChanged()
             NotificationCenter.default.post(name: .studyRocketTimetableChanged, object: nil)
@@ -201,12 +201,12 @@ private final class TimetablePageModel: ObservableObject {
         errorMessage = nil
     }
 
-    func savePendingImport(workspace: WorkspaceStore) {
+    func savePendingImport(workspace: WorkspaceStore) async {
         guard let root, let pendingImport else { return }
         let repository = MarkdownRepository(root: root)
         do {
             let replacement = replaceManagedBlock(in: source, with: pendingImport.managedMarkdown, document: pendingImport.mergedDocument)
-            try repository.save(replacement, relative: StudyRocketTimetableParser.sourceFile, loadedHash: loadedHash)
+            try await repository.save(replacement, relative: StudyRocketTimetableParser.sourceFile, loadedHash: loadedHash)
             source = replacement
             loadedHash = repository.hash(replacement)
             document = pendingImport.mergedDocument
@@ -216,7 +216,7 @@ private final class TimetablePageModel: ObservableObject {
                 selectedWeek = min(max(selectedWeek, range.lowerBound), range.upperBound)
                 selectedSnapshot = StudyRocketTimetableParser.snapshot(from: replacement, teachingWeek: selectedWeek)
             }
-            self.pendingImport = nil
+            if self.pendingImport == pendingImport { self.pendingImport = nil }
             errorMessage = nil
             workspace.refreshMarkdownIndex()
             workspace.notifyWorkspaceChanged()

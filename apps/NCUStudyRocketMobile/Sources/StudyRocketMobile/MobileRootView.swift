@@ -115,7 +115,7 @@ private struct MobileLegacyPendingReviewSheet: View {
     NavigationStack {
       List {
         Section {
-          Text("这些操作来自旧版手机缓存。请确认后再写入 Mac；任务已变化的项目不会自动同步。")
+          Text("这些操作来自旧版手机缓存。请确认后再写入正式仓库；任务已变化的项目不会自动同步。")
             .font(.footnote)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -204,7 +204,7 @@ private struct MobileLegacyPendingReviewSheet: View {
         }
         Button("取消", role: .cancel) {}
       } message: {
-        Text("只会删除这些尚未写入 Mac 的旧版勾选操作，无法撤销。")
+        Text("只会删除这些尚未写入正式仓库的旧版勾选操作，无法撤销。")
       }
       .interactiveDismissDisabled(isApplying)
     }
@@ -530,7 +530,7 @@ private struct MobileHomeView: View {
               VStack(alignment: .leading, spacing: 14) {
                 MobileInlineNotice(
                   text: session.lastConnectionIssue
-                    ?? "暂时无法连接 Mac Host。确认 Host 已启动、Tailscale 已连接并已启用 Serve。",
+                    ?? "暂时无法连接学业服务，请检查网络并刷新；待提交草稿仍保留。",
                   symbol: "wifi.exclamationmark",
                   tint: .orange
                 )
@@ -865,8 +865,8 @@ private struct MobileTimetableCard: View {
         } else {
           MobileInlineNotice(
             text: isOffline
-              ? "当前离线缓存来自旧版协议，不含课表数据。连接 Mac 后刷新。"
-              : "Mac Host 尚未返回课表数据，请刷新后重试。",
+              ? "当前离线缓存来自旧版协议，不含课表数据。连接学业服务后刷新。"
+              : "学业服务 尚未返回课表数据，请刷新后重试。",
             symbol: "calendar.badge.exclamationmark",
             tint: .orange
           )
@@ -1256,7 +1256,7 @@ private struct MobileTimetableView: View {
           )
         } else {
           MobileInlineNotice(
-            text: "暂时无法读取完整课表。请连接 Mac Host 后刷新；课表文件需要在 Mac 端的课表页面导入。",
+            text: "暂时无法读取完整课表。请连接 学业服务 后刷新；课表文件需要在 Mac 端的课表页面导入。",
             symbol: "calendar.badge.exclamationmark",
             tint: .orange
           )
@@ -1673,9 +1673,9 @@ private struct MobileUnframedConnectionPrompt: View {
         .foregroundStyle(.secondary)
         .symbolRenderingMode(.hierarchical)
         .accessibilityHidden(true)
-      Text("连接 Mac Host")
+      Text("连接 学业服务")
         .font(.system(.title2, design: .rounded, weight: .bold))
-      Text("首次使用需要填写 Mac 的私有 HTTPS 地址，并输入 Host 窗口中的一次性配对码。")
+      Text("首次使用填写学业服务 HTTPS 地址，并输入管理员提供的一次性配对码。")
         .font(.body)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
@@ -1954,7 +1954,7 @@ private struct MobileProposalPanel: View {
         .buttonStyle(.borderedProminent)
         .controlSize(.large)
         .disabled(selectedIDs.isEmpty || !session.canApplyProposals)
-        Text("确认前不会写入 Mac 仓库。")
+        Text("确认前不会写入正式仓库。")
           .font(.caption)
           .foregroundStyle(.secondary)
       }
@@ -2225,8 +2225,8 @@ private struct MobilePlanView: View {
             MobileEmptyState(
               title: "暂无计划缓存",
               message: session.savedEndpoint == nil
-                ? "先连接 Mac Host，手机才会显示周计划。"
-                : "当前没有可读取的周计划缓存，请刷新 Mac Host。",
+                ? "先连接 学业服务，手机才会显示周计划。"
+                : "当前没有可读取的周计划缓存，请刷新 学业服务。",
               symbol: "calendar.badge.exclamationmark",
               actionTitle: session.savedEndpoint == nil ? "前往配对" : "刷新数据",
               action: {
@@ -2302,7 +2302,7 @@ private struct MobilePlanView: View {
     VStack(alignment: .leading, spacing: 4) {
       Text("周计划")
         .font(.system(.title2, design: .rounded, weight: .bold))
-      Text(session.snapshot?.home.dateLabel ?? "等待 Mac Host")
+      Text(session.snapshot?.home.dateLabel ?? "等待 学业服务")
         .font(.subheadline)
         .foregroundStyle(.secondary)
     }
@@ -2786,23 +2786,23 @@ private struct MobileConnectionPresentation {
   init(session: MobileSession) {
     switch session.state {
     case .online where session.isChatAvailable:
-      title = "已连接 Mac"
+      title = "已连接学业服务"
       detail = "首页、计划与学业对话均可用"
       symbol = "checkmark.circle.fill"
       tint = MobileTheme.completion
     case .online:
       title = "首页可用 · 对话未就绪"
-      detail = session.chatUnavailableMessage ?? "Mac Host 正在重试学业对话协议自检"
+      detail = session.chatUnavailableMessage ?? "学业服务 正在重试学业对话协议自检"
       symbol = "bubble.left.and.exclamationmark.fill"
       tint = .orange
     case .offline:
       title = session.state.title
-      detail = "正在使用本机缓存，可重新连接 Mac"
+      detail = "正在使用本机缓存，可重新连接学业服务"
       symbol = "icloud.slash"
       tint = .secondary
     case .connecting:
-      title = "正在连接 Mac"
-      detail = "正在验证 Host 与配对身份"
+      title = "正在连接学业服务"
+      detail = "正在验证服务与配对身份"
       symbol = "arrow.triangle.2.circlepath"
       tint = .orange
     case .failed(let message):
@@ -2811,8 +2811,8 @@ private struct MobileConnectionPresentation {
       symbol = "exclamationmark.triangle.fill"
       tint = .red
     case .unconfigured:
-      title = "尚未连接 Mac"
-      detail = "输入 Mac Host 的 HTTPS 地址和一次性配对码"
+      title = "尚未连接学业服务"
+      detail = "输入 学业服务 的 HTTPS 地址和一次性配对码"
       symbol = "link.badge.plus"
       tint = MobileTheme.brand
     }
@@ -2899,10 +2899,10 @@ private struct MobileMoreView: View {
             Text("当天已记录就跳过晚间提醒；点击提醒直接记一件事。").font(.footnote).foregroundStyle(.secondary)
           }
         #endif
-        Section("Mac Host 连接") {
+        Section("学业服务 连接") {
           MobileConnectionSummary(session: session)
           if let endpoint = session.savedEndpoint {
-            LabeledContent("当前 Host") {
+            LabeledContent("当前服务") {
               Text(endpoint)
                 .font(.caption.monospaced())
                 .lineLimit(1)
@@ -2921,16 +2921,48 @@ private struct MobileMoreView: View {
             NavigationLink {
               MobilePairingView(session: session)
             } label: {
-              Label("更换 Mac Host", systemImage: "arrow.triangle.2.circlepath")
+              Label("更换 学业服务", systemImage: "arrow.triangle.2.circlepath")
             }
           } else {
             NavigationLink {
               MobilePairingView(session: session)
             } label: {
-              Label("连接 Mac Host", systemImage: "link.badge.plus")
+              Label("连接 学业服务", systemImage: "link.badge.plus")
                 .font(.body.weight(.semibold))
                 .foregroundStyle(MobileTheme.brand)
                 .frame(minHeight: 44)
+            }
+          }
+        }
+        if !session.preservedQueues.isEmpty {
+          Section("旧服务待审核草稿") {
+            Text("旧计划、勾选和记录已独立保留。核对原仓库后再在当前计划逐项处理；不会自动重放。")
+              .font(.footnote).foregroundStyle(.secondary)
+            ForEach(session.preservedQueues) { archive in
+              NavigationLink(archive.createdAt.formatted(date: .abbreviated, time: .shortened)) {
+                MobileQueueMigrationReview(session: session, archive: archive)
+              }
+            }
+          }
+        }
+        if session.isCloudService {
+          Section("学业历史") {
+            NavigationLink("云文件版本历史") { MobileCloudVersionsView(session: session).id(session.repositoryGeneration) }
+            NavigationLink("完整文字历史（只读）") {
+              List {
+                ForEach(session.archivedHistory) { message in
+                  VStack(alignment: .leading, spacing: 6) {
+                    Text("\(message.role) · \(message.date.formatted())").font(.caption).foregroundStyle(.secondary)
+                    Text(message.text).textSelection(.enabled)
+                  }
+                }
+                if session.archivedHistoryLoading { ProgressView() }
+                else if !session.archivedHistoryLoaded || session.archivedHistoryCursor != nil {
+                  Button("加载更多") { Task { await session.loadArchivedHistory() } }
+                }
+                if let error = session.archivedHistoryError { Text(error).foregroundStyle(.secondary) }
+              }.navigationTitle("完整文字历史")
+                .task { if !session.archivedHistoryLoaded { await session.loadArchivedHistory() } }
             }
           }
         }
@@ -2975,10 +3007,7 @@ private struct MobileMoreView: View {
               }
             }
             if session.pendingWeekDraft != nil || session.pendingDailyDraft != nil {
-              Button("比较并提交周计划 / 日结", systemImage: "arrow.up.doc") {
-                Task { await session.commitPendingDrafts() }
-              }
-              .disabled(session.state != .online)
+              NavigationLink("比较周计划 / 日结草稿") { MobilePendingPlanComparison(session: session) }
             }
             if session.pendingDeliveryCount + session.pendingPeriodCount
               > session.legacyPendingToggleCount
@@ -3003,7 +3032,7 @@ private struct MobileMoreView: View {
           }
         }
         Section("隐私与缓存") {
-          Text("手机只保留最近一次快照、当前输入草稿、待提交草稿，以及你打开过的只读学习资料和课表缓存；PDF、Git 和完整聊天历史留在 Mac。")
+          Text("手机保存只读缓存和待提交草稿。云模式的正式 Markdown、完整文字历史和版本记录保存在云服务；PDF 继续单独备份。")
             .font(.footnote)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -3019,7 +3048,7 @@ private struct MobileMoreView: View {
         Button("放弃草稿", role: .destructive) { session.discardPendingDrafts() }
         Button("取消", role: .cancel) {}
       } message: {
-        Text("尚未写入 Mac 的周计划、日结、交付物和时段完成修改将被删除。")
+        Text("尚未写入正式仓库的周计划、日结、交付物和时段完成修改将被删除。")
       }
       .confirmationDialog(
         "清除本机缓存？", isPresented: $showClearCacheConfirmation, titleVisibility: .visible
@@ -3027,7 +3056,7 @@ private struct MobileMoreView: View {
         Button("清除缓存", role: .destructive) { session.clearLocalCache() }
         Button("取消", role: .cancel) {}
       } message: {
-        Text("将删除快照、资料缓存、对话输入和旧版待提交修改。“记一件事”的待同步记录、Host 地址和配对身份保留。")
+        Text("将删除快照、资料缓存、对话输入和旧版待提交修改。“记一件事”的待同步记录、服务地址和配对身份保留。")
       }
       #if os(iOS)
         .scrollDismissesKeyboard(.interactively)
@@ -3070,11 +3099,11 @@ private struct MobileBufferRulesView: View {
             VStack(alignment: .leading, spacing: 12) {
               MobileSectionHeading(title: "缓冲与降级", icon: "shield.lefthalf.filled")
               MobileInlineNotice(
-                text: "先连接 Mac Host，手机才会显示缓冲与降级规则。", symbol: "link.badge.plus", tint: .orange)
+                text: "先连接 学业服务，手机才会显示缓冲与降级规则。", symbol: "link.badge.plus", tint: .orange)
               NavigationLink {
                 MobilePairingView(session: session)
               } label: {
-                Label("连接 Mac Host", systemImage: "link.badge.plus")
+                Label("连接 学业服务", systemImage: "link.badge.plus")
                   .frame(minHeight: 44)
               }
             }
@@ -3082,7 +3111,7 @@ private struct MobileBufferRulesView: View {
         } else {
           MobileEmptyState(
             title: "暂无计划缓存",
-            message: "当前没有可读取的计划缓存，请刷新 Mac Host。",
+            message: "当前没有可读取的计划缓存，请刷新 学业服务。",
             symbol: "shield.lefthalf.filled",
             actionTitle: "刷新数据",
             action: { Task { await session.refresh() } }
@@ -3214,7 +3243,7 @@ private struct MobileConnectionDetailView: View {
           tint: session.health == nil ? .secondary : MobileTheme.brand
         )
       }
-      Section("Mac Host") {
+      Section("学业服务") {
         LabeledContent("连接地址") {
           Text(session.savedEndpoint ?? "尚未设置")
             .font(.caption.monospaced())
@@ -3222,7 +3251,7 @@ private struct MobileConnectionDetailView: View {
             .textSelection(.enabled)
         }
         if let health = session.health {
-          LabeledContent("Host 版本", value: health.hostVersion)
+          LabeledContent("服务版本", value: health.hostVersion)
           LabeledContent("API 版本", value: "v\(health.apiVersion)")
         }
       }
@@ -3254,7 +3283,7 @@ private struct MobileConnectionDetailView: View {
             Task { await session.refresh() }
           }
         }
-        NavigationLink(session.savedEndpoint == nil ? "连接 Mac Host" : "更换 Mac Host") {
+        NavigationLink(session.savedEndpoint == nil ? "连接 学业服务" : "更换 学业服务") {
           MobilePairingView(session: session)
         }
       }
@@ -3279,7 +3308,7 @@ private struct MobilePairingView: View {
 
   init(session: MobileSession) {
     self.session = session
-    _endpoint = State(initialValue: session.savedEndpoint ?? "https://")
+    _endpoint = State(initialValue: session.savedEndpoint ?? "https://studyrocket.soulcourse.cn")
   }
 
   var body: some View {
@@ -3287,15 +3316,15 @@ private struct MobilePairingView: View {
       Section {
         Text(
           session.savedEndpoint == nil
-            ? "在 Mac Host 窗口复制私有 HTTPS 地址和一次性配对码。"
-            : "新 Host 配对成功后，旧仓库的快照、聊天和待提交草稿会被清除，避免内容串到新仓库。"
+            ? "填写云服务 HTTPS 地址和一次性配对码。"
+            : "切换前会持久备份旧仓库的待提交草稿，保留在“旧服务待审核草稿”；不会自动写入新仓库。"
         )
         .font(.footnote)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
       }
       Section("配对信息") {
-        TextField("Mac Host HTTPS 地址", text: $endpoint)
+        TextField("学业服务 HTTPS 地址", text: $endpoint)
           .focused($focusedField, equals: .endpoint)
           #if os(iOS)
             .textInputAutocapitalization(.never)
@@ -3330,7 +3359,7 @@ private struct MobilePairingView: View {
         }
         .disabled(isPairing)
         if isPairing {
-          ProgressView("正在检查 Mac Host 并配对")
+          ProgressView("正在检查 学业服务 并配对")
             .frame(maxWidth: .infinity)
         }
         if let pairingMessage {
@@ -3341,14 +3370,14 @@ private struct MobilePairingView: View {
         }
       }
     }
-    .navigationTitle(session.savedEndpoint == nil ? "连接 Mac Host" : "更换 Mac Host")
+    .navigationTitle(session.savedEndpoint == nil ? "连接 学业服务" : "更换 学业服务")
     .confirmationDialog(
-      "更换 Mac Host？", isPresented: $showDraftsConfirmation, titleVisibility: .visible
+      "更换 学业服务？", isPresented: $showDraftsConfirmation, titleVisibility: .visible
     ) {
       Button("继续更换", role: .destructive) { pair() }
       Button("取消", role: .cancel) {}
     } message: {
-      Text("本机待提交草稿属于当前仓库。新 Host 配对成功后将清除这些草稿，避免写入错误仓库。")
+      Text("本机待提交草稿属于当前仓库。切换前会保留完整副本供逐项审核，不会自动提交到新仓库。")
     }
     #if os(iOS)
       .navigationBarTitleDisplayMode(.inline)
@@ -3373,7 +3402,7 @@ private struct MobilePairingView: View {
       return
     }
     guard !pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      pairingMessage = "请输入 Mac Host 窗口中的一次性配对码。"
+      pairingMessage = "请输入 学业服务 窗口中的一次性配对码。"
       return
     }
     if session.hasPendingDrafts && session.savedEndpoint != nil {
@@ -3422,7 +3451,7 @@ private struct MobileDocumentDetailView: View {
         } else {
           MobileEmptyState(
             title: "暂时无法读取",
-            message: "连接 Mac Host 后重试；如果之前打开过此资料，也会优先显示本机缓存。",
+            message: "连接 学业服务 后重试；如果之前打开过此资料，也会优先显示本机缓存。",
             symbol: "doc.text.magnifyingglass",
             actionTitle: "刷新数据",
             action: { Task { await load() } }
@@ -3450,5 +3479,118 @@ private struct MobileDocumentDetailView: View {
 extension Array {
   fileprivate subscript(safe index: Index) -> Element? {
     indices.contains(index) ? self[index] : nil
+  }
+}
+
+private struct MobileCloudVersionsView: View {
+  @ObservedObject var session: MobileSession
+  @State private var versions: [CloudVersionEntry] = []
+  @State private var cursor: Int?
+  @State private var loaded = false
+  @State private var loading = false
+  @State private var error = ""
+  @State private var selectedText = ""
+  @State private var showingText = false
+  var body: some View {
+    List {
+      Text("查看已确认保存后的云版本。历史只读，恢复内容须重新编辑并通过版本校验保存。")
+        .font(.footnote).foregroundStyle(.secondary)
+      ForEach(versions) { version in
+        DisclosureGroup(version.date.formatted()) {
+          ForEach(version.paths, id: \.self) { path in
+            Button(path) { Task {
+              do { selectedText = try await session.cloudVersion(id: version.id, path: path).content; showingText = true }
+              catch { self.error = error.localizedDescription }
+            } }
+          }
+        }
+      }
+      if loading { ProgressView() }
+      else if !loaded || cursor != nil { Button("加载更多版本") { Task { await load() } } }
+      if !error.isEmpty { Text(error).font(.caption) }
+    }.navigationTitle("云版本历史")
+      .task { if !loaded { await load() } }
+      .sheet(isPresented: $showingText) { NavigationStack {
+        ScrollView { Text(selectedText).textSelection(.enabled).padding() }
+          .navigationTitle("历史版本（只读）")
+          .toolbar { Button("关闭") { showingText = false } }
+      } }
+  }
+  private func load() async {
+    guard !loading else { return }; loading = true; defer { loading = false }
+    do { let page = try await session.cloudVersions(after: cursor ?? 0); versions.append(contentsOf: page.versions); cursor = page.nextCursor; loaded = true }
+    catch { self.error = error.localizedDescription }
+  }
+}
+
+
+private struct MobileQueueMigrationReview: View {
+  @ObservedObject var session: MobileSession
+  let archive: MobileSession.PreservedQueue
+  @State private var selected: MobileQueueMigrationItem?
+  @State private var submitting = false
+  @State private var issue: String?
+  var body: some View {
+    List {
+      Section("原服务与仓库") {
+        Text(archive.endpoint?.absoluteString ?? "地址待核实").textSelection(.enabled)
+        Text(archive.repositoryID ?? "身份待核实").font(.caption.monospaced()).textSelection(.enabled)
+        Text("每项单独确认。原始归档始终保留；没有可靠基线的整份草稿只供对照。").font(.footnote).foregroundStyle(.secondary)
+      }
+      if let issue { Section { Text(issue).foregroundStyle(.orange) } }
+      ForEach(session.queueMigrationItems(archive)) { item in
+        Section(item.title) {
+          DisclosureGroup("原始内容与目标") { Text(item.original).font(.callout).textSelection(.enabled) }
+          DisclosureGroup("当前云内容") { Text(item.current).font(.callout).textSelection(.enabled) }
+          Text(item.reason).font(.footnote).foregroundStyle(.secondary)
+          if item.canSubmit {
+            Button("审核并处理这一项") { selected = item }.disabled(submitting)
+          }
+        }
+      }
+      Section {
+        DisclosureGroup("完整原始归档（只读）") {
+          Text(session.preservedQueueText(archive)).font(.caption.monospaced()).textSelection(.enabled)
+        }
+      }
+    }
+    .navigationTitle("旧队列逐项审核")
+    .confirmationDialog("确认迁移这一项到当前云仓库？", isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } }), titleVisibility: .visible) {
+      if let item = selected {
+        Button("确认提交这一项") {
+          submitting = true; issue = nil; selected = nil
+          Task { @MainActor in
+            defer { submitting = false }
+            do { try await session.submitQueueMigrationItem(archive, itemID: item.id) }
+            catch { issue = error.localizedDescription }
+          }
+        }
+      }
+      Button("取消", role: .cancel) { selected = nil }
+    } message: { Text(selected?.original ?? "") }
+  }
+}
+
+
+private struct MobilePendingPlanComparison: View {
+  @ObservedObject var session: MobileSession
+  @State private var confirming = false
+  @State private var submitting = false
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 16) {
+        Text("请对照原稿与云内容。提交始终使用原始基线，发生冲突会保留草稿；不会把旧稿套用新版本。")
+        Text(session.pendingPlanComparison).font(.callout.monospaced()).textSelection(.enabled)
+        if let issue = session.pendingToggleSyncIssue { Text(issue).foregroundStyle(.orange) }
+        Button("确认按原基线提交") { confirming = true }.disabled(submitting || session.state != .online)
+      }.padding()
+    }.navigationTitle("草稿内容对照")
+    .confirmationDialog("按原始基线提交以上草稿？", isPresented: $confirming, titleVisibility: .visible) {
+      Button("确认提交") {
+        submitting = true
+        Task { @MainActor in await session.commitPendingDrafts(); submitting = false }
+      }
+      Button("取消", role: .cancel) {}
+    }
   }
 }

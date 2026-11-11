@@ -15,9 +15,9 @@ public enum MobileConnectionState: Equatable, Sendable {
 
     public var title: String {
         switch self {
-        case .unconfigured: return "尚未连接 Mac"
-        case .connecting: return "正在连接 Mac"
-        case .online: return "已连接 Mac"
+        case .unconfigured: return "尚未连接服务"
+        case .connecting: return "正在连接服务"
+        case .online: return "已连接服务"
         case .offline(let date):
             if let date { return "离线 · 缓存于 \(Self.dateFormatter.string(from: date))" }
             return "离线"
@@ -114,7 +114,7 @@ enum MobileChatProgress: Equatable, Sendable {
 
     var detail: String {
         switch self {
-        case .sending: "正在将消息发送到 Mac Host。"
+        case .sending: "正在将消息发送到 学业服务。"
         case .thinking: "学业助理正在分析你的问题。"
         case .responding: "回复会逐步显示在这里。"
         case .recovering: "连接仍在恢复，正在继续获取回复。"
@@ -134,20 +134,24 @@ private struct MobilePendingDrafts: Codable {
     var eventBaseHash: String?
     var weekBaseRevision: String?
     var daily: DailySnapshot?
+    var dailyBaseRevision: String?
+    var dailyOperationID: String?
     var deliveries: [PendingDeliveryToggle]
     var periods: [PendingPeriodToggle]
 
-    init(week: WeeklyPlanSnapshot?, daily: DailySnapshot?, deliveries: [PendingDeliveryToggle], periods: [PendingPeriodToggle] = [], events: [OneOffEvent]? = nil, eventBaseHash: String? = nil, weekBaseRevision: String? = nil) {
+    init(week: WeeklyPlanSnapshot?, daily: DailySnapshot?, deliveries: [PendingDeliveryToggle], periods: [PendingPeriodToggle] = [], events: [OneOffEvent]? = nil, eventBaseHash: String? = nil, weekBaseRevision: String? = nil, dailyBaseRevision: String? = nil, dailyOperationID: String? = nil) {
         self.week = week
         self.events = events
         self.eventBaseHash = eventBaseHash
         self.weekBaseRevision = weekBaseRevision
         self.daily = daily
+        self.dailyBaseRevision = dailyBaseRevision
+        self.dailyOperationID = dailyOperationID
         self.deliveries = deliveries
         self.periods = periods
     }
 
-    private enum CodingKeys: String, CodingKey { case week, daily, deliveries, periods, events, eventBaseHash, weekBaseRevision }
+    private enum CodingKeys: String, CodingKey { case week, daily, deliveries, periods, events, eventBaseHash, weekBaseRevision, dailyBaseRevision, dailyOperationID }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -156,6 +160,8 @@ private struct MobilePendingDrafts: Codable {
         eventBaseHash = try values.decodeIfPresent(String.self, forKey: .eventBaseHash)
         weekBaseRevision = try values.decodeIfPresent(String.self, forKey: .weekBaseRevision)
         daily = try values.decodeIfPresent(DailySnapshot.self, forKey: .daily)
+        dailyBaseRevision = try values.decodeIfPresent(String.self, forKey: .dailyBaseRevision)
+        dailyOperationID = try values.decodeIfPresent(String.self, forKey: .dailyOperationID)
         deliveries = try values.decodeIfPresent([PendingDeliveryToggle].self, forKey: .deliveries) ?? []
         periods = try values.decodeIfPresent([PendingPeriodToggle].self, forKey: .periods) ?? []
     }
@@ -231,6 +237,42 @@ public final class MobileSession: ObservableObject {
     @Published public private(set) var documentDetails: [String: DocumentDetail] = [:]
     @Published public var inputDraft = "" {
         didSet { UserDefaults.standard.set(inputDraft, forKey: "studyrocket.inputDraft") }
+    }
+
+    @Published public private(set) var archivedHistory: [CloudArchivedMessage] = []
+    @Published public private(set) var archivedHistoryCursor: Int?
+    @Published public private(set) var archivedHistoryLoaded = false
+    @Published public private(set) var archivedHistoryLoading = false
+    @Published public private(set) var archivedHistoryError: String?
+    public var isCloudService: Bool { health?.backend == "cloud" }
+
+    public func cloudVersions(after: Int = 0) async throws -> CloudVersionPage {
+        guard let client else { throw MobileHostStateError.configurationUnavailable }
+        let generation = clientGeneration
+        let page = try await client.cloudVersions(after: after)
+        guard generation == clientGeneration else { throw MobileHostStateError.connectionChanged }
+        return page
+    }
+    public func cloudVersion(id: String, path: String) async throws -> CloudFileContent {
+        guard let client else { throw MobileHostStateError.configurationUnavailable }
+        let generation = clientGeneration
+        let file = try await client.cloudVersion(id: id, path: path)
+        guard generation == clientGeneration else { throw MobileHostStateError.connectionChanged }
+        return file
+    }
+
+    public func loadArchivedHistory(reset: Bool = false) async {
+        guard let client, !archivedHistoryLoading else { return }
+        let generation = clientGeneration
+        archivedHistoryLoading = true; archivedHistoryError = nil
+        do {
+            let page = try await client.archivedHistory(after: reset ? 0 : archivedHistoryCursor ?? 0)
+            guard generation == clientGeneration else { return }
+            if reset { archivedHistory = [] }
+            archivedHistory.append(contentsOf: page.messages.filter { item in !archivedHistory.contains(where: { $0.id == item.id }) })
+            archivedHistoryCursor = page.nextCursor; archivedHistoryLoaded = true
+        } catch { if generation == clientGeneration { archivedHistoryError = error.localizedDescription } }
+        if generation == clientGeneration { archivedHistoryLoading = false }
     }
 
     @Published public private(set) var refreshingConversation = false
@@ -311,6 +353,7 @@ public final class MobileSession: ObservableObject {
         }
         loadCache()
         loadDrafts()
+        reloadPreservedQueues()
         if let client {
             self.client = client
             clientEndpoint = client.endpoint
@@ -324,6 +367,56 @@ public final class MobileSession: ObservableObject {
             clientEndpoint = url
             if snapshot != nil { state = .offline(lastUpdated: snapshot?.fetchedAt) }
         }
+    }
+
+    public struct PreservedQueue: Codable, Identifiable {
+        public let id: UUID
+        public let createdAt: Date
+        public let endpoint: URL?
+        public let repositoryID: String?
+        public let drafts: Data?
+        public let facts: Data?
+        public let chats: Data?
+        public let cachedSnapshot: Data?
+        public let input: String
+    }
+
+    @Published public private(set) var preservedQueues: [PreservedQueue] = []
+    private var queueArchiveURL: URL { draftsURL.deletingLastPathComponent().appendingPathComponent("preserved-queues", isDirectory: true) }
+
+    /// Switching service never destroys an unsent operation. Archive bytes are verified
+    /// before any endpoint, repository identity or active draft file can change.
+    private func preserveCurrentQueue() throws {
+        let drafts = try FileManager.default.fileExists(atPath: draftsURL.path) ? Data(contentsOf: draftsURL) : nil
+        let facts = try FileManager.default.fileExists(atPath: factsURL.path) ? Data(contentsOf: factsURL) : nil
+        let chats = try FileManager.default.fileExists(atPath: cloudChatsURL.path) ? Data(contentsOf: cloudChatsURL) : nil
+        guard drafts != nil || facts != nil || chats != nil || !inputDraft.isEmpty else { return }
+        let archive = PreservedQueue(id: UUID(), createdAt: .now, endpoint: clientEndpoint,
+            repositoryID: activeRepositoryID, drafts: drafts, facts: facts, chats: chats,
+            cachedSnapshot: try FileManager.default.fileExists(atPath: cacheURL.path) ? Data(contentsOf: cacheURL) : nil, input: inputDraft)
+        try FileManager.default.createDirectory(at: queueArchiveURL, withIntermediateDirectories: true)
+        let target = queueArchiveURL.appendingPathComponent(archive.id.uuidString + ".json")
+        let encoded = try JSONEncoder().encode(archive)
+        try encoded.write(to: target, options: .atomic)
+        guard try Data(contentsOf: target) == encoded else { throw CocoaError(.fileWriteUnknown) }
+        reloadPreservedQueues()
+    }
+
+    public func reloadPreservedQueues() {
+        preservedQueues = ((try? FileManager.default.contentsOfDirectory(at: queueArchiveURL, includingPropertiesForKeys: nil)) ?? [])
+            .compactMap { try? JSONDecoder().decode(PreservedQueue.self, from: Data(contentsOf: $0)) }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    public func preservedQueueText(_ archive: PreservedQueue) -> String {
+        var parts = ["原服务：" + (archive.endpoint?.absoluteString ?? "待核实"), "原仓库：" + (archive.repositoryID ?? "待核实")]
+        if !archive.input.isEmpty { parts.append("未发送文字：\n" + archive.input) }
+        for (name, data) in [("计划与勾选原始草稿", archive.drafts), ("记录原始草稿", archive.facts), ("未确认对话", archive.chats)] {
+            if let data, let value = try? JSONSerialization.jsonObject(with: data),
+               let pretty = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys, .fragmentsAllowed]),
+               let text = String(data: pretty, encoding: .utf8) { parts.append(name + "：\n" + text) }
+        }
+        return parts.joined(separator: "\n\n")
     }
 
     public var savedEndpoint: String? { UserDefaults.standard.string(forKey: endpointKey) }
@@ -344,10 +437,10 @@ public final class MobileSession: ObservableObject {
     public var chatUnavailableMessage: String? {
         guard state == .online, let health else { return nil }
         if health.chatIssueCode == "provider_auth_failed" || lastChatIssueCode == "provider_auth_failed" {
-            return "Codex 身份验证已失效。请在 Mac 上重新登录 Codex，然后重新打开 StudyRocket Host。"
+            return health.backend == "cloud" ? "云模型服务认证失败，请检查服务端凭据；输入和草稿已保留。" : "Codex 身份验证已失效。请在 Mac 上重新登录 Codex，然后重新打开 StudyRocket Host。"
         }
         guard !isChatAvailable else { return nil }
-        return "学业对话尚未就绪。Mac Host 会继续重试协议自检；首页、计划和勾选仍可用。"
+        return "学业对话尚未就绪。学业服务 会继续重试协议自检；首页、计划和勾选仍可用。"
     }
 
     /// Fetch a complete read-only document, falling back to the last version
@@ -393,8 +486,10 @@ public final class MobileSession: ObservableObject {
             return
         }
         pairAttemptGeneration &+= 1
-        replaceClient(with: StudyRocketRemoteClient(endpoint: endpoint), endpoint: endpoint, persistEndpoint: false)
-        Task { await refresh() }
+        do {
+            try replaceClient(with: StudyRocketRemoteClient(endpoint: endpoint), endpoint: endpoint, persistEndpoint: false)
+            Task { await refresh() }
+        } catch { lastConnectionIssue = "未切换服务：无法备份待提交草稿。"; state = .failed(lastConnectionIssue!) }
     }
 
     public func pair(endpoint: URL, code: String, deviceName: String) async throws {
@@ -403,14 +498,16 @@ public final class MobileSession: ObservableObject {
         let attemptGeneration = pairAttemptGeneration
         let remote = StudyRocketRemoteClient(endpoint: endpoint)
         do {
-            _ = try await remote.health(timeoutInterval: 8)
+            // Pair first: public health intentionally does not reveal repository UUID,
+            // and a device ID from another service must not block new pairing.
             let response = try await remote.pair(code: code, deviceName: deviceName)
+            let candidateHealth = try await remote.health(timeoutInterval: 8)
             guard attemptGeneration == pairAttemptGeneration else { throw MobileHostStateError.connectionChanged }
+            try replaceClient(with: remote, endpoint: endpoint, persistEndpoint: true, incomingRepositoryID: candidateHealth.repositoryID)
             UserDefaults.standard.set(response.deviceID, forKey: "studyrocket.deviceID")
         } catch {
             throw MobileEndpointError.contextualized(error)
         }
-        replaceClient(with: remote, endpoint: endpoint, persistEndpoint: true)
         await refresh()
     }
 
@@ -448,6 +545,7 @@ public final class MobileSession: ObservableObject {
             if let incomingRepositoryID = health.repositoryID,
                let activeRepositoryID,
                incomingRepositoryID != activeRepositoryID {
+                try preserveCurrentQueue()
                 stopEventStream()
                 clientGeneration &+= 1
                 generation = clientGeneration
@@ -489,13 +587,39 @@ public final class MobileSession: ObservableObject {
         }
     }
 
+    private struct PendingCloudChat: Codable {
+        let id: String
+        let text: String
+        let endpoint: URL?
+        let repositoryID: String?
+    }
+    private var cloudChatsURL: URL { draftsURL.deletingLastPathComponent().appendingPathComponent("pending-cloud-chats.json") }
+    private func persistedChatID(for text: String) throws -> String {
+        var entries = (try? JSONDecoder().decode([PendingCloudChat].self, from: Data(contentsOf: cloudChatsURL))) ?? []
+        if let found = entries.first(where: { $0.text == text && $0.endpoint == clientEndpoint && $0.repositoryID == activeRepositoryID }) { return found.id }
+        let entry = PendingCloudChat(id: UUID().uuidString, text: text, endpoint: clientEndpoint, repositoryID: activeRepositoryID)
+        entries.append(entry)
+        try FileManager.default.createDirectory(at: cloudChatsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(entries).write(to: cloudChatsURL, options: .atomic)
+        return entry.id
+    }
+    private func completePersistedChat(text: String?) {
+        guard let text, let data = try? Data(contentsOf: cloudChatsURL),
+              let entries = try? JSONDecoder().decode([PendingCloudChat].self, from: data) else { return }
+        let remaining = entries.filter { !($0.text == text && $0.endpoint == clientEndpoint && $0.repositoryID == activeRepositoryID) }
+        try? JSONEncoder().encode(remaining).write(to: cloudChatsURL, options: .atomic)
+    }
+
     public func sendDraft() async {
         let text = inputDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, let client else { return }
         guard isChatAvailable else { return }
         guard !isChatBusy else { return }
         let generation = clientGeneration
-        let pendingID = "mobile-pending-\(UUID().uuidString)"
+        let requestID: String
+        do { requestID = try persistedChatID(for: text) }
+        catch { lastChatIssue = "无法持久保存发送草稿，请保留文字后重试。"; return }
+        let pendingID = "mobile-pending-" + requestID
         activeChatRequest = ActiveMobileChatRequest(pendingID: pendingID, text: text)
         isChatBusy = true
         chatProgress = .sending
@@ -504,7 +628,7 @@ public final class MobileSession: ObservableObject {
         chatMessages.append(ChatMessageDTO(id: pendingID, role: "user", text: text, date: .now, status: "inProgress"))
         chatRevision &+= 1
         do {
-            let acceptedHistory = try await client.sendChat(text: text)
+            let acceptedHistory = try await client.sendChat(text: text, clientRequestID: requestID)
             guard generation == clientGeneration else { return }
             if inputDraft.trimmingCharacters(in: .whitespacesAndNewlines) == text { inputDraft = "" }
             if let acceptedHistory { mergeHistory(acceptedHistory) }
@@ -843,7 +967,7 @@ public final class MobileSession: ObservableObject {
     private func setChatIssue(code: String?, message: String?) {
         lastChatIssueCode = code
         if code == "provider_auth_failed" {
-            lastChatIssue = "Codex 身份验证已失效。请在 Mac 上重新登录 Codex，然后重新打开 StudyRocket Host。"
+            lastChatIssue = health?.backend == "cloud" ? "云模型服务认证失败，请检查服务端凭据。输入和草稿已保留。" : "Codex 身份验证已失效。请在 Mac 上重新登录 Codex，然后重新打开 StudyRocket Host。"
         } else if let message, !message.isEmpty {
             lastChatIssue = message
         }
@@ -859,10 +983,12 @@ public final class MobileSession: ObservableObject {
     private func applyTerminal(_ terminal: ChatTurnTerminalDTO) {
         guard Self.isTerminalChatStatus(terminal.status) else { return }
         guard completedTurnIDs.insert(terminal.turnID).inserted else { return }
+        completePersistedChat(text: activeChatRequest?.text)
         if terminal.status == "failed" {
             lastFailedChatText = activeChatRequest?.text ?? lastFailedChatText
             finishChatActivity(issue: terminal.message ?? "学业对话未能完成，请重新发送。", issueCode: terminal.issueCode)
         } else {
+            completePersistedChat(text: activeChatRequest?.text)
             finishChatActivity()
             lastChatIssue = nil
             lastChatIssueCode = nil
@@ -929,6 +1055,18 @@ public final class MobileSession: ObservableObject {
     }
 
     private func mergeHistory(_ response: ChatHistoryResponse) {
+        let terminalIDs = Set((response.terminalTurns ?? []).filter { Self.isTerminalChatStatus($0.status) }.map(\.turnID))
+        if !terminalIDs.isEmpty, let data = try? Data(contentsOf: cloudChatsURL),
+           let entries = try? JSONDecoder().decode([PendingCloudChat].self, from: data) {
+            let remaining = entries.filter { !($0.endpoint == clientEndpoint && $0.repositoryID == activeRepositoryID && terminalIDs.contains($0.id)) }
+            if remaining.count != entries.count { try? JSONEncoder().encode(remaining).write(to: cloudChatsURL, options: .atomic) }
+        }
+        if !isChatBusy, inputDraft.isEmpty,
+           let data = try? Data(contentsOf: cloudChatsURL),
+           let entries = try? JSONDecoder().decode([PendingCloudChat].self, from: data),
+           let unresolved = entries.first(where: { $0.endpoint == clientEndpoint && $0.repositoryID == activeRepositoryID }) {
+            inputDraft = unresolved.text
+        }
         let history = response.messages
         let activeHistoryTurnID = activeChatRequest?.turnID ?? history.reversed().first(where: {
             $0.role == "user" && $0.text == activeChatRequest?.text
@@ -1197,7 +1335,7 @@ public final class MobileSession: ObservableObject {
                 return .staleGeneration
             }
             guard let authoritative = matchingDelivery(text: delivery.text, id: current.week.linkage == nil ? nil : delivery.id, in: value), authoritative.isCompleted == desired else {
-                let message = "Mac Host 返回的交付物状态未确认本次修改，已恢复原状态。"
+                let message = "学业服务 返回的交付物状态未确认本次修改，已恢复原状态。"
                 pendingToggleSyncIssue = message
                 return .failed(message)
             }
@@ -1224,7 +1362,7 @@ public final class MobileSession: ObservableObject {
                     isCompleted: desired
                ) {
                 if reconciled.confirmed { return .confirmed(reconciled.snapshot) }
-                let message = "Mac Host 未确认本次交付物修改，已恢复权威状态。"
+                let message = "学业服务 未确认本次交付物修改，已恢复权威状态。"
                 pendingToggleSyncIssue = message
                 return .failed(message)
             }
@@ -1342,7 +1480,7 @@ public final class MobileSession: ObservableObject {
                ) {
                 pendingPeriodStates.removeValue(forKey: key)
                 if reconciled.confirmed { return }
-                pendingToggleSyncIssue = "Mac Host 未确认“\(task.text)”的完成状态，已恢复权威状态。"
+                pendingToggleSyncIssue = "学业服务 未确认“\(task.text)”的完成状态，已恢复权威状态。"
                 return
             }
             pendingPeriodStates.removeValue(forKey: key)
@@ -1598,24 +1736,50 @@ public final class MobileSession: ObservableObject {
     }
 
     public func saveDaily(_ entry: DailySnapshot) async {
-        guard let client, let current = snapshot, state == .online, !isReplayingPendingToggles else {
-            pendingDailyDraft = entry
-            saveDrafts()
-            return
-        }
+        var drafts = loadPendingDrafts()
+        // Re-editing an offline candidate never advances its original baseline.
+        let originalRevision = drafts.daily != nil ? drafts.dailyBaseRevision : snapshot?.revision
+        let operationID = drafts.daily == entry ? (drafts.dailyOperationID ?? UUID().uuidString) : UUID().uuidString
+        drafts.daily = entry; drafts.dailyBaseRevision = originalRevision; drafts.dailyOperationID = operationID
+        saveDrafts(drafts)
+        guard loadPendingDrafts().dailyOperationID == operationID else { pendingToggleSyncIssue = "本机草稿未能持久保存，请保留输入后重试。"; return }
+        guard let client, let originalRevision, state == .online, !isReplayingPendingToggles else { return }
         let generation = clientGeneration
         do {
-            let value = try await client.saveDaily(entry: entry, baseRevision: current.revision)
+            let value = try await client.saveDaily(entry: entry, baseRevision: originalRevision, idempotencyKey: operationID)
             guard generation == clientGeneration else { return }
-            snapshot = value
-            state = .online
-            saveCache(value)
+            snapshot = value; state = .online; saveCache(value)
+            var remaining = loadPendingDrafts()
+            if remaining.dailyOperationID == operationID {
+                remaining.daily = nil; remaining.dailyBaseRevision = nil; remaining.dailyOperationID = nil; saveDrafts(remaining)
+            }
         } catch {
             guard generation == clientGeneration else { return }
-            pendingDailyDraft = entry
-            saveDrafts()
+            pendingToggleSyncIssue = "日结未提交：" + error.localizedDescription
             recordConnectionFailureIfNeeded(error)
         }
+    }
+
+    var pendingPlanComparison: String {
+        let drafts = loadPendingDrafts()
+        var text: [String] = []
+        if let week = drafts.week {
+            text.append("原周计划草稿\n" + migrationPretty(week))
+            if let current = snapshot {
+                text.append("当前云周计划\n" + migrationPretty(current.week))
+                text.append(migrationDifference(current: migrationPretty(current.week), candidate: migrationPretty(week)))
+            }
+            text.append(drafts.weekBaseRevision == snapshot?.revision && drafts.weekBaseRevision != nil ? "周计划原基线仍匹配" : "周计划原基线缺失/已变化，不可直接提交；请手动合并")
+        }
+        if let daily = drafts.daily {
+            text.append("原日结草稿\n" + migrationPretty(daily))
+            if let current = snapshot {
+                text.append("当前云日结\n" + migrationPretty(current.daily))
+                text.append(migrationDifference(current: migrationPretty(current.daily), candidate: migrationPretty(daily)))
+            }
+            text.append(drafts.dailyBaseRevision == snapshot?.revision && drafts.dailyBaseRevision != nil ? "日结原基线仍匹配" : "日结原基线缺失/已变化，不可直接提交；请手动合并")
+        }
+        return text.joined(separator: "\n\n")
     }
 
     public var hasPendingDrafts: Bool {
@@ -1642,13 +1806,17 @@ public final class MobileSession: ObservableObject {
                 saveCache(value)
                 var remaining = loadPendingDrafts(); remaining.week = nil; remaining.weekBaseRevision = nil; remaining.events = nil; remaining.eventBaseHash = nil; saveDrafts(remaining)
             }
-            if let daily = pendingDailyDraft, let latest = snapshot {
-                let value = try await client.saveDaily(entry: daily, baseRevision: latest.revision)
+            if let daily = pendingDailyDraft {
+                let drafts = loadPendingDrafts()
+                guard let originalRevision = drafts.dailyBaseRevision, let operationID = drafts.dailyOperationID else {
+                    pendingToggleSyncIssue = "旧日结缺少原始基线，只能对照处理；草稿继续保留。"
+                    return
+                }
+                let value = try await client.saveDaily(entry: daily, baseRevision: originalRevision, idempotencyKey: operationID)
                 guard generation == clientGeneration else { return }
                 snapshot = value
-                pendingDailyDraft = nil
                 saveCache(value)
-                saveDrafts()
+                var remaining = loadPendingDrafts(); remaining.daily = nil; remaining.dailyBaseRevision = nil; remaining.dailyOperationID = nil; saveDrafts(remaining)
             }
             prepareLegacyPendingReviewIfNeeded()
             if legacyPendingToggleCount == 0 {
@@ -1656,6 +1824,7 @@ public final class MobileSession: ObservableObject {
             }
         } catch {
             guard generation == clientGeneration else { return }
+            pendingToggleSyncIssue = "草稿未提交：" + error.localizedDescription
             recordConnectionFailureIfNeeded(error)
         }
     }
@@ -1728,7 +1897,7 @@ public final class MobileSession: ObservableObject {
                     snapshot = value
                     state = .online
                     saveCache(value)
-                    pendingToggleSyncIssue = "Mac Host 未确认一个交付物的目标状态，自动同步已暂停。"
+                    pendingToggleSyncIssue = "学业服务 未确认一个交付物的目标状态，自动同步已暂停。"
                     return
                 }
                 snapshot = value
@@ -1751,7 +1920,7 @@ public final class MobileSession: ObservableObject {
                         removePendingDeliveryDraft(draft)
                         continue
                     }
-                    pendingToggleSyncIssue = "计划已在 Mac 上变化，交付物同步未完成。请重新加载后重试。"
+                    pendingToggleSyncIssue = "计划已在服务端变化，交付物同步未完成。请重新加载后重试。"
                     return
                 }
                 recordOperationFailure(error, message: "交付物同步未完成：\(error.localizedDescription)")
@@ -1784,7 +1953,7 @@ public final class MobileSession: ObservableObject {
                     guard generation == clientGeneration, repositoryGeneration == self.repositoryGeneration else { return }
                     snapshot = value; saveCache(value)
                     guard value.week.linkage?.tasks.first(where: { $0.id == linked.id })?.isCompleted == draft.isCompleted else {
-                        pendingToggleSyncIssue = "Mac 未确认任务完成状态，本机操作已保留。"; return
+                        pendingToggleSyncIssue = "服务端未确认任务完成状态，本机操作已保留。"; return
                     }
                     removePendingPeriodDraft(draft); continue
                 } catch {
@@ -1818,7 +1987,7 @@ public final class MobileSession: ObservableObject {
                     snapshot = value
                     state = .online
                     saveCache(value)
-                    pendingToggleSyncIssue = "Mac Host 未确认一个时段任务的目标状态，自动同步已暂停。"
+                    pendingToggleSyncIssue = "学业服务 未确认一个时段任务的目标状态，自动同步已暂停。"
                     return
                 }
                 snapshot = value
@@ -1843,7 +2012,7 @@ public final class MobileSession: ObservableObject {
                         removePendingPeriodDraft(draft)
                         continue
                     }
-                    pendingToggleSyncIssue = "计划已在 Mac 上变化，时段同步未完成。请重新加载后重试。"
+                    pendingToggleSyncIssue = "计划已在服务端变化，时段同步未完成。请重新加载后重试。"
                     return
                 }
                 recordOperationFailure(error, message: "时段同步未完成：\(error.localizedDescription)")
@@ -2062,7 +2231,28 @@ public final class MobileSession: ObservableObject {
         }
     }
 
-    private func replaceClient(with newClient: StudyRocketRemoteClient, endpoint: URL, persistEndpoint: Bool) {
+    func replaceClient(with newClient: StudyRocketRemoteClient, endpoint: URL, persistEndpoint: Bool, incomingRepositoryID: String? = nil) throws {
+        let sameRepository = incomingRepositoryID != nil && incomingRepositoryID == activeRepositoryID
+        let sameService = Self.sameEndpoint(clientEndpoint, endpoint) && (incomingRepositoryID == nil || sameRepository)
+        let preserveActive = sameRepository || sameService
+        if !preserveActive { try preserveCurrentQueue() }
+        // Same stable repository moved to another endpoint: retain operation IDs and
+        // CAS revisions, but rebind fact transport only after authenticated pairing.
+        if sameRepository && !Self.sameEndpoint(clientEndpoint, endpoint) {
+            let rebound = factQueue.map { item in
+                item.repositoryID == incomingRepositoryID && (item.endpoint == nil || Self.sameEndpoint(item.endpoint, clientEndpoint ?? endpoint))
+                    ? QueuedFact(repositoryID: item.repositoryID, endpoint: endpoint, fact: item.fact) : item
+            }
+            try persistFacts(rebound)
+            if let data = try? Data(contentsOf: cloudChatsURL) {
+                let entries = try JSONDecoder().decode([PendingCloudChat].self, from: data)
+                let reboundChats = entries.map { item in
+                    item.repositoryID == incomingRepositoryID && (item.endpoint == nil || Self.sameEndpoint(item.endpoint, clientEndpoint ?? endpoint))
+                        ? PendingCloudChat(id: item.id, text: item.text, endpoint: endpoint, repositoryID: item.repositoryID) : item
+                }
+                try JSONEncoder().encode(reboundChats).write(to: cloudChatsURL, options: .atomic)
+            }
+        }
         refreshTask?.cancel()
         refreshTask = nil
         refreshTaskToken = nil
@@ -2074,7 +2264,7 @@ public final class MobileSession: ObservableObject {
         if persistEndpoint {
             UserDefaults.standard.set(endpoint.absoluteString, forKey: endpointKey)
         }
-        clearRemoteHostState()
+        if !preserveActive { clearRemoteHostState() }
         state = .connecting
     }
 
@@ -2103,6 +2293,8 @@ public final class MobileSession: ObservableObject {
         snapshot = nil
         health = nil
         chatMessages = []
+        archivedHistory = []; archivedHistoryCursor = nil; archivedHistoryLoaded = false
+        archivedHistoryLoading = false; archivedHistoryError = nil
         chatRevision &+= 1
         proposals = []
         documentDetails = [:]
@@ -2190,7 +2382,8 @@ public final class MobileSession: ObservableObject {
             periods: existing.periods,
             events: existing.events,
             eventBaseHash: existing.eventBaseHash,
-            weekBaseRevision: existing.weekBaseRevision
+            weekBaseRevision: existing.weekBaseRevision,
+            dailyBaseRevision: existing.dailyBaseRevision, dailyOperationID: existing.dailyOperationID
         )
         pendingWeekDraft = drafts.week
         pendingDailyDraft = drafts.daily
@@ -2269,7 +2462,8 @@ public final class MobileSession: ObservableObject {
                 repositoryID: current.repositoryID,
                 dynamicToolsReady: false,
                 chatState: StudyRocketChatState.unavailable.rawValue,
-                chatIssueCode: current.chatIssueCode
+                chatIssueCode: current.chatIssueCode,
+                backend: current.backend, capabilities: current.capabilities
             )
         }
         finishChatActivity()
@@ -2284,6 +2478,7 @@ public struct StudyRocketRemoteError: LocalizedError {
 public enum MobileEndpointError: LocalizedError {
     case invalidEndpoint
     case systemTailscaleRequired
+    case tlsFailure
 
     public var errorDescription: String? {
         switch self {
@@ -2295,6 +2490,7 @@ public enum MobileEndpointError: LocalizedError {
                 return "Host 地址必须是无账号、查询参数和子路径的完整 HTTPS 地址；仅本机模拟器调试可使用 http://localhost:43817。"
             }
             return "Host 地址必须是无账号、查询参数和子路径的完整 HTTPS 地址。"
+        case .tlsFailure: return "安全连接失败，请检查服务证书、网络和系统时间；待提交草稿已保留。"
         case .systemTailscaleRequired:
             return "安全连接失败：此地址需要 iOS 系统级 Tailscale VPN。NovaScale 的内置 tailnet 仅供 NovaScale 自身使用，不能为 NCU StudyRocket 提供网络。请安装并连接官方 Tailscale App 后重试。"
         }
@@ -2308,7 +2504,7 @@ public enum MobileEndpointError: LocalizedError {
              .serverCertificateUntrusted,
              .serverCertificateHasUnknownRoot,
              .serverCertificateNotYetValid:
-            return MobileEndpointError.systemTailscaleRequired
+            return MobileEndpointError.tlsFailure
         default:
             return error
         }
@@ -2397,7 +2593,7 @@ private enum MobileHostStateError: LocalizedError {
         case .configurationUnavailable:
             return "Host 配置不可用：请确认仓库已绑定且 Mac 已安装 Codex。"
         case .incompatibleAPI(let received):
-            return "Mac Host 协议版本不兼容（Host: \(received)，手机: \(StudyRocketAPI.version)），请同时更新两端。"
+            return "学业服务 协议版本不兼容（Host: \(received)，手机: \(StudyRocketAPI.version)），请同时更新两端。"
         case .connectionChanged:
             return "连接地址已更改，本次请求结果已丢弃。"
         }
@@ -2409,6 +2605,7 @@ public actor StudyRocketRemoteClient {
     private let session: URLSession
     private let identity = MobileDeviceIdentity()
     private var deviceID: String?
+    private var lastEventID: String?
 
     public init(endpoint: URL, session: URLSession = .shared) {
         self.endpoint = endpoint
@@ -2464,15 +2661,26 @@ public actor StudyRocketRemoteClient {
         return try await get("/v1/documents/\(documentKey)", as: DocumentDetail.self)
     }
 
-    public func sendChat(text: String) async throws -> ChatHistoryResponse? {
+    public func sendChat(text: String, clientRequestID: String = UUID().uuidString) async throws -> ChatHistoryResponse? {
         var request = URLRequest(url: endpoint.appendingPathComponent("v1/chat/send"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(SendChatRequest(text: text))
+        request.httpBody = try JSONEncoder().encode(SendChatRequest(text: text, clientRequestID: clientRequestID))
         try authenticate(&request)
         let (data, response) = try await session.data(for: request)
         try validate(response, data: data)
         return try? JSONDecoder().decode(ChatHistoryResponse.self, from: data)
+    }
+
+    public func cloudVersions(after: Int = 0) async throws -> CloudVersionPage {
+        try await get("/v1/versions?after=\(after)&limit=50", as: CloudVersionPage.self)
+    }
+    public func cloudVersion(id: String, path: String) async throws -> CloudFileContent {
+        try await post("/v1/versions/read", body: CloudVersionReadRequest(id: id, path: path), as: CloudFileContent.self)
+    }
+
+    public func archivedHistory(after: Int = 0) async throws -> CloudHistoryPage {
+        try await get("/v1/history?after=\(after)&limit=100", as: CloudHistoryPage.self)
     }
 
     public func chatHistory() async throws -> ChatHistoryResponse {
@@ -2486,16 +2694,20 @@ public actor StudyRocketRemoteClient {
                     var request = URLRequest(url: endpoint.appendingPathComponent("v1/events"))
                     request.httpMethod = "GET"
                     request.timeoutInterval = 90
+                    if let lastEventID { request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID") }
                     try authenticate(&request)
                     let (bytes, response) = try await session.bytes(for: request)
                     guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                        throw StudyRocketRemoteError(body: APIErrorBody(code: "events_unavailable", message: "Mac Host 事件连接失败。", retryable: true))
+                        throw StudyRocketRemoteError(body: APIErrorBody(code: "events_unavailable", message: "学业服务 事件连接失败。", retryable: true))
                     }
+                    var candidateEventID = lastEventID
                     for try await line in bytes.lines {
+                        if line.hasPrefix("id: ") { candidateEventID = String(line.dropFirst(4)); continue }
                         guard line.hasPrefix("data: ") else { continue }
                         let data = Data(line.dropFirst(6).utf8)
                         if let event = try? JSONDecoder().decode(HostEventEnvelope.self, from: data) {
                             continuation.yield(event)
+                            lastEventID = candidateEventID
                         } else if let snapshot = try? JSONDecoder().decode(SnapshotResponse.self, from: data) {
                             // Compatibility with a Host that predates typed SSE.
                             continuation.yield(HostEventEnvelope(kind: "snapshot", snapshot: snapshot))
@@ -2590,12 +2802,12 @@ public actor StudyRocketRemoteClient {
         try await post("/v1/facts", body: FactWriteRequest(entry: fact, metadata: WriteMetadata(baseRevision: revision, idempotencyKey: fact.id.uuidString), repositoryID: repo), as: SnapshotResponse.self)
     }
 
-    public func saveDaily(entry: DailySnapshot, baseRevision: String) async throws -> SnapshotResponse {
-        try await post("/v1/daily", body: DailyWriteRequest(entry: entry, metadata: WriteMetadata(baseRevision: baseRevision)), as: SnapshotResponse.self)
+    public func saveDaily(entry: DailySnapshot, baseRevision: String, idempotencyKey: String = UUID().uuidString) async throws -> SnapshotResponse {
+        try await post("/v1/daily", body: DailyWriteRequest(entry: entry, metadata: WriteMetadata(baseRevision: baseRevision, idempotencyKey: idempotencyKey)), as: SnapshotResponse.self)
     }
 
     private func get<T: Decodable>(_ path: String, timeoutInterval: TimeInterval? = nil, as type: T.Type) async throws -> T {
-        var request = URLRequest(url: endpoint.appendingPathComponent(String(path.dropFirst())))
+        var request = URLRequest(url: URL(string: path, relativeTo: endpoint)!.absoluteURL)
         request.httpMethod = "GET"
         if let timeoutInterval { request.timeoutInterval = timeoutInterval }
         try authenticate(&request)
@@ -2610,7 +2822,7 @@ public actor StudyRocketRemoteClient {
         timeoutInterval: TimeInterval? = nil,
         as type: T.Type
     ) async throws -> T {
-        var request = URLRequest(url: endpoint.appendingPathComponent(String(path.dropFirst())))
+        var request = URLRequest(url: URL(string: path, relativeTo: endpoint)!.absoluteURL)
         request.httpMethod = "POST"
         if let timeoutInterval { request.timeoutInterval = timeoutInterval }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -2643,7 +2855,7 @@ public actor StudyRocketRemoteClient {
             if let data, let body = try? JSONDecoder().decode(APIErrorBody.self, from: data) {
                 throw StudyRocketRemoteError(body: body)
             }
-            throw StudyRocketRemoteError(body: APIErrorBody(code: "http_error", message: "Mac Host 暂时不可用。", retryable: true))
+            throw StudyRocketRemoteError(body: APIErrorBody(code: "http_error", message: "学业服务 暂时不可用。", retryable: true))
         }
     }
 }
@@ -2660,7 +2872,7 @@ public enum MobileProposalAuthorization {
         guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
             throw error ?? NSError(domain: "StudyRocket", code: 1, userInfo: [NSLocalizedDescriptionKey: "此设备不可用 Face ID。"])
         }
-        let success = try await context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "确认将选定学业草案写入 Mac 仓库")
+        let success = try await context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "确认将选定学业草案写入正式云仓库")
         guard success else { throw NSError(domain: "StudyRocket", code: 2, userInfo: [NSLocalizedDescriptionKey: "Face ID 未通过，草案未写入。"]) }
         if let challenge {
             let identity = MobileDeviceIdentity()
@@ -2673,5 +2885,155 @@ public enum MobileProposalAuthorization {
         }
         #endif
         return UUID().uuidString
+    }
+}
+
+
+struct MobileQueueMigrationItem: Identifiable {
+    let id: String
+    let title: String
+    let original: String
+    let current: String
+    let reason: String
+    let canSubmit: Bool
+}
+
+extension MobileSession {
+    private var migrationReceiptsURL: URL { queueArchiveURL.appendingPathComponent("receipts.json") }
+    private func migrationReceipts() -> [String: String] {
+        (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: migrationReceiptsURL))) ?? [:]
+    }
+    private func migrationReceiptKey(_ archive: PreservedQueue, _ item: String) -> String { archive.id.uuidString + "/" + item }
+    private func migrationMatches(_ archive: PreservedQueue) -> Bool {
+        guard isCloudService, let old = archive.repositoryID, let current = activeRepositoryID else { return false }
+        return old == current || old == health?.legacyRepositoryID
+    }
+    /// Completion fields are the only allowed difference. Every task ID, text,
+    /// assignment, date and linked child remains part of this content fingerprint.
+    private func migrationFingerprint(_ week: WeeklyPlanSnapshot) -> Data? {
+        func strip(_ value: Any) -> Any {
+            if let dict = value as? [String: Any] {
+                return dict.filter { !["isCompleted", "completedAt", "completionSource", "completionOperationID"].contains($0.key) }.mapValues(strip)
+            }
+            if let array = value as? [Any] { return array.map(strip) }
+            return value
+        }
+        guard let data = try? JSONEncoder().encode(week), let object = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        return try? JSONSerialization.data(withJSONObject: strip(object), options: [.sortedKeys])
+    }
+    private func migrationBaseMatches(_ archive: PreservedQueue, _ current: SnapshotResponse) -> Bool {
+        guard let data = archive.cachedSnapshot,
+              let base = try? JSONDecoder().decode(SnapshotResponse.self, from: data),
+              let hash = migrationFingerprint(base.week) else { return false }
+        return hash == migrationFingerprint(current.week)
+    }
+    private func migrationDrafts(_ archive: PreservedQueue) -> MobilePendingDrafts? {
+        archive.drafts.flatMap { try? JSONDecoder().decode(MobilePendingDrafts.self, from: $0) }
+    }
+    private func migrationFacts(_ archive: PreservedQueue) -> [QueuedFact] {
+        (archive.facts.flatMap { try? JSONDecoder().decode([QueuedFact].self, from: $0) } ?? []).filter { $0.repositoryID == archive.repositoryID }
+    }
+    private func migrationDifference(current: String, candidate: String) -> String {
+        let difference = candidate.components(separatedBy: "\n").difference(from: current.components(separatedBy: "\n"))
+        let lines = difference.map { change -> String in
+            switch change {
+            case .remove(_, let line, _): return "- " + line
+            case .insert(_, let line, _): return "+ " + line
+            }
+        }
+        return lines.isEmpty ? "内容相同" : "差异（- 当前云内容 / + 原草稿）\n" + lines.joined(separator: "\n")
+    }
+    private func migrationPretty<T: Encodable>(_ value: T) -> String {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) } ?? "无法读取，原始归档仍保留"
+    }
+    func queueMigrationItems(_ archive: PreservedQueue) -> [MobileQueueMigrationItem] {
+        let mapped = migrationMatches(archive)
+        let ready = mapped && state == .online && snapshot != nil
+        let sameBase = snapshot.map { migrationBaseMatches(archive, $0) } ?? false
+        let receipts = migrationReceipts()
+        var items: [MobileQueueMigrationItem] = []
+        func append(_ id: String, _ title: String, _ original: String, _ current: String, _ valid: Bool, _ detail: String) {
+            let done = receipts[migrationReceiptKey(archive, id)] == activeRepositoryID && activeRepositoryID != nil
+            items.append(.init(id: id, title: title, original: original, current: current,
+                reason: done ? "云端已确认；原始归档继续保留" : !mapped ? "仓库身份未匹配，保留待审核" : detail,
+                canSubmit: ready && valid && !done))
+        }
+        for queued in migrationFacts(archive) {
+            let fact = queued.fact
+            let existing = snapshot?.recentFacts?.first { $0.id == fact.id }
+            let valid = existing == nil || existing == fact
+            append("fact:" + fact.id.uuidString, "事实 · " + fact.date, fact.text + "\nUUID: " + fact.id.uuidString,
+                existing?.text ?? "近期记录中未找到；提交时服务端仍会检查全部历史中的原 UUID",
+                valid, valid ? "确认后以原 UUID 提交；同编号不同内容会停止并保留" : "同 UUID 内容不一致，禁止提交")
+        }
+        if let drafts = migrationDrafts(archive) {
+            for (index, draft) in drafts.deliveries.enumerated() {
+                let current = snapshot?.week.deliveries.first { $0.id == draft.deliveryID }
+                let stable = draft.deliveryID != nil && current?.text == draft.text && draft.idempotencyKey != nil
+                append("delivery:\(index)", "交付物 · " + draft.text,
+                    "目标：" + (draft.isCompleted ? "完成" : "未完成") + "\nID: " + (draft.deliveryID ?? "缺失"),
+                    current.map { $0.text + ($0.isCompleted ? "（已完成）" : "（未完成）") } ?? "当前没有唯一匹配项",
+                    stable && sameBase, stable && sameBase ? "稳定 ID 与原缓存内容一致；确认后提交原目标状态" : "原缓存内容、稳定 ID 或操作编号不足/已变化；请保留并在当前计划重新核对")
+            }
+            for (index, draft) in drafts.periods.enumerated() {
+                let graph = snapshot?.week.linkage
+                let task = graph?.tasks.first { $0.id == draft.logicalTaskID }
+                let assignment = graph?.assignments.first { $0.id == draft.assignmentID && $0.taskID == draft.logicalTaskID && $0.active }
+                let plain = snapshot.flatMap { matchingPeriod(dayID: draft.dayID, periodID: draft.periodID, in: $0) }?.period.tasks.filter { $0.id == draft.taskID }
+                let originalSnapshot = archive.cachedSnapshot.flatMap { try? JSONDecoder().decode(SnapshotResponse.self, from: $0) }
+                let originalTask = originalSnapshot.flatMap { matchingPeriod(dayID: draft.dayID, periodID: draft.periodID, in: $0) }?.period.tasks.first { $0.id == draft.taskID }
+                let linkedMatch = task != nil && task?.cancelled == false && assignment != nil
+                let plainMatch = graph == nil && plain?.count == 1 && originalTask != nil
+                let stable = (linkedMatch || plainMatch) && draft.taskID != nil && draft.idempotencyKey != nil
+                append("period:\(index)", "时段任务 · " + (originalTask?.text ?? task?.text ?? draft.dayID + " " + draft.periodID),
+                    (originalTask?.text ?? "原文字见缓存/归档") + "\n目标：" + (draft.isCompleted ? "完成" : "未完成") + "\n任务 ID: " + (draft.logicalTaskID ?? draft.taskID ?? "缺失"),
+                    task.map { $0.text + ($0.isCompleted ? "（已完成）" : "（未完成）") } ?? plain?.first.map { $0.text + ($0.isCompleted ? "（已完成）" : "（未完成）") } ?? "当前没有稳定任务匹配",
+                    stable && sameBase, stable && sameBase ? "任务、安排 ID 与原缓存内容一致；确认后提交原目标状态" : "缺少可证明的原缓存/关联 ID 或内容已变化，保留待审")
+            }
+            if let week = drafts.week { append("week", "整份周计划草稿", migrationPretty(week), snapshot.map { migrationPretty($0.week) } ?? "服务尚不可用", false, "旧 revision 不可复用。此处只作对照，请在当前计划中手动合并后保存；原稿保留") }
+            if let daily = drafts.daily { append("daily", "旧每日行为账草稿", migrationPretty(daily), snapshot.map { migrationPretty($0.daily) } ?? "服务尚不可用", false, "原始基线不明，只作对照，请核对日期后在当前行为账处理") }
+            if let events = drafts.events { append("events", "旧活动草稿", migrationPretty(events), "请在当前课表对照", false, "原始课表基线不可证明，保留待审") }
+        }
+        if !archive.input.isEmpty { append("input", "未发送文字", archive.input, "未自动发送", false, "可复制到学业对话继续处理") }
+        if let data = archive.chats, let chats = try? JSONDecoder().decode([PendingCloudChat].self, from: data) {
+            for chat in chats { append("chat:" + chat.id, "结果未确认的旧对话", chat.text, "请求 ID: " + chat.id, false, "请先查完整文字历史，避免重复发送已完成回合") }
+        }
+        return items
+    }
+    /// A reviewed migration is a new, explicitly confirmed CAS against the shown
+    /// cloud state. It never relabels a whole legacy draft's revision.
+    func submitQueueMigrationItem(_ archive: PreservedQueue, itemID: String) async throws {
+        guard let client, let repo = activeRepositoryID, let preview = snapshot,
+              queueMigrationItems(archive).contains(where: { $0.id == itemID && $0.canSubmit }) else { throw FactError("该项目尚不能安全迁移，请核对原仓库和内容。") }
+        let generation = clientGeneration
+        let repositoryGeneration = self.repositoryGeneration
+        let latest = try await client.snapshot()
+        guard generation == clientGeneration, repositoryGeneration == self.repositoryGeneration else { throw FactError("连接已变化，原稿仍保留。") }
+        snapshot = latest; saveCache(latest)
+        guard latest.revision == preview.revision,
+              queueMigrationItems(archive).contains(where: { $0.id == itemID && $0.canSubmit }) else { throw FactError("云内容已更新，请查看最新对照后重新确认。") }
+        let result: SnapshotResponse
+        if itemID.hasPrefix("fact:"), let fact = migrationFacts(archive).map(\.fact).first(where: { "fact:" + $0.id.uuidString == itemID }) {
+            result = try await client.appendFact(fact, repo: repo, revision: latest.revision)
+        } else if itemID.hasPrefix("delivery:"), let index = Int(itemID.dropFirst(9)), let drafts = migrationDrafts(archive), drafts.deliveries.indices.contains(index) {
+            let draft = drafts.deliveries[index]
+            result = try await client.toggleDelivery(text: draft.text, isCompleted: draft.isCompleted, baseRevision: latest.revision,
+                idempotencyKey: draft.idempotencyKey!, deliveryID: draft.deliveryID, confirmedTaskIDs: draft.confirmedTaskIDs)
+            guard result.week.deliveries.first(where: { $0.id == draft.deliveryID })?.isCompleted == draft.isCompleted else { throw FactError("服务端未确认目标状态，原稿保留。") }
+        } else if itemID.hasPrefix("period:"), let index = Int(itemID.dropFirst(7)), let drafts = migrationDrafts(archive), drafts.periods.indices.contains(index) {
+            let draft = drafts.periods[index]
+            let assignment = latest.week.linkage?.assignments.first(where: { $0.id == draft.assignmentID })
+            result = try await client.togglePeriod(dayID: assignment?.date ?? draft.dayID, periodID: assignment?.periodID ?? draft.periodID, taskID: assignment?.legacyTaskID ?? draft.taskID!,
+                isCompleted: draft.isCompleted, baseRevision: latest.revision, idempotencyKey: draft.idempotencyKey!, logicalTaskID: draft.logicalTaskID, assignmentID: draft.assignmentID)
+            let confirmed = draft.logicalTaskID.flatMap { id in result.week.linkage?.tasks.first { $0.id == id }?.isCompleted }
+                ?? matchingPeriod(dayID: draft.dayID, periodID: draft.periodID, in: result)?.period.tasks.first { $0.id == draft.taskID }?.isCompleted
+            guard confirmed == draft.isCompleted else { throw FactError("服务端未确认目标状态，原稿保留。") }
+        } else { throw FactError("此草稿仅供对照，不会覆盖云内容。") }
+        guard generation == clientGeneration, repositoryGeneration == self.repositoryGeneration else { throw FactError("连接已变化，请重新核对云端回执。") }
+        snapshot = result; saveCache(result)
+        var receipts = migrationReceipts(); receipts[migrationReceiptKey(archive, itemID)] = repo
+        try JSONEncoder().encode(receipts).write(to: migrationReceiptsURL, options: .atomic)
+        objectWillChange.send()
     }
 }

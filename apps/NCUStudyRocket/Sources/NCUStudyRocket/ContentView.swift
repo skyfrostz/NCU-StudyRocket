@@ -25,6 +25,14 @@ struct ContentView: View {
             .safeAreaInset(edge: .bottom) {
                 VStack(alignment: .leading, spacing: 8) {
                     Divider()
+                    if DesktopCloudBinding.isManaged(workspace.rootURL) {
+                        Label("云文件 · 本机只读缓存", systemImage: "cloud").font(.caption)
+                        Text(workspace.cloudSyncStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(3)
+                        if workspace.cloudPendingCount > 0 {
+                            Button("\(workspace.cloudPendingCount) 份待提交或冲突草稿") { requestSection(.settings) }
+                                .font(.caption).foregroundStyle(.orange)
+                        }
+                    }
                     Button("重新绑定仓库", systemImage: "folder") {
                         if document.isDirty { showUnsavedBindingAlert = true }
                         else { showBinder = true }
@@ -57,8 +65,10 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .studyRocketOpenFact)) { _ in requestSection(.daily) }
         .onReceive(NotificationCenter.default.publisher(for: .studyRocketOpenChat)) { _ in requestSection(.chat) }
         .onReceive(NotificationCenter.default.publisher(for: .studyRocketWorkspaceChanged)) { _ in
-            DesktopWidgetPublisher.publish(from: workspace.rootURL)
+            DesktopWidgetPublisher.publish(from: workspace.rootURL); workspace.refreshCloudDraftStatus()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .studyRocketCloudStateChanged)) { _ in workspace.refreshCloudDraftStatus() }
+        .onReceive(NotificationCenter.default.publisher(for: .studyRocketCloudBindingChanged)) { _ in workspace.synchronizeCloud() }
         .onChange(of: workspace.rootURL) { _, root in
             if StudyRocketSelfCheckConfiguration.current == nil { DesktopWidgetPublisher.publish(from: root) }
         }
@@ -77,7 +87,7 @@ struct ContentView: View {
             Text("请先保存或放弃当前 Markdown 修改，再重新绑定仓库。")
         }
         .confirmationDialog("未保存的 Markdown 修改", isPresented: $showUnsavedSectionDialog, titleVisibility: .visible) {
-            Button("保存并切换") { if document.save(), let pendingSection { selection = pendingSection; self.pendingSection = nil; workspace.notifyWorkspaceChanged() } }
+            Button("保存并切换") { Task { if await document.save(), let pendingSection { selection = pendingSection; self.pendingSection = nil; workspace.notifyWorkspaceChanged() } } }
             Button("放弃修改并切换", role: .destructive) { if let pendingSection { selection = pendingSection; self.pendingSection = nil } }
             Button("取消", role: .cancel) { pendingSection = nil }
         } message: { Text("当前文件有未保存的内容。") }
@@ -227,7 +237,7 @@ struct DashboardView: View {
             guard !Task.isCancelled else { return }
 
             let sealSource = dashboard.visibleDeliveries
-            let succeeded = dashboard.toggleDelivery(delivery.id, workspace: workspace, confirmedTaskIDs: confirmedTaskIDs)
+            let succeeded = await dashboard.toggleDelivery(delivery.id, workspace: workspace, confirmedTaskIDs: confirmedTaskIDs)
 
             guard succeeded else {
                 writingDeliveryIDs.remove(delivery.id)
@@ -270,7 +280,7 @@ struct DashboardView: View {
             guard !Task.isCancelled else { return }
             periodTasks.removeValue(forKey: taskKey)
             periodTargets.removeValue(forKey: taskKey)
-            dashboard.setPeriodTaskCompletion(item, isCompleted: target, workspace: workspace)
+            await dashboard.setPeriodTaskCompletion(item, isCompleted: target, workspace: workspace)
         }
     }
 
@@ -1209,11 +1219,11 @@ struct WeeklyPlanView: View {
                     let repo = MarkdownRepository(root: workspace.rootURL)
                     let week = MarkdownParser.replaceWeekly(original, with: plan)
                     let timetable = try OneOffSchedule.write(events, in: linkageTimetable)
-                    try repo.saveBatch([.init(relative: file, content: week, loadedHash: loadedHash),
+                    try await repo.saveBatch([.init(relative: file, content: week, loadedHash: loadedHash),
                         .init(relative: StudyRocketTimetableParser.sourceFile, content: timetable, loadedHash: repo.hash(linkageTimetable))])
                     load(); workspace.notifyWorkspaceChanged()
                 } else {
-                    guard persist(showSuccess: false) else { throw PlanningChangeRouter.RoutingError(inlineNotice ?? "尚未保存，请检查预览。") }
+                    guard await persist(showSuccess: false) else { throw PlanningChangeRouter.RoutingError(inlineNotice ?? "尚未保存，请检查预览。") }
                 }
             }
         }.frame(minWidth: 650, minHeight: 600)
@@ -1229,14 +1239,14 @@ struct WeeklyPlanView: View {
             HStack {
                 Button("返回修改") { planningReview = nil }
                 Spacer()
-                Button("确认并成组保存") {
+                Button("确认并成组保存") { Task {
                     let repo = MarkdownRepository(root: workspace.rootURL)
                     do {
-                        try repo.saveBatch([.init(relative: file, content: review.week, loadedHash: loadedHash),
+                        try await repo.saveBatch([.init(relative: file, content: review.week, loadedHash: loadedHash),
                             .init(relative: StudyRocketTimetableParser.sourceFile, content: review.timetable, loadedHash: repo.hash(review.originalTimetable))])
                         planningReview = nil; load(); workspace.notifyWorkspaceChanged()
                     } catch { notice = error.localizedDescription }
-                }.buttonStyle(.borderedProminent)
+                } }.buttonStyle(.borderedProminent)
             }
         }.padding(24).frame(minWidth: 650, minHeight: 550)
     }
@@ -1250,7 +1260,7 @@ struct WeeklyPlanView: View {
         Text(linkedBulkIDs.compactMap { id in plan.linkage?.tasks.first(where: { $0.id == id })?.text }.joined(separator: "\n"))
     }
     .sheet(item: $deletionReview) { summary in
-        WeeklyDeletionReviewSheet(summary: summary, returnToEditing: { deletionReview = nil }, confirm: { deletionReview = nil; persist(showSuccess: false) })
+        WeeklyDeletionReviewSheet(summary: summary, returnToEditing: { deletionReview = nil }, confirm: { deletionReview = nil; Task { await persist(showSuccess: false) } })
     }
     .alert("保存结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? "") } }
     private func load() {
@@ -1259,7 +1269,7 @@ struct WeeklyPlanView: View {
         let raw = (try? repo.read(file)) ?? ""
         loadedHash = repo.hash(raw)
         linkageTimetable = (try? repo.read(StudyRocketTimetableParser.sourceFile)) ?? ""
-        original = WeeklyDeliveryRollover.projected(raw, fileURL: workspace.rootURL.appendingPathComponent(file))
+        original = WeeklyDeliveryRollover.projected(raw, fileURL: repo.readingRoot.appendingPathComponent(file))
         plan = MarkdownParser.weekly(original)
         originalDeliveries = Dictionary(uniqueKeysWithValues: plan.deliveries.map { ($0.id, $0.text) })
         originalRules = Dictionary(uniqueKeysWithValues: plan.bufferRules.map { ($0.id, ($0.category, $0.text)) })
@@ -1282,19 +1292,21 @@ struct WeeklyPlanView: View {
     }
     private func save() {
         let summary = currentDeletionSummary()
-        if !summary.isEmpty { deletionReview = summary } else { persist(showSuccess: true) }
+        if !summary.isEmpty { deletionReview = summary } else { Task { await persist(showSuccess: true) } }
     }
     private func requestPersist() {
         let summary = currentDeletionSummary()
         if !summary.isEmpty {
             deletionReview = summary
         } else {
-            persist(showSuccess: false)
+            Task { await persist(showSuccess: false) }
         }
     }
     @discardableResult
-    private func persist(showSuccess: Bool) -> Bool {
-        let repo = MarkdownRepository(root: workspace.rootURL)
+    private func persist(showSuccess: Bool) async -> Bool {
+        let expectedRoot = workspace.rootURL
+        let submittedPlan = plan.sharedSnapshot()
+        let repo = MarkdownRepository(root: expectedRoot)
         do {
             let sourceMigrations = Dictionary( plan.deliveries.compactMap { delivery -> (String, String)? in
                 guard let previous = originalDeliveries[delivery.id], previous != delivery.text else { return nil }
@@ -1314,13 +1326,21 @@ struct WeeklyPlanView: View {
                 plan.applyLinkage(graph); showLinkageEditor = true
                 return false
             }
-            try repo.save(routed.week, relative: file, loadedHash: loadedHash)
+            try await repo.save(routed.week, relative: file, loadedHash: loadedHash)
+            guard workspace.rootURL == expectedRoot else { return false }
             if showSuccess {
                 notice = "已保存到工作台/下周计划.md"
             } else {
                 inlineNotice = "已自动写入工作台/下周计划.md"
             }
-            load()
+            if plan.sharedSnapshot() == submittedPlan { load() }
+            else {
+                original = try repo.read(file); loadedHash = repo.hash(original)
+                let saved = MarkdownParser.weekly(original)
+                originalDeliveries = Dictionary(uniqueKeysWithValues: saved.deliveries.map { ($0.id, $0.text) })
+                originalRules = Dictionary(uniqueKeysWithValues: saved.bufferRules.map { ($0.id, ($0.category, $0.text)) })
+                inlineNotice = "已保存上一版；保存期间的新编辑仍保留，请继续保存。"
+            }
             workspace.notifyWorkspaceChanged()
             return true
         } catch {
@@ -2511,6 +2531,8 @@ struct DailyCheckinView: View {
     @State private var text = ""
     @State private var notice = ""
     @State private var records: [QuickFact] = []
+    @State private var pendingFact: QuickFact?
+    @State private var savingFact = false
     @State private var legacy = ""
     @FocusState private var focused: Bool
 
@@ -2538,14 +2560,26 @@ struct DailyCheckinView: View {
          .onChange(of: workspace.rootURL) { _, _ in text = ""; notice = ""; reload() }
          .onReceive(NotificationCenter.default.publisher(for: .studyRocketWorkspaceChanged)) { _ in reload() }
     }
-    private func reload() { records = FactJournal.recent(root: workspace.rootURL); legacy = FactJournal.legacy(root: workspace.rootURL) }
+    private func reload() { let root = MarkdownRepository(root: workspace.rootURL).readingRoot; records = FactJournal.recent(root: root); legacy = FactJournal.legacy(root: root) }
     private func save() {
+        guard !savingFact else { return }
+        savingFact = true
+        Task {
+        defer { savingFact = false }
         do {
-            try FactJournal.append(QuickFact(text: text), root: workspace.rootURL, backupDirectory: StudyRocketSelfCheckConfiguration.current?.backupDirectory, recordLocalHistory: true)
-            notice = "已保存：\(text)"; text = ""; reload(); focused = true
+            let fact = pendingFact?.text == text ? pendingFact! : QuickFact(text: text)
+            pendingFact = fact
+            if DesktopCloudBinding.isManaged(workspace.rootURL) {
+                try await DesktopCloudWorkspace.shared.appendFact(fact, root: workspace.rootURL)
+            } else {
+                let lock = try PlanningRepositoryLock.acquire(root: workspace.rootURL); defer { lock.unlock() }
+                guard !DesktopCloudBinding.isManaged(workspace.rootURL) else { throw DesktopCloudError.message("仓库已切换为云管理，请重试。") }
+                try FactJournal.append(fact, root: workspace.rootURL, backupDirectory: StudyRocketSelfCheckConfiguration.current?.backupDirectory, recordLocalHistory: true)
+            }
+            notice = "已保存：\(fact.text)"; if text == fact.text { text = "" }; pendingFact = nil; reload(); focused = true
             workspace.notifyWorkspaceChanged(); workspace.refreshMarkdownIndex()
         } catch { notice = error.localizedDescription }
-    }
+    } }
 }
 
 struct LibraryView: View {
@@ -2591,7 +2625,7 @@ struct MarkdownBrowserView: View {
         .onChange(of: title) { _, _ in configureAndLoad() }
         .onChange(of: workspace.rootURL) { _, _ in configureAndLoad() }
         .confirmationDialog("未保存的 Markdown 修改", isPresented: $showUnsavedDialog, titleVisibility: .visible) {
-            Button("保存并切换") { if document.save(), let pendingSelection { selected = pendingSelection; document.load(pendingSelection); workspace.notifyWorkspaceChanged(); self.pendingSelection = nil } }
+            Button("保存并切换") { Task { if await document.save(), let pendingSelection { selected = pendingSelection; document.load(pendingSelection); workspace.notifyWorkspaceChanged(); self.pendingSelection = nil } } }
             Button("放弃修改并切换", role: .destructive) { if let pendingSelection { selected = pendingSelection; document.discardAndLoad(pendingSelection); self.pendingSelection = nil } }
             Button("取消", role: .cancel) { pendingSelection = nil }
         } message: { Text("当前文件有未保存的内容。") }
@@ -2626,7 +2660,7 @@ struct MarkdownDocumentView: View {
         }
         .alert("Markdown", isPresented: Binding(get: { notice != nil || document.errorMessage != nil }, set: { if !$0 { notice = nil; document.errorMessage = nil } })) { Button("好", role: .cancel) {} } message: { Text(notice ?? document.errorMessage ?? "") }
     }
-    private func save() { if document.save() { workspace.notifyWorkspaceChanged(); notice = "已保存" } }
+    private func save() { Task { if await document.save() { workspace.notifyWorkspaceChanged(); notice = "已保存" } } }
 }
 
 struct MarkdownPreview: View {
@@ -2649,7 +2683,7 @@ struct MarkdownPreview: View {
 struct SettingsView: View {
     @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var reminders: ReminderScheduler
-    var body: some View { ScrollView { Form { LocalSaveHistorySection(root: workspace.rootURL); Section("当前仓库") { Text(workspace.rootURL.path).lineLimit(1).truncationMode(.middle).textSelection(.enabled); Text("需要迁移仓库时，请使用侧边栏底部的“重新绑定仓库”。").font(.caption).foregroundStyle(.secondary) }; Section("学业对话") { LabeledContent("Codex 连接", value: "复用本机登录，不保存令牌"); Text("应用会单独续接 StudyRocket 学业助理任务，开发任务不会被读取。").font(.caption).foregroundStyle(.secondary) }; Section("原生提醒") { LabeledContent("权限", value: reminders.authorization); ForEach([ReminderRoute.weekly, .monthly]) { route in Toggle(route.title, isOn: Binding(get: { reminders.enabled[route] ?? true }, set: { reminders.toggle(route, isOn: $0) })); HStack { Text("下一次").font(.caption).foregroundStyle(.secondary); Spacer(); Text(nextDateText(for: route)).font(.caption.monospacedDigit()).foregroundStyle(.secondary); Button("测试") { reminders.sendTest(route) }.buttonStyle(.link) } }; Button("请求通知权限并登记") { reminders.requestPermissionAndSchedule() }.buttonStyle(.borderedProminent) }; Section("运行方式") { LabeledContent("后台服务", value: "无"); LabeledContent("数据存储", value: "Markdown 文件"); LabeledContent("旧自动任务", value: "验收前保留") }; Section("隐私") { Text("应用不保存模型凭证，不创建网络监听端口；PDF 继续使用私有云盘单独备份。学业对话继承当前 Codex 端点配置。").font(.callout).foregroundStyle(.secondary) } }.formStyle(.grouped).frame(maxWidth: 760).frame(maxWidth: .infinity).padding(24) } }
+    var body: some View { ScrollView { Form { DesktopCloudSettingsSection(root: workspace.rootURL); LocalSaveHistorySection(root: workspace.rootURL); Section("当前仓库") { Text(workspace.rootURL.path).lineLimit(1).truncationMode(.middle).textSelection(.enabled); Text("需要迁移仓库时，请使用侧边栏底部的“重新绑定仓库”。").font(.caption).foregroundStyle(.secondary) }; Section("学业对话") { LabeledContent("学业服务", value: DesktopCloudBinding.isManaged(workspace.rootURL) ? "云会话 · 与手机共用" : "本机旧模式"); Text("应用会单独续接 StudyRocket 学业助理任务，开发任务不会被读取。").font(.caption).foregroundStyle(.secondary) }; Section("原生提醒") { LabeledContent("权限", value: reminders.authorization); ForEach([ReminderRoute.weekly, .monthly]) { route in Toggle(route.title, isOn: Binding(get: { reminders.enabled[route] ?? true }, set: { reminders.toggle(route, isOn: $0) })); HStack { Text("下一次").font(.caption).foregroundStyle(.secondary); Spacer(); Text(nextDateText(for: route)).font(.caption.monospacedDigit()).foregroundStyle(.secondary); Button("测试") { reminders.sendTest(route) }.buttonStyle(.link) } }; Button("请求通知权限并登记") { reminders.requestPermissionAndSchedule() }.buttonStyle(.borderedProminent) }; Section("运行方式") { LabeledContent("后台服务", value: "无"); LabeledContent("数据存储", value: "Markdown 文件"); LabeledContent("旧自动任务", value: "验收前保留") }; Section("隐私") { Text("应用不保存模型凭证，不创建网络监听端口；PDF 继续使用私有云盘单独备份。云模式通过设备签名连接学业服务；旧本机模式沿用 Codex 配置。").font(.callout).foregroundStyle(.secondary) } }.formStyle(.grouped).frame(maxWidth: 760).frame(maxWidth: .infinity).padding(24) } }
     private func nextDateText(for route: ReminderRoute) -> String { guard let date = reminders.nextDates[route] ?? nil else { return "待登记" }; return date.formatted(date: .abbreviated, time: .shortened) }
 }
 
@@ -2673,7 +2707,7 @@ struct StudyChatView: View {
             }
             ChatComposer()
         }
-        .task { await chat.connect(to: workspace.rootURL) }.onChange(of: workspace.rootURL) { _, root in Task { await chat.connect(to: root) } }.sheet(isPresented: $showHelp) { ChatHelpView() }
+        .task { await chat.connect(to: workspace.rootURL) }.onReceive(NotificationCenter.default.publisher(for: .studyRocketCloudBindingChanged)) { _ in Task { await chat.reconnect() } }.onChange(of: workspace.rootURL) { _, root in Task { await chat.connect(to: root) } }.sheet(isPresented: $showHelp) { ChatHelpView() }
     }
     private var statusColor: Color { switch chat.connectionState { case .connected: .green; case .thinking, .reconnecting, .connecting: .orange; case .failed: .red; default: .secondary } }
 }
@@ -2690,7 +2724,7 @@ private struct ChatToolbar: View {
                 Label(chat.status, systemImage: "circle.fill").font(.caption).foregroundStyle(statusColor).labelStyle(.titleAndIcon)
             }
             Spacer(minLength: 12)
-            StudyIconButton(systemImage: "arrow.up.right.square", label: "在 Codex 查看历史；修改计划请在此处发送", action: chat.openInCodex, disabled: chat.threadID == nil)
+            StudyIconButton(systemImage: "arrow.up.right.square", label: "查看历史位置；修改计划请在此处发送", action: chat.openInCodex, disabled: chat.threadID == nil)
             StudyIconButton(systemImage: "questionmark.circle", label: "帮助", action: showHelp)
         }
         .padding(.horizontal, StudyRocketTheme.pageInset).padding(.vertical, 9)
@@ -3187,7 +3221,7 @@ private struct ChatMarkdownDocumentView: View {
 
 struct ThinkingRow: View {
     let status: String
-    var body: some View { HStack(spacing: 10) { StudyRocketAvatar(size: 28); ProgressView().controlSize(.small); Text(status == "重连中..." ? "连接波动，Codex 正在重试" : "正在读取资料").font(.system(size: StudyRocketTheme.bodySize)).foregroundStyle(.secondary) }.accessibilityLabel(status) }
+    var body: some View { HStack(spacing: 10) { StudyRocketAvatar(size: 28); ProgressView().controlSize(.small); Text(status == "重连中..." ? "连接波动，学业服务正在重试" : "正在读取资料").font(.system(size: StudyRocketTheme.bodySize)).foregroundStyle(.secondary) }.accessibilityLabel(status) }
 }
 
 struct ProcessDisclosureView: View {
@@ -3332,7 +3366,7 @@ struct ChatComposer: View {
                 if chat.isBusy { StudyIconButton(systemImage: "stop.fill", label: "停止生成", action: chat.stop) }
                 else { StudyIconButton(systemImage: "arrow.up", label: "发送（Return）", action: submit, disabled: chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
             }
-            Text("使用当前 Codex 登录和只读学业任务；修改会先生成草案。Shift+Return 换行。") .font(.caption2).foregroundStyle(.secondary)
+            Text("学业服务先生成修改草案，确认后保存。Shift+Return 换行。") .font(.caption2).foregroundStyle(.secondary)
         }.frame(maxWidth: StudyRocketTheme.chatMaxWidth).frame(maxWidth: .infinity).padding(.horizontal, StudyRocketTheme.pageInset).padding(.vertical, 10).background(.bar)
     }
 

@@ -24,7 +24,7 @@ SHARED_OBJECTS=("$BIN_PATH/StudyRocketShared.build"/*.swift.o(N))
   exit 1
 }
 swiftc -parse-as-library \
-  Sources/NCUStudyRocket/Models.swift \
+  Sources/NCUStudyRocket/DesktopCloudBackup.swift Sources/NCUStudyRocket/DesktopCloudWorkspace.swift Sources/NCUStudyRocket/Models.swift \
   Scripts/MarkdownChecks.swift \
   -I "$BIN_PATH/Modules" \
   "${SHARED_OBJECTS[@]}" \

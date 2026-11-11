@@ -560,7 +560,13 @@ final class CodexAppServerClient: NSObject {
 @MainActor
 final class StudyChatStore: ObservableObject {
     let transcript = ChatTranscriptState()
-    @Published var draft = ""
+    @Published var draft = "" {
+        didSet {
+            if let root, DesktopCloudBinding.isManaged(root) {
+                UserDefaults.standard.set(draft, forKey: "studyrocket.cloud.input." + RequestSigning.bodyHash(Data(root.path.utf8)))
+            }
+        }
+    }
     @Published var status = ChatConnectionState.disconnected.rawValue
     @Published var connectionState: ChatConnectionState = .disconnected
     @Published var errorMessage: String?
@@ -803,7 +809,10 @@ final class StudyChatStore: ObservableObject {
     func connect(to root: URL) async { await connectInternal(to: root, forceCreate: false) }
 
     private func connectInternal(to root: URL, forceCreate: Bool) async {
+        let serviceChanged = await hostClient.configureCloud(for: root)
+        if serviceChanged { usingHost = false; client.disconnect(); transcript.clearForNewRepository() }
         if !forceCreate, self.root?.standardizedFileURL == root.standardizedFileURL, usingHost { return }
+        if DesktopCloudBinding.isManaged(root), client.isRunning { client.disconnect() }
         if !forceCreate, self.root?.standardizedFileURL == root.standardizedFileURL, client.isRunning {
             // A Host that became available takes ownership of the fixed task;
             // otherwise keep the already-running legacy client untouched.
@@ -827,6 +836,9 @@ final class StudyChatStore: ObservableObject {
 #endif
         let rootChanged = self.root?.standardizedFileURL != root.standardizedFileURL
         self.root = root.standardizedFileURL
+        if DesktopCloudBinding.isManaged(root), (rootChanged || serviceChanged), draft.isEmpty {
+            draft = UserDefaults.standard.string(forKey: "studyrocket.cloud.input." + RequestSigning.bodyHash(Data(root.path.utf8))) ?? ""
+        }
         if rootChanged || forceCreate {
             transcript.clearForNewRepository()
             scrollPolicy = ChatScrollPolicy()
@@ -869,6 +881,7 @@ final class StudyChatStore: ObservableObject {
                 let health = try await hostClient.health(for: root)
                 guard generation == connectionGeneration, !Task.isCancelled else { return }
                 let history = try await hostClient.history()
+                if DesktopCloudBinding.isManaged(root), draft.isEmpty { draft = await hostClient.pendingCloudDraft() ?? "" }
                 guard generation == connectionGeneration, let activeThreadID = health.activeThreadID else { throw StudyChatError.protocolError("StudyRocket Host 没有返回学业任务 ID。") }
                 usingHost = true
                 hostReconnectFailures = 0
@@ -886,6 +899,12 @@ final class StudyChatStore: ObservableObject {
             }
         }
         guard generation == connectionGeneration, !Task.isCancelled else { return }
+        if DesktopCloudBinding.isManaged(root) {
+            client.disconnect()
+            let message = "云学业服务暂时不可用。输入已保留，请重连；云模式不会切换到本机模型或写入本地正式文件。"
+            setState(.failed); errorMessage = message; transcript.setLoadState(.failed(message))
+            return
+        }
         do {
             let id = try await client.connect(root: root, threadID: active, legacyThreadID: legacy)
             guard generation == connectionGeneration else { return }
@@ -926,6 +945,7 @@ final class StudyChatStore: ObservableObject {
 
     func createNewTask() async {
         guard let root else { return }
+        guard !DesktopCloudBinding.isManaged(root) else { errorMessage = "云模式使用同一个学业会话，请重新连接云服务。"; return }
         if usingHost {
             errorMessage = "请先在 StudyRocket Host 中停止手机连接，再创建新的学业任务。"
             return
@@ -940,7 +960,7 @@ final class StudyChatStore: ObservableObject {
         await connectInternal(to: root, forceCreate: true)
     }
 
-    var canCreateNewTask: Bool { root != nil && connectionState == .failed }
+    var canCreateNewTask: Bool { root.map { !DesktopCloudBinding.isManaged($0) } == true && connectionState == .failed }
     func prepare(prompt: String) { pendingPrompt = prompt; draft = prompt }
 
     func toggleProcess(for turnID: String) {
@@ -1179,7 +1199,7 @@ final class StudyChatStore: ObservableObject {
                     hostReconnectFailures += 1
                     if hostReconnectFailures >= 3 {
                         setState(.failed)
-                        errorMessage = "StudyRocket Host 的实时对话连接连续失败 3 次，历史记录仍保留。"
+                        errorMessage = "学业服务的实时对话连接连续失败 3 次，历史记录仍保留。"
                     } else {
                         setState(.reconnecting)
                         errorMessage = nil
@@ -1189,7 +1209,7 @@ final class StudyChatStore: ObservableObject {
                     hostReconnectFailures += 1
                     if hostReconnectFailures >= 3 {
                         setState(.failed)
-                        errorMessage = "StudyRocket Host 的实时对话连接连续失败 3 次，历史记录仍保留。"
+                        errorMessage = "学业服务的实时对话连接连续失败 3 次，历史记录仍保留。"
                     } else {
                         setState(.reconnecting)
                         errorMessage = nil
@@ -1206,11 +1226,18 @@ final class StudyChatStore: ObservableObject {
     private func consumeHostEvent(_ event: HostEventEnvelope) {
         guard usingHost else { return }
         if event.kind == "heartbeat" { return }
+        if event.snapshot != nil, let root, DesktopCloudBinding.isManaged(root) {
+            let generation = connectionGeneration
+            Task {
+                do { try await DesktopCloudWorkspace.shared.synchronize(root: root) }
+                catch { if generation == connectionGeneration { errorMessage = error.localizedDescription } }
+            }
+        }
         if event.kind == "chat.failed", isBusy {
             isBusy = false
-            markLatestTurn(.failed, errorMessage: "StudyRocket Host 对话失败，请重试。")
+            markLatestTurn(.failed, errorMessage: "学业服务对话失败，请重试。")
             setState(.failed)
-            errorMessage = "StudyRocket Host 对话失败，请重试。"
+            errorMessage = "学业服务对话失败，请重试。"
             return
         }
         if event.kind == "chat.interrupted", isBusy {
@@ -1270,7 +1297,7 @@ final class StudyChatStore: ObservableObject {
                 }
                 isBusy = false
                 setState(.failed)
-                errorMessage = chatEvent.text ?? "StudyRocket Host 对话失败，请重试。"
+                errorMessage = chatEvent.text ?? "学业服务对话失败，请重试。"
             default:
                 break
             }
@@ -1379,6 +1406,7 @@ final class StudyChatStore: ObservableObject {
                     await refreshHostProposals()
                     guard generation == connectionGeneration, usingHost, !Task.isCancelled else { return }
                     if response.remaining.proposals.isEmpty { transcript.expandedProposalTurnIDs.remove(turnID) }
+                    if DesktopCloudBinding.isManaged(expectedRoot) { try await DesktopCloudWorkspace.shared.synchronize(root: expectedRoot) }
                     workspace.notifyWorkspaceChanged()
                 } catch {
                     guard generation == connectionGeneration, usingHost, !Task.isCancelled else { return }
@@ -1387,14 +1415,15 @@ final class StudyChatStore: ObservableObject {
             }
             return
         }
-        do {
+        Task { do {
+            guard !DesktopCloudBinding.isManaged(workspace.rootURL) else { throw DesktopCloudError.message("云草案需重新连接云会话后确认。") }
             let changes = selected.map { MarkdownRepository.Change(relative: $0.relativePath, content: $0.proposedContent, loadedHash: $0.baseHash) }
-            try MarkdownRepository(root: workspace.rootURL).saveBatch(changes)
+            try await MarkdownRepository(root: workspace.rootURL).saveBatch(changes)
             transcript.proposals.removeAll { selected.contains($0) }; workspace.notifyWorkspaceChanged()
             if !transcript.proposals.contains(where: { $0.turnID == turnID }) {
                 transcript.expandedProposalTurnIDs.remove(turnID)
             }
-        } catch { errorMessage = error.localizedDescription }
+        } catch { errorMessage = error.localizedDescription } }
     }
 
     func applySelectedSkillChanges(workspace: WorkspaceStore, for turnID: String) {
@@ -1416,6 +1445,7 @@ final class StudyChatStore: ObservableObject {
                     await refreshHostProposals()
                     guard generation == connectionGeneration, usingHost, !Task.isCancelled else { return }
                     if response.remaining.proposals.isEmpty { transcript.expandedProposalTurnIDs.remove(turnID) }
+                    if DesktopCloudBinding.isManaged(expectedRoot) { try await DesktopCloudWorkspace.shared.synchronize(root: expectedRoot) }
                     workspace.notifyWorkspaceChanged()
                 } catch {
                     guard generation == connectionGeneration, usingHost, !Task.isCancelled else { return }
@@ -1425,7 +1455,8 @@ final class StudyChatStore: ObservableObject {
             return
         }
         let repository = MarkdownRepository(root: workspace.rootURL)
-        do {
+        Task { do {
+            guard !DesktopCloudBinding.isManaged(workspace.rootURL) else { throw DesktopCloudError.message("云模式的技能更新需要服务端审核，不能在本机写入。") }
             for proposal in selected {
                 guard SkillRepository.isAllowed(relative: proposal.relativePath) else { throw MarkdownError.outsideWorkspace }
                 let current = try repository.read(proposal.relativePath)
@@ -1433,14 +1464,15 @@ final class StudyChatStore: ObservableObject {
                 try SkillRepository.validate(proposal.proposedContent)
             }
             for proposal in selected {
-                try repository.save(proposal.proposedContent, relative: proposal.relativePath, loadedHash: proposal.baseHash)
+                try await repository.save(proposal.proposedContent, relative: proposal.relativePath, loadedHash: proposal.baseHash)
             }
             transcript.skillProposals.removeAll { selected.contains($0) }
             workspace.notifyWorkspaceChanged()
-        } catch { errorMessage = error.localizedDescription }
+        } catch { errorMessage = error.localizedDescription } }
     }
 
     func openInCodex() {
+        if let root, DesktopCloudBinding.isManaged(root) { errorMessage = "完整云文字历史位于设置 → 云学业服务 → 完整文字历史。"; return }
         // A read-only history shortcut can stay pinned to the user's original chat
         // even if the Host had to migrate its writable protocol session.
         let pinned = root.flatMap { UserDefaults.standard.string(forKey: "historyThread." + RequestSigning.bodyHash(Data($0.standardizedFileURL.path.utf8))) }
@@ -1537,7 +1569,14 @@ extension MarkdownRepository {
         return target.path.hasPrefix(root.path + "/") && !MarkdownRepository.isSymbolicLink(target)
     }
 
-    func saveBatch(_ changes: [Change]) throws {
+    func saveBatch(_ changes: [Change]) async throws {
+        if DesktopCloudBinding.isManaged(root) {
+            for change in changes { guard isAllowedStudyPath(change.relative) else { throw MarkdownError.outsideWorkspace } }
+            try await DesktopCloudWorkspace.shared.commit(root: root, files: changes.map {
+                CloudFileChange(path: $0.relative, baseHash: (try? read($0.relative)) != nil ? $0.loadedHash : nil, content: $0.content)
+            })
+            return
+        }
         let repositoryLock = try PlanningRepositoryLock.acquire(root: root); defer { repositoryLock.unlock() }
         guard !changes.isEmpty else { return }
         let targets = changes.map { url($0.relative).standardizedFileURL.resolvingSymlinksInPath() }
@@ -1555,7 +1594,7 @@ extension MarkdownRepository {
         var written: [LocalSaveHistory.Change] = []
         do {
             for change in changes {
-                written.append(try save(change.content, relative: change.relative, loadedHash: change.loadedHash, recordHistory: false))
+                written.append(try await save(change.content, relative: change.relative, loadedHash: change.loadedHash, recordHistory: false))
             }
         } catch {
             for (target, data) in originals { try? data.write(to: target, options: .atomic) }
