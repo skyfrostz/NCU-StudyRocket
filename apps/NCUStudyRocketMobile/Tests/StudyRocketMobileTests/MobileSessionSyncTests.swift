@@ -54,6 +54,7 @@ private final class MobileSyncFixture: @unchecked Sendable {
     private(set) var writePaths: [String] = []
     private(set) var baseRevisions: [String] = []
     private(set) var deliveryTargets: [Bool] = []
+    private(set) var linkedPeriodRequests: [PeriodCompletionToggleRequest] = []
 
     init(
         snapshot: SnapshotResponse,
@@ -174,6 +175,12 @@ private final class MobileSyncFixture: @unchecked Sendable {
                     data: try encoder.encode(APIErrorBody(code: "conflict", message: "revision conflict", retryable: true))
                 )
             }
+            if var graph = authoritative.week.linkage, let id = value.deliveryID {
+                try graph.setDelivery(id, completed: value.isCompleted, confirmedTaskIDs: value.confirmedTaskIDs)
+                authoritative = Self.withPlan(graph.projected(authoritative.week), source: authoritative)
+                if dropDeliveryResponseAfterApply { dropDeliveryResponseAfterApply = false; throw URLError(.timedOut) }
+                return MobileStubResponse(statusCode: 200, data: try encoder.encode(authoritative))
+            }
             let deliveries = authoritative.week.deliveries.map {
                 DeliverySnapshot(
                     id: $0.id,
@@ -202,6 +209,13 @@ private final class MobileSyncFixture: @unchecked Sendable {
                     statusCode: 422,
                     data: try encoder.encode(APIErrorBody(code: "period_upgrade_required", message: "task id required"))
                 )
+            }
+            if var graph = authoritative.week.linkage, let id = value.logicalTaskID {
+                guard graph.assignments.contains(where: { $0.id == value.assignmentID && $0.taskID == id }) else { throw TaskLinkageError.changed }
+                linkedPeriodRequests.append(value)
+                try graph.setTask(id, completed: value.isCompleted)
+                authoritative = Self.withPlan(graph.projected(authoritative.week), source: authoritative)
+                return MobileStubResponse(statusCode: 200, data: try encoder.encode(authoritative))
             }
             let days = authoritative.week.days.map { day in
                 guard day.id == value.dayID else { return day }
@@ -297,6 +311,11 @@ private final class MobileSyncFixture: @unchecked Sendable {
             daily: source.daily,
             summaries: source.summaries
         )
+    }
+
+    static func withPlan(_ plan: WeeklyPlanSnapshot, source: SnapshotResponse) -> SnapshotResponse {
+        SnapshotResponse(revision: "r" + String((Int(source.revision.dropFirst()) ?? 0) + 1), home: source.home, week: plan,
+            daily: source.daily, summaries: source.summaries)
     }
 
     private static func updatedSlots(
@@ -1114,6 +1133,71 @@ final class MobileSessionSyncTests: XCTestCase {
         XCTAssertNil(online.pendingWeekDraft)
         XCTAssertEqual(fixture.writePaths, ["/v1/week"])
         XCTAssertEqual(online.snapshot?.week.days[0].slots[1].tasks.map(\.text), ["中午任务", "领取资料"])
+    }
+
+    func testPendingPlanDoesNotOverwriteNewerRevision() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cached = makeSnapshot()
+        try JSONEncoder().encode(cached).write(to: directory.appendingPathComponent("snapshot.json"), options: .atomic)
+        let offline = MobileSession(cacheDirectory: directory)
+        _ = await offline.saveWeek(cached.week)
+        let newer = SnapshotResponse(revision: "r1", home: cached.home, week: cached.week, daily: cached.daily, summaries: cached.summaries)
+        let fixture = MobileSyncFixture(snapshot: newer)
+        let online = makeSession(directory: directory, fixture: fixture)
+        await online.refresh()
+        await online.commitPendingDrafts()
+        XCTAssertNotNil(online.pendingWeekDraft)
+        XCTAssertTrue(fixture.writePaths.isEmpty)
+        XCTAssertTrue(online.pendingToggleSyncIssue?.contains("旧版本") == true)
+        let saved = await online.saveWeek(cached.week, baseRevision: cached.revision)
+        XCTAssertFalse(saved)
+        XCTAssertNotNil(online.pendingWeekDraft)
+        XCTAssertEqual(fixture.baseRevisions, [cached.revision])
+        XCTAssertEqual(online.snapshot?.revision, newer.revision)
+    }
+
+    func testStableDeliveryQueueDistinguishesIdenticalTitlesAndLostReceipt() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let now = Date(), day = PlanningDate.key(now)
+        let a = UUID().uuidString, b = UUID().uuidString
+        let raw = WeeklyPlanSnapshot(days: [], bufferRules: [], deliveries: [
+            DeliverySnapshot(id: a, text: "相同交付物", isCompleted: false),
+            DeliverySnapshot(id: b, text: "相同交付物", isCompleted: false)])
+        let graph = TaskLinkage(activationDate: day).reconciled(with: raw)
+        let snapshot = MobileSyncFixture.withPlan(graph.projected(raw), source: makeSnapshot())
+        let draft: [String: Any] = ["deliveries": [["deliveryID": a, "text": "相同交付物", "isCompleted": true, "idempotencyKey": "stable-receipt"]], "periods": []]
+        try JSONSerialization.data(withJSONObject: draft).write(to: directory.appendingPathComponent("pending-drafts.json"))
+        let fixture = MobileSyncFixture(snapshot: snapshot, dropDeliveryResponseAfterApply: true)
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh(); await session.commitPendingDrafts()
+        XCTAssertEqual(session.pendingDeliveryCount, 0)
+        XCTAssertTrue(fixture.snapshot.week.deliveries.first(where: { $0.id == a })!.isCompleted)
+        XCTAssertFalse(fixture.snapshot.week.deliveries.first(where: { $0.id == b })!.isCompleted)
+        XCTAssertEqual(fixture.writePaths.filter { $0 == "/v1/deliveries/toggle" }.count, 1)
+    }
+
+    func testOfflineStableTaskFollowsRescheduleAndRemainsIdempotent() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let today = PlanningDate.key(.now)
+        let later = PlanningDate.key(PlanningDate.calendar.date(byAdding: .day, value: 2, to: .now)!)
+        let raw = WeeklyPlanSnapshot(days: [DaySnapshot(id: today, dateLabel: today, slots: [PeriodSnapshot(id: "morning", title: "上午", text: "高数作业")])], bufferRules: [], deliveries: [])
+        var graph = TaskLinkage(activationDate: today).reconciled(with: raw)
+        let task = graph.tasks[0], assignment = graph.assignments[0]
+        try graph.reschedule(task.id, date: later, periodID: "evening")
+        let draft: [String: Any] = ["deliveries": [], "periods": [["dayID": today, "periodID": "morning", "taskID": assignment.legacyTaskID, "logicalTaskID": task.id, "assignmentID": assignment.id, "isCompleted": true, "idempotencyKey": "stable-task"]]]
+        try JSONSerialization.data(withJSONObject: draft).write(to: directory.appendingPathComponent("pending-drafts.json"))
+        let fixture = MobileSyncFixture(snapshot: MobileSyncFixture.withPlan(graph.projected(raw), source: makeSnapshot()))
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh(); await session.commitPendingDrafts()
+        XCTAssertEqual(session.pendingPeriodCount, 0)
+        XCTAssertTrue(fixture.snapshot.week.linkage!.tasks.first(where: { $0.id == task.id })!.isCompleted)
+        XCTAssertEqual(fixture.linkedPeriodRequests.first?.assignmentID, assignment.id)
+        XCTAssertEqual(fixture.linkedPeriodRequests.first?.logicalTaskID, task.id)
+        await session.refresh(); await session.commitPendingDrafts()
+        XCTAssertEqual(fixture.linkedPeriodRequests.count, 1)
     }
 
     private func makeSession(

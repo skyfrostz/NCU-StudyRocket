@@ -163,7 +163,86 @@ struct HostWriteServiceChecks {
         try testMalformedMarkersAndMarkerInjectionAreRejected()
         try testSnapshotRejectsExternalSymlinks()
         try testTimetableSnapshotAndRevision()
+        try testStableTaskLinkage()
         print("HostWriteServiceChecks: writes, boundaries, path safety and completion lifecycle passed")
+    }
+
+    private static func testStableTaskLinkage() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("stable-task-check-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("工作台/下周计划.md")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let today = PlanningDate.key(.now)
+        let parent = UUID().uuidString
+        let source = """
+        # 测试
+        <!-- studyrocket:weekly:start -->
+        | 日期 | 上午 | 中午 | 晚上 | 待分配 | 完成 |
+        | --- | --- | --- | --- | --- | --- |
+        | \(today) | 高数作业1<br>高数作业2 | | | | [ ] |
+        <!-- studyrocket:weekly:end -->
+        ## 交付物清单
+        - [ ] 完成两份作业
+        ## 缓冲
+        ## 保留说明
+        保留说明
+        """
+        try Data(source.utf8).write(to: file)
+        let builder = HostSnapshotBuilder(root: root), service = HostWriteService(root: root)
+        let initial = builder.build()
+        let delivery = DeliverySnapshot(id: parent, text: "完成两份作业", isCompleted: false)
+        let raw = WeeklyPlanSnapshot(days: initial.week.days, bufferRules: [], deliveries: [delivery])
+        var graph = TaskLinkage(activationDate: today).reconciled(with: raw)
+        for task in graph.tasks { try graph.link(task.id, to: parent) }
+        let enabled = try service.applyWeek(PlanWriteRequest(plan: graph.projected(raw), metadata: WriteMetadata(baseRevision: initial.revision)))
+        try require(enabled.week.linkage != nil, "linkage activation not persisted")
+        try require(try String(contentsOf: file, encoding: .utf8).contains("保留说明"), "unmanaged explanation lost")
+        let first = graph.tasks[0], second = graph.tasks[1]
+        let assignment = graph.assignments.first(where: { $0.taskID == first.id })!
+        let done = try service.togglePeriod(PeriodCompletionToggleRequest(dayID: assignment.date, periodID: assignment.periodID,
+            taskID: assignment.legacyTaskID, isCompleted: true, metadata: WriteMetadata(baseRevision: enabled.revision), logicalTaskID: first.id, assignmentID: assignment.id))
+        try require(done.week.deliveries.first?.isCompleted == false, "parent finished before all children")
+        do {
+            _ = try service.toggleDelivery(DeliveryToggleRequest(text: delivery.text, isCompleted: true, metadata: WriteMetadata(baseRevision: done.revision), deliveryID: parent))
+            throw NSError(domain: "TaskLinkageChecks", code: 1)
+        } catch TaskLinkageError.confirmationRequired { }
+        let completed = try service.toggleDelivery(DeliveryToggleRequest(text: delivery.text, isCompleted: true,
+            metadata: WriteMetadata(baseRevision: done.revision, idempotencyKey: "stable-bulk"), deliveryID: parent, confirmedTaskIDs: [second.id]))
+        try require(completed.week.deliveries.first?.isCompleted == true, "bulk completion not persisted")
+        let reopened = try service.toggleDelivery(DeliveryToggleRequest(text: delivery.text, isCompleted: false,
+            metadata: WriteMetadata(baseRevision: completed.revision), deliveryID: parent))
+        try require(reopened.week.linkage!.tasks.first(where: { $0.id == first.id })!.isCompleted, "undo erased an independent completion")
+        try require(!reopened.week.linkage!.tasks.first(where: { $0.id == second.id })!.isCompleted, "undo did not reopen cascaded child")
+        try requireHostError("planning_upgrade_required") {
+            _ = try service.applyWeek(PlanWriteRequest(plan: raw, metadata: WriteMetadata(baseRevision: reopened.revision)))
+        }
+        var rescheduled = reopened.week.linkage!
+        let newDate = PlanningDate.key(PlanningDate.calendar.date(byAdding: .day, value: 2, to: .now)!)
+        try rescheduled.reschedule(second.id, date: newDate, periodID: "evening")
+        let moved = try service.applyWeek(PlanWriteRequest(plan: rescheduled.projected(reopened.week), metadata: WriteMetadata(baseRevision: reopened.revision)))
+        let originalAssignment = graph.assignments.first(where: { $0.taskID == second.id })!
+        let receiptRequest = PeriodCompletionToggleRequest(dayID: originalAssignment.date, periodID: originalAssignment.periodID, taskID: originalAssignment.legacyTaskID,
+            isCompleted: true, metadata: WriteMetadata(baseRevision: moved.revision, idempotencyKey: "offline-rescheduled"), logicalTaskID: second.id, assignmentID: originalAssignment.id)
+        let resolved = try service.togglePeriod(receiptRequest)
+        let replay = try service.togglePeriod(receiptRequest)
+        try require(resolved.revision == replay.revision, "lost receipt replay changed state twice")
+        try require(resolved.week.linkage!.tasks.first(where: { $0.id == second.id })!.isCompleted, "historical assignment did not complete rescheduled task")
+        try require(resolved.week.linkage!.assignments.contains { $0.id == originalAssignment.id && !$0.active }, "rescheduling destroyed original assignment history")
+        let timetableURL = root.appendingPathComponent(StudyRocketTimetableParser.sourceFile)
+        try FileManager.default.createDirectory(at: timetableURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let timetable = "# 原课表\n"
+        try Data(timetable.utf8).write(to: timetableURL)
+        let beforePair = builder.build()
+        let event = OneOffEvent(date: today, start: "19:00", title: "羽毛球训练")
+        let pair = try service.applyWeek(PlanWriteRequest(plan: beforePair.week, metadata: WriteMetadata(baseRevision: beforePair.revision), events: [event], eventBaseHash: PeriodCompletion.textHash(for: timetable)))
+        try require(pair.home.timetable?.days.flatMap(\.entries).contains { $0.id == event.id } == true, "event not in authoritative timetable")
+        let eventSource = try String(contentsOf: timetableURL, encoding: .utf8)
+        try require(try OneOffSchedule.read(eventSource).count == 1, "event transaction duplicated activity")
+        let originalBytes = try Data(contentsOf: file)
+        try requireHostError("conflict") {
+            _ = try service.applyWeek(PlanWriteRequest(plan: pair.week, metadata: WriteMetadata(baseRevision: pair.revision), events: [], eventBaseHash: "stale"))
+        }
+        try require(try Data(contentsOf: file) == originalBytes, "event hash conflict partially wrote week")
     }
 
     private static func testInvalidDailyDateCannotEscapeWorkspace() throws {

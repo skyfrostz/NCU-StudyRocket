@@ -372,11 +372,17 @@ public struct PeriodTaskSnapshot: Codable, Equatable, Sendable, Identifiable {
     public let id: String
     public let text: String
     public let isCompleted: Bool
+    public let logicalTaskID: String?
+    public let assignmentID: String?
+    public let category: PlanningCategory?
 
-    public init(id: String, text: String, isCompleted: Bool = false) {
+    public init(id: String, text: String, isCompleted: Bool = false, logicalTaskID: String? = nil, assignmentID: String? = nil, category: PlanningCategory? = nil) {
         self.id = id
         self.text = text
         self.isCompleted = isCompleted
+        self.logicalTaskID = logicalTaskID
+        self.assignmentID = assignmentID
+        self.category = category
     }
 }
 
@@ -570,13 +576,15 @@ public struct DeliverySnapshot: Codable, Equatable, Sendable, Identifiable {
 }
 
 public struct WeeklyPlanSnapshot: Codable, Equatable, Sendable {
+    public let linkage: TaskLinkage?
     public let days: [DaySnapshot]
     public let bufferRules: [BufferRuleSnapshot]
     public let deliveries: [DeliverySnapshot]
     public let historicalRows: [ScheduledRowSnapshot]
     public let futureRows: [ScheduledRowSnapshot]
 
-    public init(days: [DaySnapshot], bufferRules: [BufferRuleSnapshot], deliveries: [DeliverySnapshot], historicalRows: [ScheduledRowSnapshot] = [], futureRows: [ScheduledRowSnapshot] = []) {
+    public init(days: [DaySnapshot], bufferRules: [BufferRuleSnapshot], deliveries: [DeliverySnapshot], historicalRows: [ScheduledRowSnapshot] = [], futureRows: [ScheduledRowSnapshot] = [], linkage: TaskLinkage? = nil) {
+        self.linkage = linkage
         self.days = days
         self.bufferRules = bufferRules
         self.deliveries = deliveries
@@ -585,11 +593,12 @@ public struct WeeklyPlanSnapshot: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case days, bufferRules, deliveries, historicalRows, futureRows
+        case days, bufferRules, deliveries, historicalRows, futureRows, linkage
     }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        linkage = try values.decodeIfPresent(TaskLinkage.self, forKey: .linkage)
         days = try values.decode([DaySnapshot].self, forKey: .days)
         bufferRules = try values.decode([BufferRuleSnapshot].self, forKey: .bufferRules)
         deliveries = try values.decode([DeliverySnapshot].self, forKey: .deliveries)
@@ -648,7 +657,10 @@ public enum WeeklyPlanTaskNormalizer {
                 PeriodTaskSnapshot(
                     id: task.id,
                     text: task.text,
-                    isCompleted: completionByID[task.id] ?? false
+                    isCompleted: completionByID[task.id] ?? false,
+                    logicalTaskID: period.tasks.first(where: { $0.id == task.id })?.logicalTaskID,
+                    assignmentID: period.tasks.first(where: { $0.id == task.id })?.assignmentID,
+                    category: period.tasks.first(where: { $0.id == task.id })?.category
                 )
             }
             return PeriodSnapshot(
@@ -695,7 +707,8 @@ public enum WeeklyPlanTaskNormalizer {
                     unassigned: layout.unassigned,
                     isCompleted: row.isCompleted
                 )
-            }
+            },
+            linkage: plan.linkage
         )
     }
 
@@ -1154,10 +1167,14 @@ public struct ProposalApplyResponse: Codable, Equatable, Sendable {
 }
 
 public struct PlanWriteRequest: Codable, Equatable, Sendable {
+    public let events: [OneOffEvent]?
+    public let eventBaseHash: String?
     public let plan: WeeklyPlanSnapshot
     public let metadata: WriteMetadata
 
-    public init(plan: WeeklyPlanSnapshot, metadata: WriteMetadata) {
+    public init(plan: WeeklyPlanSnapshot, metadata: WriteMetadata, events: [OneOffEvent]? = nil, eventBaseHash: String? = nil) {
+        self.events = events
+        self.eventBaseHash = eventBaseHash
         self.plan = plan
         self.metadata = metadata
     }
@@ -1174,11 +1191,15 @@ public struct DailyWriteRequest: Codable, Equatable, Sendable {
 }
 
 public struct DeliveryToggleRequest: Codable, Equatable, Sendable {
+    public let deliveryID: String?
+    public let confirmedTaskIDs: [String]?
     public let text: String
     public let isCompleted: Bool
     public let metadata: WriteMetadata
 
-    public init(text: String, isCompleted: Bool, metadata: WriteMetadata) {
+    public init(text: String, isCompleted: Bool, metadata: WriteMetadata, deliveryID: String? = nil, confirmedTaskIDs: [String]? = nil) {
+        self.deliveryID = deliveryID
+        self.confirmedTaskIDs = confirmedTaskIDs
         self.text = text
         self.isCompleted = isCompleted
         self.metadata = metadata
@@ -1186,6 +1207,8 @@ public struct DeliveryToggleRequest: Codable, Equatable, Sendable {
 }
 
 public struct PeriodCompletionToggleRequest: Codable, Equatable, Sendable {
+    public let logicalTaskID: String?
+    public let assignmentID: String?
     public let dayID: String
     public let periodID: String
     /// Present for current clients. The ID is derived from the task text and
@@ -1197,7 +1220,9 @@ public struct PeriodCompletionToggleRequest: Codable, Equatable, Sendable {
     public let isCompleted: Bool
     public let metadata: WriteMetadata
 
-    public init(dayID: String, periodID: String, taskID: String, isCompleted: Bool, metadata: WriteMetadata) {
+    public init(dayID: String, periodID: String, taskID: String, isCompleted: Bool, metadata: WriteMetadata, logicalTaskID: String? = nil, assignmentID: String? = nil) {
+        self.logicalTaskID = logicalTaskID
+        self.assignmentID = assignmentID
         self.dayID = dayID
         self.periodID = periodID
         self.taskID = taskID
@@ -1207,6 +1232,8 @@ public struct PeriodCompletionToggleRequest: Codable, Equatable, Sendable {
     }
 
     public init(dayID: String, periodID: String, textHash: String, isCompleted: Bool, metadata: WriteMetadata) {
+        self.logicalTaskID = nil
+        self.assignmentID = nil
         self.dayID = dayID
         self.periodID = periodID
         self.taskID = nil

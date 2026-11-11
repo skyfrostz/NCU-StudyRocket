@@ -318,6 +318,8 @@ private struct MobileHomeView: View {
   @State private var periodTargets: [String: Bool] = [:]
   @State private var periodTasks: [String: Task<Void, Never>] = [:]
   @State private var deliveryNotice: String?
+  @State private var deliveryConfirmation: DeliverySnapshot?
+  @State private var confirmedChildIDs: [String] = []
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
@@ -333,6 +335,14 @@ private struct MobileHomeView: View {
       #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
       #endif
+    }
+    .confirmationDialog("将一并完成这些子任务", isPresented: Binding(get: { deliveryConfirmation != nil }, set: { if !$0 { deliveryConfirmation = nil } }), titleVisibility: .visible) {
+      if let delivery = deliveryConfirmation {
+        Button("确认全部完成") { deliveryConfirmation = nil; submitDeliveryToggle(delivery, confirmedTaskIDs: confirmedChildIDs) }
+      }
+      Button("取消", role: .cancel) { deliveryConfirmation = nil }
+    } message: {
+      Text(deliveryConfirmation.map { session.snapshot?.week.linkage?.pendingChildren(of: $0.id).map(\.text).joined(separator: "\n") ?? "" } ?? "")
     }
     .onAppear { synchronizeDeliveryChapter() }
     .onChange(of: session.snapshot?.revision) { _, _ in synchronizeDeliveryChapter() }
@@ -417,7 +427,11 @@ private struct MobileHomeView: View {
             let today = DaySnapshot(id: todayDayID ?? home.dateLabel, dateLabel: home.dateLabel,
                                     slots: home.periods, unassigned: day?.unassigned ?? "")
             let emptyDay = session.isEmptyPlanDay(today)
-            let visiblePeriods = emptyDay ? home.periods : home.periods.filter { !$0.tasks.isEmpty }
+            let displayPeriods = session.snapshot?.week.linkage == nil ? home.periods : home.periods.map { period in
+              let open = period.tasks.filter { !session.effectiveTaskCompletion(dayID: todayDayID ?? home.dateLabel, period: period, task: $0) }
+              return PeriodSnapshot(id: period.id, title: period.title, text: open.map(\.text).joined(separator: "\n"), tasks: open)
+            }
+            let visiblePeriods = emptyDay ? displayPeriods : displayPeriods.filter { !$0.tasks.isEmpty }
             HomeScheduleSection(isEmpty: emptyDay) {
               if !visiblePeriods.isEmpty {
                 MobileTodayChecklist(
@@ -536,6 +550,7 @@ private struct MobileHomeView: View {
         .safeAreaPadding(.bottom, 8)
       }
       .refreshable { await session.refresh() }
+      .onChange(of: PlanningDate.key(context.date)) { _, _ in Task { await session.refresh() } }
     }
   }
 
@@ -618,7 +633,7 @@ private struct MobileHomeView: View {
     let deliveries = session.snapshot?.week.deliveries ?? home.visibleDeliveries
     if deliveries.contains(where: { delivery in
       isLocallyCompleting(delivery)
-        && Self.dateNumbers(in: delivery.dateLabel ?? "") == Self.dateNumbers(in: home.dateLabel)
+        && (session.snapshot?.week.linkage != nil || Self.dateNumbers(in: delivery.dateLabel ?? "") == Self.dateNumbers(in: home.dateLabel))
         && matchingTaskKeys(for: delivery).contains(taskMatchKey(periodID: period.id, taskID: task.id))
     }) {
       return true
@@ -628,6 +643,16 @@ private struct MobileHomeView: View {
   }
 
   private func requestDeliveryToggle(_ delivery: DeliverySnapshot) {
+    if !session.effectiveDeliveryCompletion(delivery), !session.isDeliveryTogglePending(delivery),
+       let children = session.snapshot?.week.linkage?.pendingChildren(of: delivery.id), !children.isEmpty {
+      confirmedChildIDs = children.map(\.id)
+      deliveryConfirmation = delivery
+      return
+    }
+    submitDeliveryToggle(delivery)
+  }
+
+  private func submitDeliveryToggle(_ delivery: DeliverySnapshot, confirmedTaskIDs: [String]? = nil) {
     if case .striking(let mutation) = deliveryChapter.phase,
       mutation.deliveryID == delivery.id
     {
@@ -650,7 +675,6 @@ private struct MobileHomeView: View {
       let mutation = deliveryChapter.begin(deliveryID: delivery.id)
     else { return }
     deliveryNotice = nil
-    let hasMatch = !matchingTaskKeys(for: delivery).isEmpty
     let completesAll =
       !(session.snapshot?.week.deliveries ?? []).isEmpty
       && (session.snapshot?.week.deliveries ?? []).allSatisfy {
@@ -663,7 +687,7 @@ private struct MobileHomeView: View {
         return
       }
       guard deliveryChapter.finishStrike(mutation) == .submit(mutation) else { return }
-      let result = await session.toggleDelivery(delivery, isCompleted: true, mutation: mutation)
+      let result = await session.toggleDelivery(delivery, isCompleted: true, mutation: mutation, confirmedTaskIDs: confirmedTaskIDs)
       guard !Task.isCancelled else { return }
       deliveryChapter.resolve(
         result,
@@ -672,12 +696,8 @@ private struct MobileHomeView: View {
       )
 
       switch result {
-      case .confirmed(let snapshot):
-        if !hasMatch,
-          snapshot.week.deliveries.first(where: { $0.id == delivery.id })?.isCompleted == true
-        {
-          deliveryNotice = "交付物已完成，但未找到同日可联动的时段安排。"
-        }
+      case .confirmed:
+        break
       case .failed(let message):
         deliveryNotice = message
       case .queuedOffline, .staleGeneration:
@@ -766,7 +786,14 @@ private struct MobileHomeView: View {
   }
 
   private func matchingTaskKeys(for delivery: DeliverySnapshot) -> Set<String> {
-    guard let dateLabel = delivery.dateLabel, let week = session.snapshot?.week else { return [] }
+    guard let week = session.snapshot?.week else { return [] }
+    if let graph = week.linkage {
+      let ids = Set(graph.children(of: delivery.id).map(\.id))
+      return Set(week.days.flatMap(\.slots).flatMap { period in
+        period.tasks.filter { ids.contains($0.logicalTaskID ?? "") }.map { taskMatchKey(periodID: period.id, taskID: $0.id) }
+      })
+    }
+    guard let dateLabel = delivery.dateLabel else { return [] }
     let rows =
       week.days.map { ($0.dateLabel, $0.slots) }
       + week.historicalRows.map { ($0.dateLabel, $0.slots) }
@@ -1078,6 +1105,8 @@ private struct MobileTimetableView: View {
   @ObservedObject var session: MobileSession
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var detail: DocumentDetail?
+  @State private var showEventEditor = false
+  @State private var viewingDate = Date()
   @State private var availableWeekRange: ClosedRange<Int>?
   @State private var displayedSnapshot: TimetableSnapshot?
   @State private var selectedWeek = 1
@@ -1097,8 +1126,20 @@ private struct MobileTimetableView: View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: 18) {
+          DatePicker("查看日期", selection: $viewingDate, displayedComponents: .date)
+            .environment(\.timeZone, PlanningDate.calendar.timeZone)
+            .onChange(of: viewingDate) { _, date in
+              availableWeekRange = nil
+              selectedDayID = PlanningDate.key(date); agendaDayID = selectedDayID
+            }
           if let detail, let range = availableWeekRange, let snapshot = displayedSnapshot {
             timetableContent(detail: detail, range: range, snapshot: snapshot)
+          } else if let detail {
+            let schedule = StudyRocketTimetableParser.snapshot(from: detail.markdown, now: viewingDate)
+            if schedule.days.contains(where: { !$0.entries.isEmpty }) {
+              MobileTimetableDateStrip(days: schedule.days, selectedDayID: selectedDayID, todayID: schedule.referenceDate, onSelect: { selectDay($0) })
+              MobileTimetableAgendaTransitionContainer(snapshot: schedule, displayedDayID: selectedDayID.isEmpty ? schedule.referenceDate : selectedDayID, direction: .next, reduceMotion: reduceMotion)
+            } else { unavailableContent }
           } else if isLoading {
             ProgressView("正在读取课表")
               .frame(maxWidth: .infinity, minHeight: 260)
@@ -1109,11 +1150,25 @@ private struct MobileTimetableView: View {
         .padding(MobileTheme.pageInset)
       }
       .background(MobileTheme.groupedBackground)
+      .sheet(isPresented: $showEventEditor) {
+        if let detail {
+          OneOffEventEditor(source: detail.markdown) { events in
+            guard await session.saveEvents(events, original: detail.markdown) else {
+              throw PlanningChangeRouter.RoutingError(session.pendingToggleSyncIssue ?? "活动未保存，预览已保留，请重试。")
+            }
+            await load()
+          }
+        }
+      }
       .navigationTitle("课表")
       #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
       #endif
       .toolbar {
+        ToolbarItem(placement: .primaryAction) {
+          Button("单次活动", systemImage: "calendar.badge.plus") { showEventEditor = true }
+            .disabled(detail == nil || session.state != .online)
+        }
         ToolbarItem(placement: .primaryAction) {
           Button {
             Task {
@@ -1228,6 +1283,13 @@ private struct MobileTimetableView: View {
       displayedSnapshot = nil
       selectedDayID = ""
       agendaDayID = ""
+      return
+    }
+    let current = StudyRocketTimetableParser.snapshot(from: value.markdown)
+    if current.status == .beforeTerm || current.status == .afterTerm ||
+        (current.days.contains(where: { $0.id == PlanningDate.key(.now) }) && current.teachingWeek == nil) {
+      availableWeekRange = nil; displayedSnapshot = current
+      selectedDayID = PlanningDate.key(.now); agendaDayID = selectedDayID
       return
     }
     availableWeekRange = range
@@ -2135,12 +2197,23 @@ private struct MobilePlanView: View {
   @State private var futureRowsExpanded = false
   @State private var expandedEmptyDates = Set<String>()
   @State private var assignment: MobilePendingTaskAssignment?
+  @State private var showLinkageEditor = false
+  @State private var linkageTimetable = ""
+  @State private var linkagePlan: WeeklyPlanSnapshot?
+  @State private var linkageRevision: String?
 
   var body: some View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: 18) {
           planHeader
+          Button(session.snapshot?.week.linkage == nil ? "启用任务联动" : "任务关联、改期与已完成") {
+            Task {
+              linkageTimetable = await session.document(for: "timetable")?.markdown ?? ""
+              linkagePlan = session.snapshot?.week; linkageRevision = session.snapshot?.revision
+              showLinkageEditor = true
+            }
+          }
           MobileSnapshotFreshness(session: session)
           if let week = session.snapshot?.week, !week.days.isEmpty {
             scheduleContent(week)
@@ -2169,6 +2242,15 @@ private struct MobilePlanView: View {
         }
         .padding(MobileTheme.pageInset)
         .safeAreaPadding(.bottom, 8)
+      }
+      .sheet(isPresented: $showLinkageEditor) {
+        if let week = linkagePlan {
+          TaskLinkageEditor(plan: week, timetableSource: linkageTimetable) { plan, events in
+            guard await session.saveWeek(plan, events: events, originalTimetable: linkageTimetable, baseRevision: linkageRevision) else {
+              throw PlanningChangeRouter.RoutingError(session.pendingToggleSyncIssue ?? "计划尚未提交，已保留本地草稿。")
+            }
+          }
+        }
       }
       .navigationTitle("周计划")
       .onChange(of: session.repositoryGeneration) { _, _ in expandedEmptyDates.removeAll() }

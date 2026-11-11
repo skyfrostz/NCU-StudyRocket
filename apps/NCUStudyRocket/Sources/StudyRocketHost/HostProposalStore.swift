@@ -35,9 +35,18 @@ final class HostProposalStore: @unchecked Sendable {
         let resolvedRoot = root.resolvingSymlinksInPath()
         let resolvedURL = url.resolvingSymlinksInPath()
         guard resolvedURL.path.hasPrefix(resolvedRoot.path + "/"), !isSymlink(url), let original = try? String(contentsOf: url, encoding: .utf8) else { return failure("无法读取草案目标文件。") }
-        let proposedContent = path == "工作台/下周计划.md" && tool == "propose_changes"
-            ? WeeklyPlanTaskNormalizer.normalizedMarkdown(content)
-            : content
+        let proposedContent: String
+        var routedTimetable: (String, String)?
+        do {
+            if path == "工作台/下周计划.md", tool == "propose_changes" {
+                let timetableURL = root.appendingPathComponent(StudyRocketTimetableParser.sourceFile)
+                if !isSymlink(timetableURL), let timetable = try? String(contentsOf: timetableURL, encoding: .utf8) {
+                    let routed = try PlanningChangeRouter.route(week: content, original: original, timetable: timetable)
+                    proposedContent = routed.week
+                    if let next = routed.timetable { routedTimetable = (timetable, next) }
+                } else { proposedContent = try PlanningProposalValidation.prepare(path: path, original: original, proposed: content) }
+            } else { proposedContent = tool == "propose_changes" ? try PlanningProposalValidation.prepare(path: path, original: original, proposed: content) : content }
+        } catch { return failure(error.localizedDescription) }
         if tool == "propose_skill_update" {
             let lines = proposedContent.components(separatedBy: .newlines)
             guard lines.count <= 300, lines.first == "---", lines.dropFirst().contains("---"), proposedContent.contains("name:"), proposedContent.contains("description:") else { return failure("Skill 草案的 frontmatter 或长度不符合要求。") }
@@ -46,12 +55,19 @@ final class HostProposalStore: @unchecked Sendable {
         lock.lock()
         values = values.filter { !($0.value.turnID == turnID && $0.value.relativePath == path) }
         values[proposal.id] = proposal
+        if let (before, after) = routedTimetable {
+            let eventPath = StudyRocketTimetableParser.sourceFile
+            values = values.filter { !($0.value.turnID == turnID && $0.value.relativePath == eventPath) }
+            let event = ProposalDTO(id: UUID().uuidString, turnID: turnID, relativePath: eventPath, originalContent: before, proposedContent: after, reason: "活动分流：单次活动进入指定日期课表。", baseHash: hash(before), kind: "markdown")
+            values[event.id] = event
+        }
         lock.unlock()
         return ["success": true, "contentItems": [["type": "inputText", "text": "已建立修改草案：\(path)。应用将展示差异，确认后才会写入。"]]]
     }
 
     func apply(_ request: ProposalApplyRequest) throws -> ProposalListResponse {
         mutationLock.lock(); defer { mutationLock.unlock() }
+        let repositoryLock = try PlanningRepositoryLock.acquire(root: root); defer { repositoryLock.unlock() }
         guard !request.proposalIDs.isEmpty, !request.authorization.isEmpty else { throw HostWriteError(code: "authorization_required", message: "应用草案需要确认授权。") }
         guard request.metadata.apiVersion == StudyRocketAPI.version else { throw HostWriteError(code: "unsupported_version", message: "客户端版本不兼容，请更新 StudyRocket。") }
         lock.lock()
@@ -60,6 +76,15 @@ final class HostProposalStore: @unchecked Sendable {
         lock.lock()
         let selected = request.proposalIDs.compactMap { values[$0] }
         lock.unlock()
+        let planningPaths: Set<String> = ["工作台/下周计划.md", StudyRocketTimetableParser.sourceFile]
+        lock.lock()
+        let related = values.values.filter { proposal in
+            planningPaths.contains(proposal.relativePath) && selected.contains { $0.turnID == proposal.turnID && planningPaths.contains($0.relativePath) }
+        }
+        lock.unlock()
+        guard related.allSatisfy({ request.proposalIDs.contains($0.id) }) else {
+            throw HostWriteError(code: "planning_pair_required", message: "同次计划中的任务与活动草案需要一起确认。")
+        }
         guard selected.count == Set(request.proposalIDs).count else { throw HostWriteError(code: "proposal_not_found", message: "部分草案已不存在，请重新加载。") }
         let targets = selected.map { root.appendingPathComponent($0.relativePath).standardizedFileURL.resolvingSymlinksInPath() }
         guard Set(targets).count == selected.count else {

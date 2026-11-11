@@ -167,6 +167,10 @@ public enum StudyRocketTimetableParser {
     public static let defaultClassLabel = "261 一班"
 
     public static func snapshot(from source: String?, now: Date = .now) -> TimetableSnapshot {
+        OneOffSchedule.merged(academicSnapshot(from: source, now: now), source: source, now: now)
+    }
+
+    private static func academicSnapshot(from source: String?, now: Date = .now) -> TimetableSnapshot {
         let calendar = makeCalendar()
         let referenceDate = isoDate(now, calendar: calendar)
         guard let source else {
@@ -267,6 +271,10 @@ public enum StudyRocketTimetableParser {
         teachingWeek: Int,
         now: Date = .now
     ) -> TimetableSnapshot {
+        OneOffSchedule.merged(academicSnapshot(from: source, teachingWeek: teachingWeek, now: now), source: source, now: now, selectedWeek: true)
+    }
+
+    private static func academicSnapshot(from source: String?, teachingWeek: Int, now: Date) -> TimetableSnapshot {
         let calendar = makeCalendar()
         let referenceDate = isoDate(now, calendar: calendar)
         guard let source else {

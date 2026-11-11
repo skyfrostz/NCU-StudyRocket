@@ -17,7 +17,8 @@ final class HostSnapshotBuilder {
     func build(now: Date = .now) -> SnapshotResponse {
         let planText = read("工作台/下周计划.md")
         let activePlan = WeeklyDeliveryRollover.projected(planText, now: now, fileURL: root.appendingPathComponent("工作台/下周计划.md"))
-        let plan = parsePlan(activePlan, now: now, completions: parsePeriodCompletions(planText))
+        let rawPlan = parsePlan(activePlan, now: now, completions: parsePeriodCompletions(planText))
+        let plan = ((try? TaskLinkageMarkdown.read(planText)) ?? nil)?.projected(rawPlan, now: now) ?? rawPlan
         let daily = parseDaily(now: now)
         let timetable = StudyRocketTimetableParser.snapshot(
             from: readOptional(StudyRocketTimetableParser.sourceFile),
@@ -38,7 +39,7 @@ final class HostSnapshotBuilder {
             timetable: timetable
         )
         let month = DateFormatter.monthFile.string(from: now)
-        let revision = revision(week: WeeklyDeliveryRollover.weekStart(now), paths: [
+        let revision = revision(week: WeeklyDeliveryRollover.weekStart(now) + "|" + PlanningDate.key(now), paths: [
             "工作台/下周计划.md",
             "工作台/每日记录/\(month).md",
             "工作台/进度日志.md",
@@ -402,6 +403,9 @@ final class HostSnapshotBuilder {
     }
 
     private func parseDate(_ text: String, relativeTo reference: Date) -> Date? {
+        if text.range(of: #"\d{4}-\d{2}-\d{2}"#, options: .regularExpression) != nil {
+            return PlanningDate.date(text, relativeTo: reference)
+        }
         guard let match = text.range(of: #"(?:(\d{4})\s*[-年]\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?"#, options: .regularExpression) else { return nil }
         let value = String(text[match])
         let numbers = value.split { !$0.isNumber }.compactMap { Int($0) }
@@ -441,7 +445,7 @@ final class HostSnapshotBuilder {
     }
 
     private func revision(week: String, paths: [String]) -> String {
-        let joined = ([week] + paths.map { read($0) }).joined(separator: "\u{0}" )
+        let joined = ([root.standardizedFileURL.resolvingSymlinksInPath().path, week] + paths.map { read($0) }).joined(separator: "\u{0}" )
         return SHA256.hash(data: Data(joined.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 

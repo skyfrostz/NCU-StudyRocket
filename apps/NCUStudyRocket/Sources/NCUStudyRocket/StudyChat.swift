@@ -531,6 +531,7 @@ final class CodexAppServerClient: NSObject {
         let continuity = legacyContinuity(from: legacyHistory)
         return """
     你是 StudyRocket 学业助理：既是完成课程、计划、复盘、科研、竞赛和保研工作的协作伙伴与导师，也是在学习、成长、生活适应或个人困扰中可以倾诉的可信赖同行者。根据用户当下目的切换语气，不把每次交流都变成效率优化或计划任务。先读 AGENTS.md、PROFILE.md 和相关工作台 Markdown；遵守仓库规则，未知信息标记【待核实】，不编造 GPA、排名、名额、日期或推免比例。学校政策必须基于仓库官方文件，时效信息需要联网核实并给官方来源。
+    \(PlanningProposalValidation.instructions)
     你运行在只读任务中，绝不直接编辑、创建、删除或提交文件。用户要求更新计划、交付物、复盘或档案时，读取当前内容后调用 `studyrocket.propose_changes`，每个目标文件调用一次并传入完整候选正文和理由；应用会在用户确认后写入。只有周复盘有稳定证据时才调用 `studyrocket.propose_skill_update`。绝不调用旧的无命名空间工具名 `studyrocket_propose_changes` 或 `studyrocket_propose_skill_update`。若当前工具目录在 functions.exec 中提供 tools.studyrocket__propose_changes 或 tools.studyrocket__propose_skill_update，请使用其实际声明；这仍通过 StudyRocket 的草案处理器，不能用 shell 或直接写文件代替。
     课程答疑采用“解释 -> 例子 -> 自测 -> 归档”。计划必须是可勾选交付物，保留缓冲并给撞车降级方案。编辑工作台/下周计划.md 时，同一时段的多个事项用 <br> 分隔且不要在时段单元格内写 Markdown 复选框；带明确开始时间的事项必须归入上午（12:00 前）、中午（12:00-17:59）或晚上（18:00 起），只有无法判断时段的事项才能放入待分配。只记录用户明确提供的事实，不把推测写进行为账。执行日结、周复盘、月复盘或规划前，读取工作台/助理偏好与习惯.md。只有周复盘中同类事实连续至少 3 次时，才可提出 Skill 修改草案；不得把个人事实写进 Skill。
     沟通分情境处理。课程答疑、工作执行和保研咨询时，保持直接、清晰、证据扎实和可执行。用户谈压力、挫败、疲惫、犹豫、关系、生活困扰，或只是想聊聊时，进入陪伴模式：先用自然语言准确回应用户说了什么和难处，不预设、不评判、不急于正能量化；不要把承接限制为 1-2 句，也不要立刻下结论、列待办、给降级方案或把话题拉回学习。允许用户选择继续倾诉、一起梳理，或转为具体行动；每次最多提出一个温和的开放问题，给建议前先确认用户是否希望听建议。混合情境先完成陪伴，再共同确认是否需要行动方案。如果用户报告了完成的交付物，先具体指出已完成的事实及其意义，再继续安排。普通事实问答不要机械加安慰语。可以温暖、真诚且有人情味，但禁止空泛鼓励、模板化正能量、过度共情、心理诊断、淡化痛苦、依赖性表达或结果保证；不声称能取代现实中的朋友、家人、咨询师或医疗服务。若用户出现自伤、自杀、伤害他人、无法保证安全等即时风险，优先平静地确认当下安全，并明确鼓励其立即联系身边可信赖的人、当地紧急服务或急诊支持；不要用成绩、计划或一般建议转移风险。情绪只用于当前回应，不写入每日账、复盘、习惯画像或其他 Markdown。
@@ -1356,6 +1357,12 @@ final class StudyChatStore: ObservableObject {
 
     func applySelectedChanges(workspace: WorkspaceStore, for turnID: String) {
         let selected = transcript.proposals.filter { $0.turnID == turnID && $0.isSelected }; guard !selected.isEmpty else { return }
+        let planningPaths = Set(["工作台/下周计划.md", StudyRocketTimetableParser.sourceFile])
+        let related = transcript.proposals.filter { $0.turnID == turnID && planningPaths.contains($0.relativePath) }
+        if Set(related.map(\.relativePath)).count > 1 && !related.allSatisfy({ $0.isSelected }) {
+            errorMessage = "同次计划中的任务与活动草案需要一起确认。"
+            return
+        }
         if usingHost {
             let ids = selected.compactMap { hostProposalIDs[$0.id] }
             let generation = connectionGeneration
@@ -1485,7 +1492,17 @@ final class StudyChatStore: ObservableObject {
             guard tool == StudyRocketDynamicToolContract.proposalTool else { throw StudyChatError.protocolError("不支持的工具。") }
             guard repository.isAllowedStudyPath(path) else { throw MarkdownError.outsideWorkspace }
             let original = try repository.read(path)
-            let proposal = MarkdownChangeProposal(turnID: turnID, relativePath: path, originalContent: original, proposedContent: content, reason: reason, baseHash: repository.hash(original))
+            var prepared = try PlanningProposalValidation.prepare(path: path, original: original, proposed: content)
+            if path == "工作台/下周计划.md", let timetable = try? repository.read(StudyRocketTimetableParser.sourceFile) {
+                let routed = try PlanningChangeRouter.route(week: prepared, original: original, timetable: timetable)
+                prepared = routed.week
+                if let next = routed.timetable {
+                    let eventPath = StudyRocketTimetableParser.sourceFile
+                    transcript.proposals.removeAll { $0.turnID == turnID && $0.relativePath == eventPath }
+                    transcript.proposals.append(MarkdownChangeProposal(turnID: turnID, relativePath: eventPath, originalContent: timetable, proposedContent: next, reason: "活动分流：单次活动进入指定日期课表。", baseHash: repository.hash(timetable)))
+                }
+            }
+            let proposal = MarkdownChangeProposal(turnID: turnID, relativePath: path, originalContent: original, proposedContent: prepared, reason: reason, baseHash: repository.hash(original))
             transcript.proposals.removeAll { $0.turnID == turnID && $0.relativePath == path }; transcript.proposals.append(proposal)
             transcript.expandedProposalTurnIDs.insert(turnID)
             return ["success": true, "contentItems": [["type": "inputText", "text": "已建立修改草案：\(path)。应用将展示差异，用户确认后才会写入。"]]]
@@ -1521,6 +1538,7 @@ extension MarkdownRepository {
     }
 
     func saveBatch(_ changes: [Change]) throws {
+        let repositoryLock = try PlanningRepositoryLock.acquire(root: root); defer { repositoryLock.unlock() }
         guard !changes.isEmpty else { return }
         let targets = changes.map { url($0.relative).standardizedFileURL.resolvingSymlinksInPath() }
         guard Set(targets).count == changes.count else { throw MarkdownError.conflict }
@@ -1529,7 +1547,7 @@ extension MarkdownRepository {
             guard isAllowedStudyPath(change.relative) else { throw MarkdownError.outsideWorkspace }
             let target = url(change.relative).standardizedFileURL
             guard target.pathExtension.lowercased() == "md" else { throw MarkdownError.nonMarkdown }
-            let current = try Data(contentsOf: target)
+            let current = (try? Data(contentsOf: target)) ?? Data()
             let currentText = String(data: current, encoding: .utf8) ?? ""
             guard hash(currentText) == change.loadedHash else { throw MarkdownError.conflict }
             originals.append((target, current))

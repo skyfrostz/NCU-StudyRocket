@@ -39,19 +39,31 @@ final class HostWriteService {
 
     func applyWeek(_ request: PlanWriteRequest) throws -> SnapshotResponse {
         writeLock.lock(); defer { writeLock.unlock() }
+        let repositoryLock = try PlanningRepositoryLock.acquire(root: root); defer { repositoryLock.unlock() }
         if let cached = replayedValue(for: request.metadata.idempotencyKey) { return cached }
         try ensureAPIVersion(request.metadata.apiVersion)
-        let plan = WeeklyPlanTaskNormalizer.normalized(request.plan)
+        let normalized = WeeklyPlanTaskNormalizer.normalized(request.plan)
+        var plan = normalized
         try ensureNoReservedMarkers(in: plan)
         let relative = "工作台/下周计划.md"
         let source = try read(relative)
         let current = try ensureRevision(request.metadata.baseRevision)
+        let storedLinkage = try TaskLinkageMarkdown.read(source)
+        if let graph = normalized.linkage { plan = graph.applyingScheduleEdits(normalized, previous: current.week).projected(normalized) }
+        if storedLinkage != nil && plan.linkage == nil { throw HostWriteError(code: "planning_upgrade_required", message: "请更新客户端后再保存任务关联计划。") }
+        if let graph = plan.linkage {
+            _ = try graph.validated()
+            guard storedLinkage == nil ? graph.activationDate == PlanningDate.key(.now) : graph.activationDate == storedLinkage?.activationDate else { throw TaskLinkageError.changed }
+        }
+        if let graph = plan.linkage, graph.tasks.contains(where: { !$0.cancelled && ($0.category == .event || ($0.category == .unclassified && $0.reminderForTaskID == nil)) }) {
+            throw TaskLinkageError.categoryRequired
+        }
         var completionRecords = try parsePeriodCompletionRecords(source)
-        let sourceMigrations: [String: String] = Dictionary(uniqueKeysWithValues: plan.deliveries.compactMap { delivery -> (String, String)? in
+        let sourceMigrations: [String: String] = Dictionary(plan.deliveries.compactMap { delivery -> (String, String)? in
             guard let previous = current.week.deliveries.first(where: { $0.id == delivery.id }),
                   previous.text != delivery.text else { return nil }
             return (DeliveryPeriodMatcher.sourceKey(for: previous.text), DeliveryPeriodMatcher.sourceKey(for: delivery.text))
-        })
+        }, uniquingKeysWith: { _, latest in latest })
         completionRecords = Set(completionRecords.map { record in
             guard let source = record.source, let migrated = sourceMigrations[source] else { return record }
             return PersistedPeriodCompletion(dayID: record.dayID, periodID: record.periodID, textHash: record.textHash, source: migrated)
@@ -64,8 +76,17 @@ final class HostWriteService {
         let buffered = try updateBuffers(deliveries, rules: plan.bufferRules)
         let validKeys = periodCompletionKeys(in: plan)
         let validRecords = Set(completionRecords.filter { validKeys.contains($0.key) })
-        let updated = try updatePeriodCompletionBlock(buffered, records: validRecords)
-        try save(updated, relative: relative, expectedHash: hash(source))
+        let completed = try updatePeriodCompletionBlock(buffered, records: validRecords)
+        let updated = try plan.linkage.map { try TaskLinkageMarkdown.write($0, in: completed) } ?? completed
+        if let events = request.events {
+            let timetablePath = StudyRocketTimetableParser.sourceFile
+            let timetable = try read(timetablePath)
+            guard request.eventBaseHash == hash(timetable) else { throw HostWriteError(code: "conflict", message: "课表已被修改，请刷新后再保存活动。") }
+            let newTimetable = try OneOffSchedule.write(events, in: timetable)
+            try savePlanningPair(plan: updated, originalPlan: source, timetable: newTimetable, originalTimetable: timetable)
+        } else {
+            try save(updated, relative: relative, expectedHash: hash(source))
+        }
         let value = snapshotBuilder.build()
         storeReplay(value, for: request.metadata.idempotencyKey)
         return value
@@ -73,11 +94,19 @@ final class HostWriteService {
 
     func toggleDelivery(_ request: DeliveryToggleRequest) throws -> SnapshotResponse {
         writeLock.lock(); defer { writeLock.unlock() }
+        let repositoryLock = try PlanningRepositoryLock.acquire(root: root); defer { repositoryLock.unlock() }
         if let cached = replayedValue(for: request.metadata.idempotencyKey) { return cached }
         try ensureAPIVersion(request.metadata.apiVersion)
         let current = try ensureRevision(request.metadata.baseRevision)
         let relative = "工作台/下周计划.md"
         let source = try read(relative)
+        _ = try TaskLinkageMarkdown.read(source)
+        if var graph = current.week.linkage {
+            let matches = graph.deliveries.filter { request.deliveryID == nil ? $0.text == request.text : $0.id == request.deliveryID }
+            guard matches.count == 1, let delivery = matches.first else { throw TaskLinkageError.changed }
+            try graph.setDelivery(delivery.id, completed: request.isCompleted, confirmedTaskIDs: request.confirmedTaskIDs)
+            return try saveLinked(graph, plan: current.week, source: source, idempotencyKey: request.metadata.idempotencyKey)
+        }
         let marker = request.isCompleted ? "- [x]" : "- [ ]"
         let other = request.isCompleted ? "- [ ]" : "- [x]"
         var lines = source.components(separatedBy: .newlines)
@@ -144,11 +173,19 @@ final class HostWriteService {
 
     func togglePeriod(_ request: PeriodCompletionToggleRequest) throws -> SnapshotResponse {
         writeLock.lock(); defer { writeLock.unlock() }
+        let repositoryLock = try PlanningRepositoryLock.acquire(root: root); defer { repositoryLock.unlock() }
         if let cached = replayedValue(for: request.metadata.idempotencyKey) { return cached }
         try ensureAPIVersion(request.metadata.apiVersion)
         let relative = "工作台/下周计划.md"
         let source = try read(relative)
         let current = try ensureRevision(request.metadata.baseRevision)
+        if let logicalID = request.logicalTaskID, var graph = current.week.linkage {
+            _ = try TaskLinkageMarkdown.read(source)
+            guard let a = graph.assignments.first(where: { $0.id == request.assignmentID }), a.taskID == logicalID,
+                  a.date == request.dayID, a.periodID == request.periodID, a.legacyTaskID == request.taskID else { throw TaskLinkageError.changed }
+            try graph.setTask(logicalID, completed: request.isCompleted)
+            return try saveLinked(graph, plan: current.week, source: source, idempotencyKey: request.metadata.idempotencyKey)
+        }
         guard isISODate(request.dayID), Self.periodIDs.contains(request.periodID) else {
             throw HostWriteError(code: "invalid_period", message: "日期或时段无效，请重新加载计划。")
         }
@@ -179,6 +216,12 @@ final class HostWriteService {
             )
         }
 
+        _ = try TaskLinkageMarkdown.read(source)
+        if var graph = current.week.linkage {
+            guard let assignment = graph.assignments.first(where: { $0.active && $0.date == request.dayID && $0.periodID == request.periodID && $0.legacyTaskID == taskID }) else { throw TaskLinkageError.changed }
+            try graph.setTask(assignment.taskID, completed: request.isCompleted)
+            return try saveLinked(graph, plan: current.week, source: source, idempotencyKey: request.metadata.idempotencyKey)
+        }
         let validKeys = periodCompletionKeys(in: current.week)
         var records = Set(try parsePeriodCompletionRecords(source).filter { validKeys.contains($0.key) })
         records = expandingLegacyRecords(
@@ -199,8 +242,39 @@ final class HostWriteService {
         return value
     }
 
+    private func savePlanningPair(plan: String, originalPlan: String, timetable: String, originalTimetable: String) throws {
+        let changes = [("工作台/下周计划.md", originalPlan, plan), (StudyRocketTimetableParser.sourceFile, originalTimetable, timetable)]
+        try fileManager.createDirectory(at: backupRoot, withIntermediateDirectories: true)
+        for (path, before, _) in changes {
+            guard try read(path) == before else { throw TaskLinkageError.changed }
+            try Data(before.utf8).write(to: backupRoot.appendingPathComponent(path.replacingOccurrences(of: "/", with: "_") + "." + UUID().uuidString + ".bak"), options: .atomic)
+        }
+        var written: [(String, String)] = []
+        do {
+            for (path, before, after) in changes {
+                guard try read(path) == before else { throw TaskLinkageError.changed }
+                try Data(after.utf8).write(to: root.appendingPathComponent(path), options: .atomic)
+                written.append((path, before))
+            }
+        } catch {
+            for (path, before) in written.reversed() { try Data(before.utf8).write(to: root.appendingPathComponent(path), options: .atomic) }
+            throw error
+        }
+        if recordLocalHistory { LocalSaveHistory.shared.record(changes.map { .init(relative: $0.0, before: Data($0.1.utf8), after: Data($0.2.utf8)) }, in: root) }
+    }
+
+    private func saveLinked(_ graph: TaskLinkage, plan: WeeklyPlanSnapshot, source: String, idempotencyKey: String) throws -> SnapshotResponse {
+        let projected = graph.projected(plan)
+        let updated = try TaskLinkageMarkdown.write(projected.linkage ?? graph, in: updateDeliveries(source, deliveries: projected.deliveries))
+        try save(updated, relative: "工作台/下周计划.md", expectedHash: hash(source))
+        let value = snapshotBuilder.build()
+        storeReplay(value, for: idempotencyKey)
+        return value
+    }
+
     func appendFact(_ request: FactWriteRequest) throws -> SnapshotResponse {
         writeLock.lock(); defer { writeLock.unlock() }
+        let repositoryLock = try PlanningRepositoryLock.acquire(root: root); defer { repositoryLock.unlock() }
         try ensureAPIVersion(request.metadata.apiVersion)
         guard request.repositoryID == RequestSigning.bodyHash(Data(root.path.utf8)),
               UUID(uuidString: request.metadata.idempotencyKey) == request.entry.id else {
@@ -214,6 +288,7 @@ final class HostWriteService {
 
     func applyDaily(_ request: DailyWriteRequest) throws -> SnapshotResponse {
         writeLock.lock(); defer { writeLock.unlock() }
+        let repositoryLock = try PlanningRepositoryLock.acquire(root: root); defer { repositoryLock.unlock() }
         if let cached = replayedValue(for: request.metadata.idempotencyKey) { return cached }
         try ensureAPIVersion(request.metadata.apiVersion)
         guard isISODate(request.entry.date) else {

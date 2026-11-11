@@ -32,6 +32,8 @@ description: 维护和排查 NCU StudyRocket 的 macOS Desktop、Mac Host、iPho
 - 任务权限由 Codex 桌面端逐任务选择；项目 `.codex/config.toml` 不得加入旧 `sandbox_mode`、`sandbox_workspace_write` 或 `approval_policy`。
 - 不擅自启动、停止或改写 Tailscale、Shadowrocket、系统代理、配对或签名配置。网络修复先做只读检查。
 - 同一时段可包含多条独立任务；时段行 ID 是结构标识，日期关联必须使用实际日期标签，任务关联必须使用独立任务 ID。不得把多项任务回退为一段文本，也不得把 Markdown 的 `[ ]` / `[x]` 原样渲染为任务标题。
+- 启用任务联动后的 `studyrocket:task-links` 管理块保存稳定任务、安排和交付物身份；改名、改期保留身份，完成按 ID 联动，文字相似只能建议关联。整体完成必须确认当前未完成子项集合，撤销只撤销该次操作带动的状态。首次迁移由应用预览确认，不直接修改真实计划。
+- 一次性到场活动使用课表独立 `studyrocket:events` 管理块；课程导入必须保留。计划和活动成组草案在预览前完成分流，Desktop/Host 写入使用 `PlanningRepositoryLock` 并在锁内核对 revision/哈希。离线整份计划草稿保留原 revision，旧版或冲突草稿不得套用最新 revision 自动覆盖。
 - 离线队列保存目标状态而非“再切换一次”的意图。Host 已到目标状态时可确认该条；定位不足、改名、删除或 legacy 队列必须逐项审核，禁止批量清空用户缓存、待同步项目或真实计划。
 - iOS 后台不保证继续运行 SSE 或离线重放。只有应用回到前台后的权威 snapshot 和实际补交结果可以确认同步完成。
 

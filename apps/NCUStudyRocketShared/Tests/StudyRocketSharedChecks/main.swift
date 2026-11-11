@@ -444,3 +444,5 @@ do {
 #if os(macOS)
 try checkLocalSaveHistory()
 #endif
+
+try runTaskLinkageChecks()

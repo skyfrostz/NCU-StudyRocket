@@ -9,7 +9,7 @@ struct WeeklyCell: Identifiable, Hashable {
 }
 
 struct WeeklyDelivery: Identifiable, Hashable {
-    let id = UUID()
+    var id = UUID()
     var text: String
     var isCompleted: Bool
 }
@@ -83,6 +83,7 @@ struct WeeklyScheduledRow: Hashable {
 }
 
 struct WeeklyPlan {
+    var linkage: TaskLinkage?
     static let days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     static let periods = ["上午", "中午", "晚上"]
     static let periodIDs = ["morning", "noon", "evening"]
@@ -187,8 +188,10 @@ final class DashboardModel: ObservableObject {
                     isCompleted: false
                 )]
             }
-            return tasks.map { task in
+            return tasks.compactMap { task -> TodayPeriodTask? in
                 let taskKey = dayID.map { Self.periodTaskKey(dayID: $0, periodID: periodID, taskID: task.id) }
+                let completed = taskKey.flatMap { plan.periodTaskCompletion[$0] } ?? fallbackCompletion
+                if plan.linkage != nil && completed { return nil }
                 return TodayPeriodTask(
                     id: taskKey ?? "\(periodID)|\(task.id)",
                     dayID: dayID,
@@ -264,7 +267,7 @@ final class DashboardModel: ObservableObject {
     }
 
     @discardableResult
-    func toggleDelivery(_ id: UUID, workspace: WorkspaceStore) -> Bool {
+    func toggleDelivery(_ id: UUID, workspace: WorkspaceStore, confirmedTaskIDs: [String]? = nil) -> Bool {
         guard let index = plan.deliveries.firstIndex(where: { $0.id == id }) else { return false }
         let delivery = plan.deliveries[index]
         plan.deliveries[index].isCompleted.toggle()
@@ -279,7 +282,8 @@ final class DashboardModel: ObservableObject {
                 in: original,
                 with: plan,
                 delivery: delivery,
-                isCompleted: plan.deliveries[index].isCompleted
+                isCompleted: plan.deliveries[index].isCompleted,
+                confirmedTaskIDs: confirmedTaskIDs
             )
             try repository.save(replacement, relative: file, loadedHash: loadedHash)
             original = replacement
@@ -504,6 +508,7 @@ final class MarkdownRepository {
     }
     @discardableResult
     func save(_ content: String, relative: String, loadedHash: String, recordHistory: Bool = true) throws -> LocalSaveHistory.Change {
+        let repositoryLock = try PlanningRepositoryLock.acquire(root: root); defer { repositoryLock.unlock() }
         let target = try validatedMarkdownURL(relative)
         let previous = try? Data(contentsOf: target)
         let current = previous.flatMap { String(data: $0, encoding: .utf8) } ?? ""
@@ -659,6 +664,7 @@ enum MarkdownParser {
             }
         }
         applyPeriodCompletions(in: lines, referenceDate: referenceDate, to: &plan)
+        if let graph = try? TaskLinkageMarkdown.read(text) { plan.applyLinkage(graph, reference: referenceDate) }
         return plan
     }
 
@@ -710,15 +716,22 @@ enum MarkdownParser {
             with: plan,
             deliverySourceMigrations: deliverySourceMigrations
         )
-        return WeeklyDeliveryRollover.forSave(updated, previous: old)
+        let linked = plan.linkage.flatMap { try? TaskLinkageMarkdown.write($0.applyingScheduleEdits(plan.sharedSnapshot(), previous: weekly(old).sharedSnapshot()), in: updated) } ?? updated
+        return WeeklyDeliveryRollover.forSave(linked, previous: old)
     }
 
     static func replaceDeliveryCompletion(
         in source: String,
         with plan: WeeklyPlan,
         delivery: WeeklyDelivery,
-        isCompleted: Bool
+        isCompleted: Bool,
+        confirmedTaskIDs: [String]? = nil
     ) throws -> String {
+        if var graph = plan.linkage {
+            guard let node = graph.deliveries.first(where: { UUID(uuidString: $0.id) == delivery.id || PlanningDate.stableID($0.id) == delivery.id.uuidString }) else { throw TaskLinkageError.changed }
+            try graph.setDelivery(node.id, completed: isCompleted, confirmedTaskIDs: confirmedTaskIDs)
+            return try replaceLinked(in: source, graph: graph)
+        }
         let updated = replaceWeekly(source, with: plan)
         var records = Set(try periodCompletionRecords(in: updated))
         let deliverySource = DeliveryPeriodMatcher.sourceKey(for: delivery.text)
@@ -765,6 +778,11 @@ enum MarkdownParser {
         taskID: String,
         isCompleted: Bool
     ) throws -> String {
+        if var graph = try TaskLinkageMarkdown.read(source) {
+            guard let a = graph.assignments.first(where: { $0.active && $0.date == dayID && $0.periodID == periodID && $0.legacyTaskID == taskID }) else { throw TaskLinkageError.changed }
+            try graph.setTask(a.taskID, completed: isCompleted)
+            return try replaceLinked(in: source, graph: graph)
+        }
         guard WeeklyPlan.periodIDs.contains(periodID),
               isoDate(dayID) != nil,
               PeriodCompletion.isTaskKey(taskID) else { throw MarkdownError.invalidManagedBlock }
@@ -796,6 +814,12 @@ enum MarkdownParser {
             records.append(PeriodCompletionEntry(dayID: dayID, periodID: periodID, textHash: taskID, source: nil))
         }
         return try replacingPeriodCompletionBlock(in: source, records: records)
+    }
+
+    static func replaceLinked(in source: String, graph: TaskLinkage) throws -> String {
+        var plan = weekly(source)
+        plan.applyLinkage(graph)
+        return try TaskLinkageMarkdown.write(plan.linkage ?? graph, in: replaceWeekly(source, with: plan))
     }
 
     private static func applyPeriodCompletions(in lines: [String], referenceDate: Date, to plan: inout WeeklyPlan) {
@@ -1371,5 +1395,50 @@ enum MarkdownParser {
         let block = "### \(entry.date)\n- [ ] 今日完成的具体交付物：\(entry.deliverables.isEmpty ? "" : " " + entry.deliverables)\n- 净学习时长：\(entry.studyTime)\n- 入睡/起床：\(entry.sleep)\n- 运动：\(entry.exercise)\n- 明日第一任务：\(entry.firstTask)"
         if let range = text.range(of: "### \(entry.date)"), let next = text[range.upperBound...].range(of: "\n### ") { var result = text; result.replaceSubrange(range.lowerBound..<next.lowerBound, with: block); return result }
         return text.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + block + "\n"
+    }
+}
+
+extension WeeklyPlan {
+    func sharedSnapshot(reference: Date = .now) -> WeeklyPlanSnapshot {
+        func periods(_ values: [String], date: String) -> [PeriodSnapshot] {
+            WeeklyPlan.periodIDs.enumerated().map { index, id in
+                let text = values.indices.contains(index) ? values[index] : ""
+                let tasks = PeriodTaskParser.tasks(from: text).map { task in
+                    PeriodTaskSnapshot(id: task.id, text: task.text,
+                        isCompleted: periodTaskCompletion["\(date)|\(id)|\(task.id)"] ?? false)
+                }
+                return PeriodSnapshot(id: id, title: WeeklyPlan.periods[index], text: text, tasks: tasks)
+            }
+        }
+        func row(_ value: WeeklyScheduledRow) -> ScheduledRowSnapshot {
+            let date = PlanningDate.date(value.dateLabel, relativeTo: reference).map(PlanningDate.key) ?? value.dateLabel
+            return ScheduledRowSnapshot(id: "row:\(date)", dateLabel: value.dateLabel, slots: periods(value.slots, date: date), unassigned: value.unassigned, isCompleted: value.isCompleted)
+        }
+        let days = dayDateLabels.enumerated().map { index, label in
+            let date = PlanningDate.date(label, relativeTo: reference).map(PlanningDate.key) ?? label
+            return DaySnapshot(id: date, dateLabel: label, slots: periods(cells.map { $0.indices.contains(index) ? $0[index] : "" }, date: date),
+                unassigned: unassignedByDay.indices.contains(index) ? unassignedByDay[index] : "")
+        }
+        return WeeklyPlanSnapshot(days: days, bufferRules: [], deliveries: deliveries.map { DeliverySnapshot(id: $0.id.uuidString, text: $0.text, isCompleted: $0.isCompleted) },
+            historicalRows: historicalRows.map(row), futureRows: futureRows.map(row), linkage: linkage)
+    }
+
+    mutating func applyLinkage(_ graph: TaskLinkage, reference: Date = .now) {
+        let projected = graph.projected(sharedSnapshot(reference: reference), now: reference)
+        linkage = projected.linkage
+        deliveries = projected.deliveries.map { d in
+            WeeklyDelivery(id: UUID(uuidString: d.id) ?? UUID(uuidString: PlanningDate.stableID(d.id))!, text: d.text, isCompleted: d.isCompleted)
+        }
+        for (index, day) in projected.days.enumerated() where index < dayDateLabels.count {
+            if unassignedByDay.indices.contains(index) { unassignedByDay[index] = day.unassigned }
+            for (p, period) in day.slots.enumerated() where p < cells.count {
+                cells[p][index] = period.text
+                periodCompletion[p][index] = period.isCompleted
+                let date = PlanningDate.date(day.dateLabel, relativeTo: reference).map(PlanningDate.key) ?? day.id
+                for task in period.tasks { periodTaskCompletion["\(date)|\(period.id)|\(task.id)"] = task.isCompleted }
+            }
+        }
+        historicalRows = projected.historicalRows.map { WeeklyScheduledRow(dateLabel: $0.dateLabel, slots: $0.slots.map(\.text), unassigned: $0.unassigned, isCompleted: $0.isCompleted) }
+        futureRows = projected.futureRows.map { WeeklyScheduledRow(dateLabel: $0.dateLabel, slots: $0.slots.map(\.text), unassigned: $0.unassigned, isCompleted: $0.isCompleted) }
     }
 }

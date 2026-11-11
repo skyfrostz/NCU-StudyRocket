@@ -34,11 +34,16 @@ public enum MobileConnectionState: Equatable, Sendable {
 }
 
 private struct PendingDeliveryToggle: Codable, Equatable {
+    let deliveryID: String?
+    let confirmedTaskIDs: [String]?
+    var key: String { deliveryID ?? text }
     let text: String
     let isCompleted: Bool
     let idempotencyKey: String?
 
-    init(text: String, isCompleted: Bool, idempotencyKey: String? = nil) {
+    init(text: String, isCompleted: Bool, idempotencyKey: String? = nil, deliveryID: String? = nil, confirmedTaskIDs: [String]? = nil) {
+        self.deliveryID = deliveryID
+        self.confirmedTaskIDs = confirmedTaskIDs
         self.text = text
         self.isCompleted = isCompleted
         self.idempotencyKey = idempotencyKey
@@ -46,6 +51,8 @@ private struct PendingDeliveryToggle: Codable, Equatable {
 }
 
 private struct PendingPeriodToggle: Codable, Equatable {
+    let logicalTaskID: String?
+    let assignmentID: String?
     let dayID: String
     let periodID: String
     let taskID: String?
@@ -59,8 +66,12 @@ private struct PendingPeriodToggle: Codable, Equatable {
         taskID: String? = nil,
         textHash: String? = nil,
         isCompleted: Bool,
-        idempotencyKey: String? = nil
+        idempotencyKey: String? = nil,
+        logicalTaskID: String? = nil,
+        assignmentID: String? = nil
     ) {
+        self.logicalTaskID = logicalTaskID
+        self.assignmentID = assignmentID
         self.dayID = dayID
         self.periodID = periodID
         self.taskID = taskID
@@ -119,22 +130,31 @@ private struct ActiveMobileChatRequest {
 
 private struct MobilePendingDrafts: Codable {
     var week: WeeklyPlanSnapshot?
+    var events: [OneOffEvent]?
+    var eventBaseHash: String?
+    var weekBaseRevision: String?
     var daily: DailySnapshot?
     var deliveries: [PendingDeliveryToggle]
     var periods: [PendingPeriodToggle]
 
-    init(week: WeeklyPlanSnapshot?, daily: DailySnapshot?, deliveries: [PendingDeliveryToggle], periods: [PendingPeriodToggle] = []) {
+    init(week: WeeklyPlanSnapshot?, daily: DailySnapshot?, deliveries: [PendingDeliveryToggle], periods: [PendingPeriodToggle] = [], events: [OneOffEvent]? = nil, eventBaseHash: String? = nil, weekBaseRevision: String? = nil) {
         self.week = week
+        self.events = events
+        self.eventBaseHash = eventBaseHash
+        self.weekBaseRevision = weekBaseRevision
         self.daily = daily
         self.deliveries = deliveries
         self.periods = periods
     }
 
-    private enum CodingKeys: String, CodingKey { case week, daily, deliveries, periods }
+    private enum CodingKeys: String, CodingKey { case week, daily, deliveries, periods, events, eventBaseHash, weekBaseRevision }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         week = try values.decodeIfPresent(WeeklyPlanSnapshot.self, forKey: .week)
+        events = try values.decodeIfPresent([OneOffEvent].self, forKey: .events)
+        eventBaseHash = try values.decodeIfPresent(String.self, forKey: .eventBaseHash)
+        weekBaseRevision = try values.decodeIfPresent(String.self, forKey: .weekBaseRevision)
         daily = try values.decodeIfPresent(DailySnapshot.self, forKey: .daily)
         deliveries = try values.decodeIfPresent([PendingDeliveryToggle].self, forKey: .deliveries) ?? []
         periods = try values.decodeIfPresent([PendingPeriodToggle].self, forKey: .periods) ?? []
@@ -974,26 +994,45 @@ public final class MobileSession: ObservableObject {
         }
     }
 
-    public func saveWeek(_ plan: WeeklyPlanSnapshot) async {
+    @discardableResult
+    public func saveWeek(_ plan: WeeklyPlanSnapshot, events: [OneOffEvent]? = nil, originalTimetable: String? = nil, baseRevision: String? = nil) async -> Bool {
         let normalizedPlan = WeeklyPlanTaskNormalizer.normalized(plan)
+        let originalRevision = baseRevision ?? snapshot?.revision
+        func retainDraft() {
+            var drafts = loadPendingDrafts()
+            drafts.week = normalizedPlan; drafts.events = events
+            drafts.weekBaseRevision = originalRevision
+            drafts.eventBaseHash = originalTimetable.map { PeriodCompletion.textHash(for: $0) }
+            saveDrafts(drafts)
+        }
         guard let client, let current = snapshot, state == .online, !isReplayingPendingToggles else {
-            pendingWeekDraft = normalizedPlan
-            saveDrafts()
-            return
+            retainDraft()
+            return false
         }
         let generation = clientGeneration
         do {
-            let value = try await client.applyWeek(plan: normalizedPlan, baseRevision: current.revision)
-            guard generation == clientGeneration else { return }
+            let value = try await client.applyWeek(plan: normalizedPlan, baseRevision: originalRevision ?? current.revision, events: events, eventBaseHash: originalTimetable.map { PeriodCompletion.textHash(for: $0) })
+            guard generation == clientGeneration else { return false }
             snapshot = value
             state = .online
             saveCache(value)
+            var drafts = loadPendingDrafts(); drafts.week = nil; drafts.weekBaseRevision = nil; drafts.events = nil; drafts.eventBaseHash = nil; saveDrafts(drafts)
+            return true
         } catch {
-            guard generation == clientGeneration else { return }
-            pendingWeekDraft = normalizedPlan
-            saveDrafts()
+            guard generation == clientGeneration else { return false }
+            retainDraft()
             recordConnectionFailureIfNeeded(error)
+            pendingToggleSyncIssue = "计划未保存：\(error.localizedDescription)"
+            return false
         }
+    }
+
+    @discardableResult
+    public func saveEvents(_ events: [OneOffEvent], original: String) async -> Bool {
+        guard let current = snapshot else { return false }
+        let saved = await saveWeek(current.week, events: events, originalTimetable: original)
+        if saved { _ = await document(for: "timetable") }
+        return saved
     }
 
     public func assignUnassignedTask(
@@ -1009,6 +1048,16 @@ public final class MobileSession: ObservableObject {
               let targetIndex = current.week.days.firstIndex(where: { $0.id == targetDayID }) else { return }
 
         let source = current.week.days[sourceIndex]
+        if var graph = current.week.linkage {
+            let tasks = PeriodTaskParser.tasks(from: source.unassigned)
+            guard tasks.indices.contains(taskIndex), let assignment = graph.assignments.first(where: { $0.active && $0.date == sourceDayID && $0.periodID == "unassigned" && $0.legacyTaskID == tasks[taskIndex].id }) else { return }
+            do {
+                try graph.rename(assignment.taskID, text: editedText)
+                try graph.reschedule(assignment.taskID, date: targetDayID, periodID: targetPeriodID)
+                await saveWeek(graph.projected(current.week))
+            } catch { pendingToggleSyncIssue = error.localizedDescription }
+            return
+        }
         var unassignedTasks = PeriodTaskParser.tasks(from: source.unassigned).map(\.text)
         guard unassignedTasks.indices.contains(taskIndex) else { return }
         unassignedTasks.remove(at: taskIndex)
@@ -1040,6 +1089,11 @@ public final class MobileSession: ObservableObject {
         guard let periodIndex = day.slots.firstIndex(where: { $0.id == periodID }),
               let task = day.slots[periodIndex].tasks.first(where: { $0.id == taskID }) else { return }
 
+        if var graph = current.week.linkage, let id = task.logicalTaskID {
+            do { try graph.reschedule(id, date: dayID, periodID: "unassigned"); await saveWeek(graph.projected(current.week)) }
+            catch { pendingToggleSyncIssue = error.localizedDescription }
+            return
+        }
         let days = current.week.days.enumerated().map { index, value -> DaySnapshot in
             guard index == dayIndex else { return value }
             var slots = value.slots
@@ -1057,7 +1111,8 @@ public final class MobileSession: ObservableObject {
             bufferRules: plan.bufferRules,
             deliveries: plan.deliveries,
             historicalRows: plan.historicalRows,
-            futureRows: plan.futureRows
+            futureRows: plan.futureRows,
+            linkage: plan.linkage
         )
     }
 
@@ -1084,7 +1139,8 @@ public final class MobileSession: ObservableObject {
     func toggleDelivery(
         _ delivery: DeliverySnapshot,
         isCompleted: Bool,
-        mutation: MobileDeliveryMutation
+        mutation: MobileDeliveryMutation,
+        confirmedTaskIDs: [String]? = nil
     ) async -> MobileDeliveryToggleResult {
         guard mutation.deliveryID == delivery.id,
               mutation.repositoryGeneration == repositoryGeneration else {
@@ -1093,7 +1149,7 @@ public final class MobileSession: ObservableObject {
         if let completed = completedDeliveryMutations[mutation] { return completed }
         guard activeDeliveryMutations.insert(mutation).inserted else { return .staleGeneration }
 
-        let result = await performDeliveryToggle(delivery, isCompleted: isCompleted, mutation: mutation)
+        let result = await performDeliveryToggle(delivery, isCompleted: isCompleted, mutation: mutation, confirmedTaskIDs: confirmedTaskIDs)
         activeDeliveryMutations.remove(mutation)
         if mutation.repositoryGeneration == repositoryGeneration {
             completedDeliveryMutations[mutation] = result
@@ -1104,19 +1160,22 @@ public final class MobileSession: ObservableObject {
     private func performDeliveryToggle(
         _ delivery: DeliverySnapshot,
         isCompleted desired: Bool,
-        mutation: MobileDeliveryMutation
+        mutation: MobileDeliveryMutation,
+        confirmedTaskIDs: [String]? = nil
     ) async -> MobileDeliveryToggleResult {
-        if pendingDeliveryStates[delivery.text] != nil {
+        if pendingDeliveryStates[deliveryQueueKey(delivery)] != nil {
             return .failed("此交付物已有待同步修改，请先取消或完成同步。")
         }
         lastConnectionIssue = nil
         guard let client, let current = snapshot, state == .online, !isReplayingPendingToggles else {
             var drafts = loadPendingDrafts()
-            drafts.deliveries.removeAll { $0.text == delivery.text }
+            drafts.deliveries.removeAll { pendingDeliveryKey($0) == deliveryQueueKey(delivery) }
             drafts.deliveries.append(PendingDeliveryToggle(
                 text: delivery.text,
                 isCompleted: desired,
-                idempotencyKey: mutation.token.uuidString
+                idempotencyKey: mutation.token.uuidString,
+                deliveryID: snapshot?.week.linkage == nil ? nil : delivery.id,
+                confirmedTaskIDs: confirmedTaskIDs
             ))
             saveDrafts(drafts)
             return .queuedOffline
@@ -1129,24 +1188,22 @@ public final class MobileSession: ObservableObject {
                 isCompleted: desired,
                 baseRevision: current.revision,
                 idempotencyKey: mutation.token.uuidString,
+                deliveryID: current.week.linkage == nil ? nil : delivery.id,
+                confirmedTaskIDs: confirmedTaskIDs,
                 timeoutInterval: 12
             )
             guard generation == clientGeneration,
                   requestRepositoryGeneration == repositoryGeneration else {
                 return .staleGeneration
             }
-            guard let authoritative = value.week.deliveries.first(where: {
-                $0.id == delivery.id
-                    || $0.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                        == delivery.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            }), authoritative.isCompleted == desired else {
+            guard let authoritative = matchingDelivery(text: delivery.text, id: current.week.linkage == nil ? nil : delivery.id, in: value), authoritative.isCompleted == desired else {
                 let message = "Mac Host 返回的交付物状态未确认本次修改，已恢复原状态。"
                 pendingToggleSyncIssue = message
                 return .failed(message)
             }
             snapshot = value
             var drafts = loadPendingDrafts()
-            drafts.deliveries.removeAll { $0.text == delivery.text }
+            drafts.deliveries.removeAll { pendingDeliveryKey($0) == deliveryQueueKey(delivery) }
             saveDrafts(drafts)
             lastConnectionIssue = nil
             pendingToggleSyncIssue = nil
@@ -1179,18 +1236,18 @@ public final class MobileSession: ObservableObject {
 
     func cancelPendingDelivery(_ delivery: DeliverySnapshot) {
         var drafts = loadPendingDrafts()
-        drafts.deliveries.removeAll { $0.text == delivery.text && $0.idempotencyKey != nil }
+        drafts.deliveries.removeAll { pendingDeliveryKey($0) == deliveryQueueKey(delivery) && $0.idempotencyKey != nil }
         saveDrafts(drafts)
         pendingToggleSyncIssue = nil
         refreshLegacyPendingReviewIfVisible()
     }
 
     public func effectiveDeliveryCompletion(_ delivery: DeliverySnapshot) -> Bool {
-        pendingDeliveryStates[delivery.text] ?? delivery.isCompleted
+        pendingDeliveryStates[deliveryQueueKey(delivery)] ?? delivery.isCompleted
     }
 
     public func isDeliveryTogglePending(_ delivery: DeliverySnapshot) -> Bool {
-        pendingDeliveryStates[delivery.text] != nil
+        pendingDeliveryStates[deliveryQueueKey(delivery)] != nil
     }
 
     func isLegacyDeliveryTogglePending(_ delivery: DeliverySnapshot) -> Bool {
@@ -1242,13 +1299,16 @@ public final class MobileSession: ObservableObject {
                 periodID: period.id,
                 taskID: task.id,
                 isCompleted: desired,
-                idempotencyKey: idempotencyKey
+                idempotencyKey: idempotencyKey,
+                logicalTaskID: task.logicalTaskID,
+                assignmentID: task.assignmentID
             ))
             saveDrafts(drafts)
             return
         }
 
         let generation = clientGeneration
+        let requestRepository = repositoryGeneration
         do {
             let value = try await client.togglePeriod(
                 dayID: dayID,
@@ -1257,9 +1317,11 @@ public final class MobileSession: ObservableObject {
                 isCompleted: desired,
                 baseRevision: current.revision,
                 idempotencyKey: idempotencyKey,
+                logicalTaskID: task.logicalTaskID,
+                assignmentID: task.assignmentID,
                 timeoutInterval: 12
             )
-            guard generation == clientGeneration else { return }
+            guard generation == clientGeneration, requestRepository == repositoryGeneration else { return }
             snapshot = value
             pendingPeriodStates.removeValue(forKey: key)
             lastConnectionIssue = nil
@@ -1267,7 +1329,7 @@ public final class MobileSession: ObservableObject {
             state = .online
             saveCache(value)
         } catch {
-            guard generation == clientGeneration else { return }
+            guard generation == clientGeneration, requestRepository == repositoryGeneration else { return }
             if Task.isCancelled { return }
             if shouldReconcileAfterWrite(error),
                let reconciled = await reconciledSnapshot(
@@ -1336,18 +1398,20 @@ public final class MobileSession: ObservableObject {
         let selectable = currentReview.selectableIDs
         var drafts = loadPendingDrafts()
         drafts.deliveries = drafts.deliveries.compactMap { draft in
-            guard draft.idempotencyKey == nil else { return draft }
+            guard requiresReview(draft) else { return draft }
             let id = legacyDeliveryReviewID(draft)
             guard selectedIDs.contains(id) else { return nil }
             guard selectable.contains(id) else { return draft }
             return PendingDeliveryToggle(
                 text: draft.text,
                 isCompleted: draft.isCompleted,
-                idempotencyKey: UUID().uuidString
+                idempotencyKey: draft.idempotencyKey ?? UUID().uuidString,
+                deliveryID: snapshot.week.linkage == nil ? nil : matchingDelivery(text: draft.text, id: draft.deliveryID, in: snapshot)?.id,
+                confirmedTaskIDs: draft.confirmedTaskIDs
             )
         }
         drafts.periods = drafts.periods.compactMap { draft in
-            guard draft.isLegacy else { return draft }
+            guard requiresReview(draft) else { return draft }
             let id = legacyPeriodReviewID(draft)
             guard selectedIDs.contains(id) else { return nil }
             guard selectable.contains(id) else { return draft }
@@ -1373,8 +1437,8 @@ public final class MobileSession: ObservableObject {
 
     func discardLegacyPendingToggles() {
         var drafts = loadPendingDrafts()
-        drafts.deliveries.removeAll { $0.idempotencyKey == nil }
-        drafts.periods.removeAll(where: \.isLegacy)
+        drafts.deliveries.removeAll(where: requiresReview)
+        drafts.periods.removeAll(where: requiresReview)
         legacyReviewDeferred = false
         legacyPendingReview = nil
         pendingToggleSyncIssue = nil
@@ -1395,10 +1459,29 @@ public final class MobileSession: ObservableObject {
         await replayPendingToggles()
     }
 
+    private func requiresReview(_ draft: PendingDeliveryToggle) -> Bool {
+        if draft.idempotencyKey == nil { return true }
+        guard let snapshot else { return false }
+        guard let delivery = matchingDelivery(text: draft.text, id: draft.deliveryID, in: snapshot) else { return true }
+        if draft.isCompleted, !delivery.isCompleted, let graph = snapshot.week.linkage {
+            return Set(graph.pendingChildren(of: delivery.id).map(\.id)) != Set(draft.confirmedTaskIDs ?? [])
+        }
+        return false
+    }
+    private func requiresReview(_ draft: PendingPeriodToggle) -> Bool {
+        if draft.isLegacy { return true }
+        guard let snapshot, let graph = snapshot.week.linkage else { return false }
+        let matches = graph.assignments.filter { a in
+            if let id = draft.assignmentID { return a.id == id && (draft.logicalTaskID == nil || a.taskID == draft.logicalTaskID) }
+            return a.date == draft.dayID && a.periodID == draft.periodID && a.legacyTaskID == draft.taskID
+        }
+        return matches.count != 1 || graph.tasks.first(where: { $0.id == matches.first?.taskID })?.cancelled != false
+    }
+
     private func prepareLegacyPendingReviewIfNeeded(force: Bool = false) {
         let drafts = loadPendingDrafts()
-        let hasLegacy = drafts.deliveries.contains { $0.idempotencyKey == nil }
-            || drafts.periods.contains(where: \.isLegacy)
+        let hasLegacy = drafts.deliveries.contains(where: requiresReview) || drafts.periods.contains(where: requiresReview)
+        legacyPendingToggleCount = drafts.deliveries.filter(requiresReview).count + drafts.periods.filter(requiresReview).count
         guard hasLegacy else {
             legacyReviewDeferred = false
             legacyPendingReview = nil
@@ -1418,8 +1501,8 @@ public final class MobileSession: ObservableObject {
         snapshot: SnapshotResponse
     ) -> MobileLegacyPendingReview {
         var items: [MobileLegacyPendingReviewItem] = []
-        for draft in drafts.deliveries where draft.idempotencyKey == nil {
-            let delivery = matchingDelivery(text: draft.text, in: snapshot)
+        for draft in drafts.deliveries where requiresReview(draft) {
+            let delivery = matchingDelivery(text: draft.text, id: draft.deliveryID, in: snapshot)
             let target = draft.isCompleted ? "标记为已完成" : "恢复为未完成"
             items.append(MobileLegacyPendingReviewItem(
                 id: legacyDeliveryReviewID(draft),
@@ -1428,10 +1511,10 @@ public final class MobileSession: ObservableObject {
                 detail: delivery.map { [$0.dateLabel, target].compactMap { $0 }.joined(separator: " · ") }
                     ?? "任务已变化，无法自动同步",
                 isCompleted: draft.isCompleted,
-                canSync: delivery != nil
+                canSync: delivery != nil && (snapshot.week.linkage?.pendingChildren(of: delivery!.id).isEmpty ?? true)
             ))
         }
-        for draft in drafts.periods where draft.isLegacy {
+        for draft in drafts.periods where requiresReview(draft) {
             let match = matchingPeriod(dayID: draft.dayID, periodID: draft.periodID, in: snapshot)
             let canSync = match.map {
                 $0.period.tasks.count == 1
@@ -1547,12 +1630,17 @@ public final class MobileSession: ObservableObject {
         let generation = clientGeneration
         do {
             if let week = pendingWeekDraft, let latest = snapshot {
-                let value = try await client.applyWeek(plan: week, baseRevision: latest.revision)
+                let drafts = loadPendingDrafts()
+                guard let originalRevision = drafts.weekBaseRevision, originalRevision == latest.revision else {
+                    pendingToggleSyncIssue = "计划草稿基于旧版本，请在周计划中对照最新内容重新确认保存；草稿已保留。"
+                    return
+                }
+                let value = try await client.applyWeek(plan: week, baseRevision: originalRevision, events: drafts.events, eventBaseHash: drafts.eventBaseHash)
                 guard generation == clientGeneration else { return }
                 snapshot = value
                 pendingWeekDraft = nil
                 saveCache(value)
-                saveDrafts()
+                var remaining = loadPendingDrafts(); remaining.week = nil; remaining.weekBaseRevision = nil; remaining.events = nil; remaining.eventBaseHash = nil; saveDrafts(remaining)
             }
             if let daily = pendingDailyDraft, let latest = snapshot {
                 let value = try await client.saveDaily(entry: daily, baseRevision: latest.revision)
@@ -1616,7 +1704,7 @@ public final class MobileSession: ObservableObject {
             guard generation == clientGeneration,
                   repositoryGeneration == self.repositoryGeneration,
                   let latest = snapshot else { return }
-            guard let delivery = matchingDelivery(text: draft.text, in: latest) else {
+            guard let delivery = matchingDelivery(text: draft.text, id: draft.deliveryID, in: latest) else {
                 pendingToggleSyncIssue = "交付物已变化，自动同步已暂停。请重新加载后检查待同步项目。"
                 return
             }
@@ -1630,11 +1718,13 @@ public final class MobileSession: ObservableObject {
                     isCompleted: draft.isCompleted,
                     baseRevision: latest.revision,
                     idempotencyKey: draft.idempotencyKey!,
+                    deliveryID: draft.deliveryID,
+                    confirmedTaskIDs: draft.confirmedTaskIDs,
                     timeoutInterval: 12
                 )
                 guard generation == clientGeneration,
                       repositoryGeneration == self.repositoryGeneration else { return }
-                guard matchingDelivery(text: draft.text, in: value)?.isCompleted == draft.isCompleted else {
+                guard matchingDelivery(text: draft.text, id: draft.deliveryID, in: value)?.isCompleted == draft.isCompleted else {
                     snapshot = value
                     state = .online
                     saveCache(value)
@@ -1676,6 +1766,32 @@ public final class MobileSession: ObservableObject {
             guard generation == clientGeneration,
                   repositoryGeneration == self.repositoryGeneration,
                   let latest = snapshot else { return }
+            if let graph = latest.week.linkage {
+                let candidates = graph.assignments.filter {
+                    if let id = draft.assignmentID { return $0.id == id && (draft.logicalTaskID == nil || $0.taskID == draft.logicalTaskID) }
+                    return $0.date == draft.dayID && $0.periodID == draft.periodID && $0.legacyTaskID == taskID
+                }
+                guard candidates.count == 1, let assignment = candidates.first,
+                      let linked = graph.tasks.first(where: { $0.id == assignment.taskID }), !linked.cancelled else {
+                    pendingToggleSyncIssue = "待同步任务的关联已变化，请逐项检查；本机操作已保留。"
+                    return
+                }
+                if linked.isCompleted == draft.isCompleted { removePendingPeriodDraft(draft); continue }
+                do {
+                    let value = try await client.togglePeriod(dayID: assignment.date, periodID: assignment.periodID, taskID: assignment.legacyTaskID,
+                        isCompleted: draft.isCompleted, baseRevision: latest.revision, idempotencyKey: draft.idempotencyKey!,
+                        logicalTaskID: linked.id, assignmentID: assignment.id, timeoutInterval: 12)
+                    guard generation == clientGeneration, repositoryGeneration == self.repositoryGeneration else { return }
+                    snapshot = value; saveCache(value)
+                    guard value.week.linkage?.tasks.first(where: { $0.id == linked.id })?.isCompleted == draft.isCompleted else {
+                        pendingToggleSyncIssue = "Mac 未确认任务完成状态，本机操作已保留。"; return
+                    }
+                    removePendingPeriodDraft(draft); continue
+                } catch {
+                    guard generation == clientGeneration, repositoryGeneration == self.repositoryGeneration else { return }
+                    pendingToggleSyncIssue = "任务补交未完成：\(error.localizedDescription)"; return
+                }
+            }
             guard let match = matchingPeriod(dayID: draft.dayID, periodID: draft.periodID, in: latest),
                   let task = match.period.tasks.first(where: { $0.id == taskID }) else {
                 pendingToggleSyncIssue = "时段任务已变化，自动同步已暂停。请重新加载后检查待同步项目。"
@@ -1752,11 +1868,24 @@ public final class MobileSession: ObservableObject {
         saveDrafts(drafts)
     }
 
-    private func matchingDelivery(text: String, in snapshot: SnapshotResponse) -> DeliverySnapshot? {
-        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return snapshot.week.deliveries.first {
-            $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == normalized
+    private func pendingDeliveryKey(_ draft: PendingDeliveryToggle) -> String {
+        if let id = draft.deliveryID { return id }
+        if let snapshot, snapshot.week.linkage != nil, let value = matchingDelivery(text: draft.text, in: snapshot) { return value.id }
+        return draft.text
+    }
+
+    private func deliveryQueueKey(_ delivery: DeliverySnapshot) -> String { snapshot?.week.linkage == nil ? delivery.text : delivery.id }
+
+    private func matchingDelivery(text: String, id: String? = nil, in snapshot: SnapshotResponse) -> DeliverySnapshot? {
+        if let id, let graph = snapshot.week.linkage,
+           let delivery = graph.deliveries.first(where: { $0.id == id && !$0.cancelled }) {
+            return DeliverySnapshot(id: id, text: delivery.text, isCompleted: graph.isCompleted(delivery))
         }
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches = snapshot.week.deliveries.filter {
+            id == nil ? $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == normalized : $0.id == id
+        }
+        return matches.count == 1 ? matches.first : nil
     }
 
     private func matchingPeriod(
@@ -1810,7 +1939,7 @@ public final class MobileSession: ObservableObject {
         state = .online
         lastConnectionIssue = nil
         saveCache(value)
-        return (value, matchingDelivery(text: delivery.text, in: value)?.isCompleted == isCompleted)
+        return (value, matchingDelivery(text: delivery.text, id: snapshot?.week.linkage == nil ? nil : delivery.id, in: value)?.isCompleted == isCompleted)
     }
 
     private func reconciledSnapshot(
@@ -2045,7 +2174,7 @@ public final class MobileSession: ObservableObject {
         pendingWeekDraft = value.week
         pendingDailyDraft = value.daily
         pendingDeliveryCount = value.deliveries.count
-        pendingDeliveryStates = Dictionary(value.deliveries.map { ($0.text, $0.isCompleted) }, uniquingKeysWith: { _, latest in latest })
+        pendingDeliveryStates = Dictionary(value.deliveries.map { (pendingDeliveryKey($0), $0.isCompleted) }, uniquingKeysWith: { _, latest in latest })
         pendingPeriodCount = value.periods.count
         pendingPeriodStates = Dictionary(value.periods.map { ($0.key, $0.isCompleted) }, uniquingKeysWith: { _, latest in latest })
         legacyPendingToggleCount = value.deliveries.filter { $0.idempotencyKey == nil }.count
@@ -2058,12 +2187,15 @@ public final class MobileSession: ObservableObject {
             week: pendingWeekDraft,
             daily: pendingDailyDraft,
             deliveries: existing.deliveries,
-            periods: existing.periods
+            periods: existing.periods,
+            events: existing.events,
+            eventBaseHash: existing.eventBaseHash,
+            weekBaseRevision: existing.weekBaseRevision
         )
         pendingWeekDraft = drafts.week
         pendingDailyDraft = drafts.daily
         pendingDeliveryCount = drafts.deliveries.count
-        pendingDeliveryStates = Dictionary(drafts.deliveries.map { ($0.text, $0.isCompleted) }, uniquingKeysWith: { _, latest in latest })
+        pendingDeliveryStates = Dictionary(drafts.deliveries.map { (pendingDeliveryKey($0), $0.isCompleted) }, uniquingKeysWith: { _, latest in latest })
         pendingPeriodCount = drafts.periods.count
         pendingPeriodStates = Dictionary(drafts.periods.map { ($0.key, $0.isCompleted) }, uniquingKeysWith: { _, latest in latest })
         legacyPendingToggleCount = drafts.deliveries.filter { $0.idempotencyKey == nil }.count
@@ -2102,6 +2234,7 @@ public final class MobileSession: ObservableObject {
 
     func currentWeekDeliveries(at date: Date = .now) -> [DeliverySnapshot] {
         guard let snapshot else { return [] }
+        if let graph = snapshot.week.linkage { return graph.projected(snapshot.week, now: date).deliveries }
         guard WeeklyDeliveryRollover.weekStart(snapshot.fetchedAt) < WeeklyDeliveryRollover.weekStart(date) else {
             return snapshot.week.deliveries
         }
@@ -2399,8 +2532,8 @@ public actor StudyRocketRemoteClient {
         try await post("/v1/proposals/apply", body: ProposalApplyRequest(proposalIDs: ids, authorization: authorization, metadata: WriteMetadata(baseRevision: baseRevision)), as: ProposalApplyResponse.self)
     }
 
-    public func applyWeek(plan: WeeklyPlanSnapshot, baseRevision: String) async throws -> SnapshotResponse {
-        try await post("/v1/week", body: PlanWriteRequest(plan: plan, metadata: WriteMetadata(baseRevision: baseRevision)), as: SnapshotResponse.self)
+    public func applyWeek(plan: WeeklyPlanSnapshot, baseRevision: String, events: [OneOffEvent]? = nil, eventBaseHash: String? = nil) async throws -> SnapshotResponse {
+        try await post("/v1/week", body: PlanWriteRequest(plan: plan, metadata: WriteMetadata(baseRevision: baseRevision), events: events, eventBaseHash: eventBaseHash), as: SnapshotResponse.self)
     }
 
     public func toggleDelivery(
@@ -2408,6 +2541,8 @@ public actor StudyRocketRemoteClient {
         isCompleted: Bool,
         baseRevision: String,
         idempotencyKey: String,
+        deliveryID: String? = nil,
+        confirmedTaskIDs: [String]? = nil,
         timeoutInterval: TimeInterval? = nil
     ) async throws -> SnapshotResponse {
         try await post(
@@ -2415,7 +2550,9 @@ public actor StudyRocketRemoteClient {
             body: DeliveryToggleRequest(
                 text: text,
                 isCompleted: isCompleted,
-                metadata: WriteMetadata(baseRevision: baseRevision, idempotencyKey: idempotencyKey)
+                metadata: WriteMetadata(baseRevision: baseRevision, idempotencyKey: idempotencyKey),
+                deliveryID: deliveryID,
+                confirmedTaskIDs: confirmedTaskIDs
             ),
             timeoutInterval: timeoutInterval,
             as: SnapshotResponse.self
@@ -2429,6 +2566,8 @@ public actor StudyRocketRemoteClient {
         isCompleted: Bool,
         baseRevision: String,
         idempotencyKey: String = UUID().uuidString,
+        logicalTaskID: String? = nil,
+        assignmentID: String? = nil,
         timeoutInterval: TimeInterval? = nil
     ) async throws -> SnapshotResponse {
         try await post(
@@ -2438,7 +2577,9 @@ public actor StudyRocketRemoteClient {
                 periodID: periodID,
                 taskID: taskID,
                 isCompleted: isCompleted,
-                metadata: WriteMetadata(baseRevision: baseRevision, idempotencyKey: idempotencyKey)
+                metadata: WriteMetadata(baseRevision: baseRevision, idempotencyKey: idempotencyKey),
+                logicalTaskID: logicalTaskID,
+                assignmentID: assignmentID
             ),
             timeoutInterval: timeoutInterval,
             as: SnapshotResponse.self

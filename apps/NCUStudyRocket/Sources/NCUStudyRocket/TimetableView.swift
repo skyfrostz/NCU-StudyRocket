@@ -13,12 +13,15 @@ struct TimetableView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var model = TimetablePageModel()
     @State private var showImporter = false
+    @State private var showEventEditor = false
+    @State private var viewingDate = Date()
     @State private var weekNavigationDirection: TimetableWeekNavigationDirection = .next
 
     var body: some View {
         PageScaffold {
             VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
                 PageTitleBar(title: "课表", subtitle: model.subtitle) {
+                    Button("单次活动", systemImage: "calendar.badge.plus") { showEventEditor = true }
                     Button {
                         showImporter = true
                     } label: {
@@ -36,6 +39,9 @@ struct TimetableView: View {
                     )
                 }
 
+                DatePicker("查看日期", selection: $viewingDate, displayedComponents: .date)
+                    .environment(\.timeZone, PlanningDate.calendar.timeZone)
+                    .onChange(of: viewingDate) { _, value in model.selectDate(value) }
                 if let range = model.weekRange {
                     TimetableWeekNavigator(
                         snapshot: model.selectedSnapshot,
@@ -48,7 +54,9 @@ struct TimetableView: View {
                         reduceMotion: reduceMotion
                     )
                 } else {
-                    TimetableUnavailableState(snapshot: model.currentSnapshot)
+                    if model.currentSnapshot.days.contains(where: { !$0.entries.isEmpty }) {
+                        TimetableWeekTransitionContainer(snapshot: model.currentSnapshot, direction: .next, reduceMotion: reduceMotion)
+                    } else { TimetableUnavailableState(snapshot: model.currentSnapshot) }
                 }
 
                 if let message = model.errorMessage {
@@ -58,6 +66,10 @@ struct TimetableView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+        }
+        .sheet(isPresented: $showEventEditor) {
+            OneOffEventEditor(source: model.source) { events in try model.saveEvents(events, workspace: workspace) }
+                .frame(minWidth: 580, minHeight: 560)
         }
         .fileImporter(
             isPresented: $showImporter,
@@ -102,7 +114,7 @@ private final class TimetablePageModel: ObservableObject {
     @Published private(set) var errorMessage: String?
 
     private var root: URL?
-    private var source = ""
+    private(set) var source = ""
     private var loadedHash = ""
     private var document: TimetableDocument?
     private var selectedWeek = 1
@@ -127,14 +139,35 @@ private final class TimetablePageModel: ObservableObject {
         } else {
             selectedSnapshot = currentSnapshot
         }
+        if currentSnapshot.status == .beforeTerm || currentSnapshot.status == .afterTerm ||
+            currentSnapshot.days.contains(where: { $0.id == PlanningDate.key(.now) }) && !selectedSnapshot.days.contains(where: { $0.id == PlanningDate.key(.now) }) {
+            weekRange = nil; selectedSnapshot = currentSnapshot
+        }
         pendingImport = nil
         errorMessage = nil
+    }
+
+    func selectDate(_ date: Date) {
+        currentSnapshot = StudyRocketTimetableParser.snapshot(from: source, now: date)
+        selectedSnapshot = currentSnapshot
+        weekRange = nil
     }
 
     func selectWeek(_ week: Int) {
         guard let range = weekRange, range.contains(week) else { return }
         selectedWeek = week
         selectedSnapshot = StudyRocketTimetableParser.snapshot(from: source, teachingWeek: week)
+    }
+
+    func saveEvents(_ events: [OneOffEvent], workspace: WorkspaceStore) throws {
+        do {
+            let repository = MarkdownRepository(root: workspace.rootURL)
+            let updated = try OneOffSchedule.write(events, in: source)
+            try repository.save(updated, relative: StudyRocketTimetableParser.sourceFile, loadedHash: loadedHash)
+            load(from: workspace.rootURL)
+            workspace.notifyWorkspaceChanged()
+            NotificationCenter.default.post(name: .studyRocketTimetableChanged, object: nil)
+        } catch { errorMessage = error.localizedDescription; throw error }
     }
 
     func stageImport(from fileURL: URL) {

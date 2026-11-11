@@ -98,6 +98,8 @@ struct DashboardView: View {
     @State private var deliveryTargets: [UUID: Bool] = [:]
     @State private var deliveryTasks: [UUID: Task<Void, Never>] = [:]
     @State private var writingDeliveryIDs = Set<UUID>()
+    @State private var linkedDeliveryConfirmation: WeeklyDelivery?
+    @State private var confirmedDeliveryTaskIDs: [String] = []
     @State private var deliverySealSource: [WeeklyDelivery]?
     @State private var deliverySealPresented = true
     @State private var periodTargets: [String: Bool] = [:]
@@ -187,9 +189,28 @@ struct DashboardView: View {
         .onReceive(NotificationCenter.default.publisher(for: .studyRocketTimetableChanged)) { _ in
             reloadDashboard(from: workspace.rootURL)
         }
+        .confirmationDialog("将一并完成这些子任务", isPresented: Binding(get: { linkedDeliveryConfirmation != nil }, set: { if !$0 { linkedDeliveryConfirmation = nil } }), titleVisibility: .visible) {
+            if let delivery = linkedDeliveryConfirmation {
+                Button("确认全部完成") { linkedDeliveryConfirmation = nil; submitDeliveryToggle(delivery, confirmedTaskIDs: confirmedDeliveryTaskIDs) }
+            }
+            Button("取消", role: .cancel) { linkedDeliveryConfirmation = nil }
+        } message: {
+            Text(confirmedDeliveryTaskIDs.compactMap { id in dashboard.plan.linkage?.tasks.first(where: { $0.id == id })?.text }.joined(separator: "\n"))
+        }
     }
 
     private func requestDeliveryToggle(_ delivery: WeeklyDelivery) {
+        if !delivery.isCompleted, let graph = dashboard.plan.linkage,
+           let root = graph.deliveries.first(where: { UUID(uuidString: $0.id) == delivery.id }),
+           !graph.pendingChildren(of: root.id).isEmpty {
+            confirmedDeliveryTaskIDs = graph.pendingChildren(of: root.id).map(\.id)
+            linkedDeliveryConfirmation = delivery
+            return
+        }
+        submitDeliveryToggle(delivery)
+    }
+
+    private func submitDeliveryToggle(_ delivery: WeeklyDelivery, confirmedTaskIDs: [String]? = nil) {
         guard !writingDeliveryIDs.contains(delivery.id) else { return }
         if let task = deliveryTasks.removeValue(forKey: delivery.id) {
             task.cancel()
@@ -206,7 +227,7 @@ struct DashboardView: View {
             guard !Task.isCancelled else { return }
 
             let sealSource = dashboard.visibleDeliveries
-            let succeeded = dashboard.toggleDelivery(delivery.id, workspace: workspace)
+            let succeeded = dashboard.toggleDelivery(delivery.id, workspace: workspace, confirmedTaskIDs: confirmedTaskIDs)
 
             guard succeeded else {
                 writingDeliveryIDs.remove(delivery.id)
@@ -1018,6 +1039,17 @@ struct WeeklyPlanView: View {
         }
         return defaults
     }()
+    @State private var showLinkageEditor = false
+    @State private var linkedBulk: WeeklyDelivery?
+    @State private var linkedBulkIDs: [String] = []
+    @State private var planningReview: PlanningReview?
+    @State private var linkageTimetable = ""
+    private struct PlanningReview: Identifiable {
+        let id = UUID()
+        let week: String
+        let timetable: String
+        let originalTimetable: String
+    }
     @State private var plan = WeeklyPlan(); @State private var original = ""; @State private var loadedHash = ""; @State private var notice: String?
     @State private var editingCell: WeeklyEditTarget?
     @State private var migrationNoticeVisible = true
@@ -1058,6 +1090,7 @@ struct WeeklyPlanView: View {
 
     var body: some View { PageScaffold { VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
         PageTitleBar(title: "周计划", subtitle: "每天三个时间块，点按格子编辑完整任务") {
+            Button(plan.linkage == nil ? "启用任务联动" : "关联、改期与已完成") { showLinkageEditor = true }
             HStack(spacing: 8) {
                 Button("保存", systemImage: "square.and.arrow.down") { save() }.buttonStyle(.borderedProminent)
                 StudyIconButton(systemImage: "bubble.left.and.bubble.right", label: "在学业对话中排下周") { chat.prepare(prompt: ReminderRoute.weekly.prompt); NotificationCenter.default.post(name: .studyRocketOpenChat, object: nil) }
@@ -1168,6 +1201,54 @@ struct WeeklyPlanView: View {
             assignUnassignedTask(assignment, text: text, targetDay: targetDay, targetPeriod: targetPeriod)
         }
     }
+    .sheet(isPresented: $showLinkageEditor) {
+        TaskLinkageEditor(plan: plan.sharedSnapshot(), timetableSource: linkageTimetable) { snapshot, events in
+            if let graph = snapshot.linkage {
+                plan.applyLinkage(graph)
+                if let events {
+                    let repo = MarkdownRepository(root: workspace.rootURL)
+                    let week = MarkdownParser.replaceWeekly(original, with: plan)
+                    let timetable = try OneOffSchedule.write(events, in: linkageTimetable)
+                    try repo.saveBatch([.init(relative: file, content: week, loadedHash: loadedHash),
+                        .init(relative: StudyRocketTimetableParser.sourceFile, content: timetable, loadedHash: repo.hash(linkageTimetable))])
+                    load(); workspace.notifyWorkspaceChanged()
+                } else {
+                    guard persist(showSuccess: false) else { throw PlanningChangeRouter.RoutingError(inlineNotice ?? "尚未保存，请检查预览。") }
+                }
+            }
+        }.frame(minWidth: 650, minHeight: 600)
+    }
+    .sheet(item: $planningReview) { review in
+        VStack(alignment: .leading, spacing: 16) {
+            Text("活动进入当天课表").font(.title2)
+            Text("确认后同时保存以下两份计划；活动不会重复出现在今日任务中。")
+            ScrollView {
+                DisclosureGroup("周计划（保存后）", isExpanded: .constant(true)) { Text(review.week).textSelection(.enabled) }
+                DisclosureGroup("课表（保存后）", isExpanded: .constant(true)) { Text(review.timetable).textSelection(.enabled) }
+            }
+            HStack {
+                Button("返回修改") { planningReview = nil }
+                Spacer()
+                Button("确认并成组保存") {
+                    let repo = MarkdownRepository(root: workspace.rootURL)
+                    do {
+                        try repo.saveBatch([.init(relative: file, content: review.week, loadedHash: loadedHash),
+                            .init(relative: StudyRocketTimetableParser.sourceFile, content: review.timetable, loadedHash: repo.hash(review.originalTimetable))])
+                        planningReview = nil; load(); workspace.notifyWorkspaceChanged()
+                    } catch { notice = error.localizedDescription }
+                }.buttonStyle(.borderedProminent)
+            }
+        }.padding(24).frame(minWidth: 650, minHeight: 550)
+    }
+    .confirmationDialog("将一并完成这些子任务", isPresented: Binding(get: { linkedBulk != nil }, set: { if !$0 { linkedBulk = nil } }), titleVisibility: .visible) {
+        Button("确认全部完成") {
+            if let delivery = linkedBulk { toggleLinkedDelivery(delivery, confirmedIDs: linkedBulkIDs) }
+            linkedBulk = nil
+        }
+        Button("取消", role: .cancel) { linkedBulk = nil }
+    } message: {
+        Text(linkedBulkIDs.compactMap { id in plan.linkage?.tasks.first(where: { $0.id == id })?.text }.joined(separator: "\n"))
+    }
     .sheet(item: $deletionReview) { summary in
         WeeklyDeletionReviewSheet(summary: summary, returnToEditing: { deletionReview = nil }, confirm: { deletionReview = nil; persist(showSuccess: false) })
     }
@@ -1177,6 +1258,7 @@ struct WeeklyPlanView: View {
         let repo = MarkdownRepository(root: workspace.rootURL)
         let raw = (try? repo.read(file)) ?? ""
         loadedHash = repo.hash(raw)
+        linkageTimetable = (try? repo.read(StudyRocketTimetableParser.sourceFile)) ?? ""
         original = WeeklyDeliveryRollover.projected(raw, fileURL: workspace.rootURL.appendingPathComponent(file))
         plan = MarkdownParser.weekly(original)
         originalDeliveries = Dictionary(uniqueKeysWithValues: plan.deliveries.map { ($0.id, $0.text) })
@@ -1210,21 +1292,29 @@ struct WeeklyPlanView: View {
             persist(showSuccess: false)
         }
     }
-    private func persist(showSuccess: Bool) {
+    @discardableResult
+    private func persist(showSuccess: Bool) -> Bool {
         let repo = MarkdownRepository(root: workspace.rootURL)
         do {
-            let sourceMigrations = Dictionary(uniqueKeysWithValues: plan.deliveries.compactMap { delivery -> (String, String)? in
+            let sourceMigrations = Dictionary( plan.deliveries.compactMap { delivery -> (String, String)? in
                 guard let previous = originalDeliveries[delivery.id], previous != delivery.text else { return nil }
                 return (
                     DeliveryPeriodMatcher.sourceKey(for: previous),
                     DeliveryPeriodMatcher.sourceKey(for: delivery.text)
                 )
-            })
-            try repo.save(
-                MarkdownParser.replaceWeekly(original, with: plan, deliverySourceMigrations: sourceMigrations),
-                relative: file,
-                loadedHash: loadedHash
-            )
+            }, uniquingKeysWith: { _, latest in latest })
+            let proposed = MarkdownParser.replaceWeekly(original, with: plan, deliverySourceMigrations: sourceMigrations)
+            let timetable = (try? repo.read(StudyRocketTimetableParser.sourceFile)) ?? ""
+            let routed = try PlanningChangeRouter.route(week: proposed, original: original, timetable: timetable)
+            if let events = routed.timetable {
+                planningReview = PlanningReview(week: routed.week, timetable: events, originalTimetable: timetable)
+                return false
+            }
+            if let graph = try TaskLinkageMarkdown.read(routed.week), graph.tasks.contains(where: { !$0.cancelled && $0.category == .unclassified }) {
+                plan.applyLinkage(graph); showLinkageEditor = true
+                return false
+            }
+            try repo.save(routed.week, relative: file, loadedHash: loadedHash)
             if showSuccess {
                 notice = "已保存到工作台/下周计划.md"
             } else {
@@ -1232,12 +1322,14 @@ struct WeeklyPlanView: View {
             }
             load()
             workspace.notifyWorkspaceChanged()
+            return true
         } catch {
             if showSuccess {
                 notice = error.localizedDescription
             } else {
                 inlineNotice = error.localizedDescription
             }
+            return false
         }
     }
     private func commitCell(_ target: WeeklyEditTarget, value: String) {
@@ -1258,6 +1350,18 @@ struct WeeklyPlanView: View {
               plan.cells.indices.contains(targetPeriod),
               plan.cells[targetPeriod].indices.contains(targetDay) else { return }
 
+        if var graph = plan.linkage {
+            let tasks = PeriodTaskParser.tasks(from: plan.unassignedByDay[assignment.sourceDay])
+            let sourceDate = PlanningDate.date(plan.dayDateLabels[assignment.sourceDay]).map(PlanningDate.key)
+            guard tasks.indices.contains(assignment.sourceTask), let targetDate = PlanningDate.date(plan.dayDateLabels[targetDay]),
+                  let a = graph.assignments.first(where: { $0.active && $0.date == sourceDate && $0.periodID == "unassigned" && $0.legacyTaskID == tasks[assignment.sourceTask].id }) else { return }
+            do {
+                try graph.rename(a.taskID, text: editedText)
+                try graph.reschedule(a.taskID, date: PlanningDate.key(targetDate), periodID: WeeklyPlan.periodIDs[targetPeriod])
+                plan.applyLinkage(graph); requestPersist()
+            } catch { inlineNotice = error.localizedDescription }
+            return
+        }
         var pendingTasks = PeriodTaskParser.tasks(from: plan.unassignedByDay[assignment.sourceDay]).map(\.text)
         guard pendingTasks.indices.contains(assignment.sourceTask) else { return }
         pendingTasks.remove(at: assignment.sourceTask)
@@ -1273,6 +1377,12 @@ struct WeeklyPlanView: View {
               plan.cells[row].indices.contains(column),
               plan.unassignedByDay.indices.contains(column) else { return }
 
+        if var graph = plan.linkage, let date = PlanningDate.date(plan.dayDateLabels[column]),
+           let a = graph.assignments.first(where: { $0.active && $0.date == PlanningDate.key(date) && $0.periodID == WeeklyPlan.periodIDs[row] && $0.legacyTaskID == taskID }) {
+            do { try graph.reschedule(a.taskID, date: PlanningDate.key(date), periodID: "unassigned"); plan.applyLinkage(graph); requestPersist() }
+            catch { inlineNotice = error.localizedDescription }
+            return
+        }
         let parsedTasks = PeriodTaskParser.tasks(from: plan.cells[row][column])
         var scheduledTasks = parsedTasks.map(\.text)
         guard let taskIndex = parsedTasks.firstIndex(where: { $0.id == taskID }),
@@ -1326,7 +1436,21 @@ struct WeeklyPlanView: View {
         plan.bufferRules.append(rule)
         beginEditing(WeeklyRowEditorState(kind: .bufferRule(rule.id), originalText: "", draftText: "", isNew: true))
     }
+    private func toggleLinkedDelivery(_ delivery: WeeklyDelivery, confirmedIDs: [String]? = nil) {
+        guard var graph = plan.linkage else { return }
+        do {
+            try graph.setDelivery(delivery.id.uuidString, completed: !delivery.isCompleted, confirmedTaskIDs: confirmedIDs)
+            plan.applyLinkage(graph); requestPersist()
+        } catch { notice = error.localizedDescription }
+    }
     private func toggleDelivery(_ id: UUID) {
+        if let delivery = plan.deliveries.first(where: { $0.id == id }), let graph = plan.linkage {
+            let pending = graph.pendingChildren(of: id.uuidString)
+            if !delivery.isCompleted && !pending.isEmpty {
+                linkedBulkIDs = pending.map(\.id); linkedBulk = delivery
+            } else { toggleLinkedDelivery(delivery) }
+            return
+        }
         guard let index = plan.deliveries.firstIndex(where: { $0.id == id }) else { return }
         plan.deliveries[index].isCompleted.toggle()
         plan.deliveries.sort { !$0.isCompleted && $1.isCompleted }
@@ -1346,6 +1470,10 @@ struct WeeklyPlanView: View {
         }
     }
     private func removeDelivery(_ id: UUID) {
+        if var graph = plan.linkage {
+            do { try graph.cancelDelivery(id.uuidString); plan.applyLinkage(graph) }
+            catch { notice = error.localizedDescription; return }
+        }
         plan.deliveries.removeAll { $0.id == id }
         requestPersist()
     }
