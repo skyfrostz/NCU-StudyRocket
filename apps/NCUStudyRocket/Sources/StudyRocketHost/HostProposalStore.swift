@@ -68,6 +68,7 @@ final class HostProposalStore: @unchecked Sendable {
     func apply(_ request: ProposalApplyRequest) throws -> ProposalListResponse {
         mutationLock.lock(); defer { mutationLock.unlock() }
         let repositoryLock = try PlanningRepositoryLock.acquire(root: root); defer { repositoryLock.unlock() }
+        try LocalHostRepositoryPolicy.ensureLocalWritesAllowed(root)
         guard !request.proposalIDs.isEmpty, !request.authorization.isEmpty else { throw HostWriteError(code: "authorization_required", message: "应用草案需要确认授权。") }
         guard request.metadata.apiVersion == StudyRocketAPI.version else { throw HostWriteError(code: "unsupported_version", message: "客户端版本不兼容，请更新 StudyRocket。") }
         lock.lock()

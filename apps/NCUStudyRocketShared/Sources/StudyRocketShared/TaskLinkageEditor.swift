@@ -1,3 +1,4 @@
+#if canImport(SwiftUI)
 import SwiftUI
 
 /// The editor holds a draft. Only its explicit save button submits a repository change.
@@ -177,3 +178,5 @@ public struct TaskLinkageEditor: View {
         do { try action(); message = nil } catch { message = error.localizedDescription }
     }
 }
+
+#endif

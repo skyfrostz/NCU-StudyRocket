@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 #if os(macOS)
 import Darwin
 #endif
@@ -197,6 +201,8 @@ public struct APIErrorBody: Codable, Equatable, Sendable {
 }
 
 public struct HealthResponse: Codable, Equatable, Sendable {
+    public let backend: String?
+    public let capabilities: [String]?
     public let apiVersion: Int
     public let hostVersion: String
     public let repositoryBound: Bool
@@ -204,13 +210,16 @@ public struct HealthResponse: Codable, Equatable, Sendable {
     public let pairedDeviceCount: Int
     public let activeThreadID: String?
     public let repositoryID: String?
+    public let legacyRepositoryID: String?
     public let dynamicToolsReady: Bool?
     /// The Host's authoritative chat readiness. `dynamicToolsReady` remains
     /// for older clients that only understand the original protocol gate.
     public let chatState: String?
     public let chatIssueCode: String?
 
-    public init(apiVersion: Int = StudyRocketAPI.version, hostVersion: String, repositoryBound: Bool, codexReady: Bool, pairedDeviceCount: Int, activeThreadID: String?, repositoryID: String? = nil, dynamicToolsReady: Bool? = nil, chatState: String? = nil, chatIssueCode: String? = nil) {
+    public init(apiVersion: Int = StudyRocketAPI.version, hostVersion: String, repositoryBound: Bool, codexReady: Bool, pairedDeviceCount: Int, activeThreadID: String?, repositoryID: String? = nil, dynamicToolsReady: Bool? = nil, chatState: String? = nil, chatIssueCode: String? = nil, backend: String? = nil, capabilities: [String]? = nil, legacyRepositoryID: String? = nil) {
+        self.backend = backend
+        self.capabilities = capabilities
         self.apiVersion = apiVersion
         self.hostVersion = hostVersion
         self.repositoryBound = repositoryBound
@@ -218,6 +227,7 @@ public struct HealthResponse: Codable, Equatable, Sendable {
         self.pairedDeviceCount = pairedDeviceCount
         self.activeThreadID = activeThreadID
         self.repositoryID = repositoryID
+        self.legacyRepositoryID = legacyRepositoryID
         self.dynamicToolsReady = dynamicToolsReady
         self.chatState = chatState
         self.chatIssueCode = chatIssueCode

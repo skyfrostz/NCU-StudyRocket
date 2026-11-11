@@ -280,6 +280,12 @@ final class HostController: ObservableObject {
 
     func start() {
         guard !isRunning else { return }
+        guard !LocalHostRepositoryPolicy.requiresCloud(rootURL) else {
+            status = .stopped
+            chatStatus = "已迁移至云端"
+            errorMessage = "此仓库使用云端连接，Mac Host 已停用。请在 StudyRocket 中使用云端学业对话。"
+            return
+        }
         status = .starting
         errorMessage = nil
         chatStatus = "正在自检"
@@ -685,6 +691,20 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
         let path = request.path
         let headers = request.headers
         let body = request.body
+
+        // Check on every request as the binding can change while this Host is
+        // running. Authenticated reads may continue; no old session may accept
+        // a write or create/resume a Codex turn after cloud cutover.
+        if LocalHostRepositoryPolicy.requiresCloud(root),
+           method != "GET" || path == "/v1/chat/history" || path == "/v1/proposals/challenge" {
+            let authorized = isAuthorized(headers: headers, method: method, path: path, body: body)
+            let error = APIErrorBody(
+                code: authorized ? "cloud_repository" : "unauthorized",
+                message: authorized ? "此仓库已迁移至云端，请切换云端连接；本机待提交内容已保留。" : "设备尚未配对或请求签名已失效。",
+                retryable: false
+            )
+            return makeResponse(status: authorized ? "409 Conflict" : "401 Unauthorized", payload: (try? encoder.encode(error)) ?? Data("{}".utf8))
+        }
 
         let payload: Data
         let status: String

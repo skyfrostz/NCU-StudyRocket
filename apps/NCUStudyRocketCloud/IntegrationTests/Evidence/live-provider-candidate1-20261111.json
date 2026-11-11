@@ -1,0 +1,948 @@
+{
+  "api": [
+    {
+      "method": "POST",
+      "path": "/v1/pair",
+      "status": 200,
+      "ms": 9.65
+    },
+    {
+      "method": "GET",
+      "path": "/v1/health",
+      "status": 200,
+      "ms": 10.65
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 508.4
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 574.76
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 13.81
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 11.61
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals",
+      "status": 200,
+      "ms": 22.22
+    },
+    {
+      "method": "GET",
+      "path": "/v1/versions",
+      "status": 200,
+      "ms": 11.73
+    },
+    {
+      "method": "GET",
+      "path": "/v1/backups/latest",
+      "status": 404,
+      "ms": 11.29
+    },
+    {
+      "method": "GET",
+      "path": "/v1/health",
+      "status": 200,
+      "ms": 11.69
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 603.88
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 517.15
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 11.4
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 14.17
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals",
+      "status": 200,
+      "ms": 11.4
+    },
+    {
+      "method": "GET",
+      "path": "/v1/versions",
+      "status": 200,
+      "ms": 12.72
+    },
+    {
+      "method": "GET",
+      "path": "/v1/backups/latest",
+      "status": 404,
+      "ms": 10.28
+    },
+    {
+      "method": "GET",
+      "path": "/v1/health",
+      "status": 200,
+      "ms": 10.27
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 643.49
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 555.85
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 12.14
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 11.12
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals",
+      "status": 200,
+      "ms": 11.03
+    },
+    {
+      "method": "GET",
+      "path": "/v1/versions",
+      "status": 200,
+      "ms": 10.12
+    },
+    {
+      "method": "GET",
+      "path": "/v1/backups/latest",
+      "status": 404,
+      "ms": 12.97
+    },
+    {
+      "method": "GET",
+      "path": "/v1/health",
+      "status": 200,
+      "ms": 11.86
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 503.24
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 566.84
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 12.01
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 13.38
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals",
+      "status": 200,
+      "ms": 11.73
+    },
+    {
+      "method": "GET",
+      "path": "/v1/versions",
+      "status": 200,
+      "ms": 11.97
+    },
+    {
+      "method": "GET",
+      "path": "/v1/backups/latest",
+      "status": 404,
+      "ms": 12.53
+    },
+    {
+      "method": "GET",
+      "path": "/v1/health",
+      "status": 200,
+      "ms": 12.19
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 575.93
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 685.38
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 13.46
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 12.55
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals",
+      "status": 200,
+      "ms": 10.88
+    },
+    {
+      "method": "GET",
+      "path": "/v1/versions",
+      "status": 200,
+      "ms": 12.26
+    },
+    {
+      "method": "GET",
+      "path": "/v1/backups/latest",
+      "status": 404,
+      "ms": 10.7
+    },
+    {
+      "method": "POST",
+      "path": "/v1/files/read",
+      "status": 200,
+      "ms": 16.42
+    },
+    {
+      "method": "POST",
+      "path": "/v1/files/read",
+      "status": 200,
+      "ms": 12.13
+    },
+    {
+      "method": "POST",
+      "path": "/v1/files/read",
+      "status": 200,
+      "ms": 11.52
+    },
+    {
+      "method": "POST",
+      "path": "/v1/chat/send",
+      "status": 202,
+      "ms": 19.37
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 15.02
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 11.14
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 12.86
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 10.86
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.97
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.95
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.51
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.28
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.93
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 10.54
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.88
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.37
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.96
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.61
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.34
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.88
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 11.3
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.42
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 10.0
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.72
+    },
+    {
+      "method": "POST",
+      "path": "/v1/chat/send",
+      "status": 202,
+      "ms": 14.2
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.83
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 13.4
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 10.09
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.63
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals",
+      "status": 200,
+      "ms": 8.92
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals/challenge",
+      "status": 200,
+      "ms": 9.86
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 522.21
+    },
+    {
+      "method": "POST",
+      "path": "/v1/proposals/apply",
+      "status": 200,
+      "ms": 2191.14
+    },
+    {
+      "method": "POST",
+      "path": "/v1/proposals/apply",
+      "status": 200,
+      "ms": 9.37
+    },
+    {
+      "method": "POST",
+      "path": "/v1/chat/send",
+      "status": 202,
+      "ms": 13.32
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 14.81
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 11.09
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 11.16
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 10.08
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 538.82
+    },
+    {
+      "method": "POST",
+      "path": "/v1/files/commit",
+      "status": 200,
+      "ms": 3455.78
+    },
+    {
+      "method": "POST",
+      "path": "/v1/files/commit",
+      "status": 200,
+      "ms": 11.37
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 560.52
+    },
+    {
+      "method": "POST",
+      "path": "/v1/files/commit",
+      "status": 409,
+      "ms": 1181.96
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 531.24
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 11.29
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 519.83
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 12.06
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 562.25
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 13.74
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 574.24
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 10.59
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 574.8
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 9.72
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 552.14
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 12.66
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 531.73
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 9.61
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 499.86
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 10.7
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 580.91
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 15.51
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 631.85
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 10.88
+    }
+  ],
+  "turns": [
+    {
+      "label": "read_skill_web",
+      "send_status": 202,
+      "terminal": "completed",
+      "issue": null,
+      "seconds": 38.253,
+      "visible_chars": 462,
+      "public_urls": [
+        "https://www.ncu.edu.cn/",
+        "https://www.ncu.edu.cn/info/1008/1102.htm"
+      ],
+      "api_calls": 21
+    },
+    {
+      "label": "propose_temporary_note",
+      "send_status": 202,
+      "terminal": "completed",
+      "issue": null,
+      "seconds": 6.064,
+      "visible_chars": 390,
+      "public_urls": [],
+      "api_calls": 5
+    },
+    {
+      "label": "continued_context",
+      "send_status": 202,
+      "terminal": "completed",
+      "issue": null,
+      "seconds": 6.067,
+      "visible_chars": 140,
+      "public_urls": [],
+      "api_calls": 5
+    }
+  ],
+  "resources": [
+    {
+      "VmHWM": 36831232,
+      "VmRSS": 36831232,
+      "MemAvailable": 828112896,
+      "memory.current": 4386816,
+      "memory.peak": 4878336,
+      "time": 1794404466.8502564
+    },
+    {
+      "VmHWM": 43646976,
+      "VmRSS": 43646976,
+      "MemAvailable": 827461632,
+      "memory.current": 7303168,
+      "memory.peak": 7561216,
+      "time": 1794404473.0127435
+    },
+    {
+      "VmHWM": 45088768,
+      "VmRSS": 45088768,
+      "MemAvailable": 827363328,
+      "memory.current": 7184384,
+      "memory.peak": 7688192,
+      "time": 1794404475.029532
+    },
+    {
+      "VmHWM": 45088768,
+      "VmRSS": 45088768,
+      "MemAvailable": 827121664,
+      "memory.current": 7225344,
+      "memory.peak": 7720960,
+      "time": 1794404477.042113
+    },
+    {
+      "VmHWM": 45088768,
+      "VmRSS": 45088768,
+      "MemAvailable": 826880000,
+      "memory.current": 7274496,
+      "memory.peak": 7790592,
+      "time": 1794404479.056365
+    },
+    {
+      "VmHWM": 45219840,
+      "VmRSS": 45219840,
+      "MemAvailable": 827678720,
+      "memory.current": 7311360,
+      "memory.peak": 7831552,
+      "time": 1794404481.068419
+    },
+    {
+      "VmHWM": 45219840,
+      "VmRSS": 45219840,
+      "MemAvailable": 827695104,
+      "memory.current": 7323648,
+      "memory.peak": 7839744,
+      "time": 1794404483.0794935
+    },
+    {
+      "VmHWM": 45219840,
+      "VmRSS": 45219840,
+      "MemAvailable": 827719680,
+      "memory.current": 7335936,
+      "memory.peak": 7856128,
+      "time": 1794404485.0906365
+    },
+    {
+      "VmHWM": 45219840,
+      "VmRSS": 45219840,
+      "MemAvailable": 827744256,
+      "memory.current": 7344128,
+      "memory.peak": 7856128,
+      "time": 1794404487.1012275
+    },
+    {
+      "VmHWM": 48885760,
+      "VmRSS": 48885760,
+      "MemAvailable": 828776448,
+      "memory.current": 11419648,
+      "memory.peak": 11718656,
+      "time": 1794404489.1116319
+    },
+    {
+      "VmHWM": 48885760,
+      "VmRSS": 48885760,
+      "MemAvailable": 827265024,
+      "memory.current": 11436032,
+      "memory.peak": 11952128,
+      "time": 1794404491.1230218
+    },
+    {
+      "VmHWM": 48885760,
+      "VmRSS": 48885760,
+      "MemAvailable": 827281408,
+      "memory.current": 11390976,
+      "memory.peak": 11952128,
+      "time": 1794404493.1348834
+    },
+    {
+      "VmHWM": 48885760,
+      "VmRSS": 48885760,
+      "MemAvailable": 827305984,
+      "memory.current": 11415552,
+      "memory.peak": 11952128,
+      "time": 1794404495.1458719
+    },
+    {
+      "VmHWM": 48885760,
+      "VmRSS": 48885760,
+      "MemAvailable": 807460864,
+      "memory.current": 11427840,
+      "memory.peak": 11952128,
+      "time": 1794404497.156388
+    },
+    {
+      "VmHWM": 48885760,
+      "VmRSS": 48885760,
+      "MemAvailable": 807485440,
+      "memory.current": 11436032,
+      "memory.peak": 11952128,
+      "time": 1794404499.167438
+    },
+    {
+      "VmHWM": 48885760,
+      "VmRSS": 48885760,
+      "MemAvailable": 807501824,
+      "memory.current": 11444224,
+      "memory.peak": 11952128,
+      "time": 1794404501.178314
+    },
+    {
+      "VmHWM": 48885760,
+      "VmRSS": 48885760,
+      "MemAvailable": 807256064,
+      "memory.current": 11452416,
+      "memory.peak": 11968512,
+      "time": 1794404503.1890821
+    },
+    {
+      "VmHWM": 48885760,
+      "VmRSS": 48885760,
+      "MemAvailable": 807272448,
+      "memory.current": 11460608,
+      "memory.peak": 11968512,
+      "time": 1794404505.200217
+    },
+    {
+      "VmHWM": 48885760,
+      "VmRSS": 48885760,
+      "MemAvailable": 807030784,
+      "memory.current": 11468800,
+      "memory.peak": 11997184,
+      "time": 1794404507.2128642
+    },
+    {
+      "VmHWM": 49016832,
+      "VmRSS": 49016832,
+      "MemAvailable": 809578496,
+      "memory.current": 13893632,
+      "memory.peak": 14131200,
+      "time": 1794404509.223509
+    },
+    {
+      "VmHWM": 49016832,
+      "VmRSS": 49016832,
+      "MemAvailable": 810147840,
+      "memory.current": 14860288,
+      "memory.peak": 15327232,
+      "time": 1794404511.2349634
+    },
+    {
+      "VmHWM": 49016832,
+      "VmRSS": 49016832,
+      "MemAvailable": 809631744,
+      "memory.current": 15196160,
+      "memory.peak": 15392768,
+      "time": 1794404511.261128
+    },
+    {
+      "VmHWM": 49016832,
+      "VmRSS": 49016832,
+      "MemAvailable": 809517056,
+      "memory.current": 14979072,
+      "memory.peak": 15478784,
+      "time": 1794404513.2726765
+    },
+    {
+      "VmHWM": 49016832,
+      "VmRSS": 49016832,
+      "MemAvailable": 809713664,
+      "memory.current": 15171584,
+      "memory.peak": 15515648,
+      "time": 1794404515.2881677
+    },
+    {
+      "VmHWM": 49016832,
+      "VmRSS": 49016832,
+      "MemAvailable": 808124416,
+      "memory.current": 15216640,
+      "memory.peak": 15728640,
+      "time": 1794404517.299658
+    },
+    {
+      "VmHWM": 49410048,
+      "VmRSS": 49410048,
+      "MemAvailable": 815681536,
+      "memory.current": 15929344,
+      "memory.peak": 16195584,
+      "time": 1794404520.0740173
+    },
+    {
+      "VmHWM": 49410048,
+      "VmRSS": 49410048,
+      "MemAvailable": 815493120,
+      "memory.current": 15675392,
+      "memory.peak": 16199680,
+      "time": 1794404522.0902796
+    },
+    {
+      "VmHWM": 49410048,
+      "VmRSS": 49410048,
+      "MemAvailable": 815673344,
+      "memory.current": 15679488,
+      "memory.peak": 16199680,
+      "time": 1794404524.1027806
+    },
+    {
+      "VmHWM": 49410048,
+      "VmRSS": 49410048,
+      "MemAvailable": 816140288,
+      "memory.current": 15785984,
+      "memory.peak": 16199680,
+      "time": 1794404526.115375
+    },
+    {
+      "VmHWM": 49803264,
+      "VmRSS": 49803264,
+      "MemAvailable": 813666304,
+      "memory.current": 16244736,
+      "memory.peak": 17027072,
+      "time": 1794404537.552296
+    }
+  ],
+  "proposal": {
+    "count": 1,
+    "file_exists_before_confirmation": false,
+    "apply_status": 200,
+    "replay_status": 200,
+    "exact_content_match": true
+  },
+  "cas": {
+    "first": 200,
+    "replay": 200,
+    "stale": 409
+  },
+  "summary": {
+    "requests": 105,
+    "median_ms": 11.97,
+    "p95_ms": 603.88,
+    "maximum_rss_bytes": 49803264,
+    "maximum_hwm_bytes": 49803264,
+    "minimum_available_bytes": 807030784
+  },
+  "artifact": {
+    "candidate": "candidate1",
+    "linux_binary_sha256": "57a7c44f75d582b9fe4b9e185d45dc4c0d3d2c679a43e6e2457246b819a301b7",
+    "model": "deepseek-flash",
+    "reasoning_effort": "high",
+    "memory_high_bytes": 314572800,
+    "memory_max_bytes": 402653184,
+    "swap_max_bytes": 0,
+    "cpu_quota_percent": 100,
+    "proxy": "fixed official endpoint, loopback only"
+  },
+  "isolation_verification": {
+    "primary_markdown_count": 36,
+    "all_primary_originals_match_isolated_copy": true,
+    "primary_visible_messages_after_test": 455,
+    "temporary_services_stopped": true
+  }
+}

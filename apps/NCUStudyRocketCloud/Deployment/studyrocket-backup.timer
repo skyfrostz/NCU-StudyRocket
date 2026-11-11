@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily StudyRocket local backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=0
+Unit=studyrocket-backup.service
+
+[Install]
+WantedBy=timers.target

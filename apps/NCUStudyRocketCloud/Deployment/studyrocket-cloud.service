@@ -1,0 +1,45 @@
+[Unit]
+Description=StudyRocket cloud academic service
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=studyrocket
+Group=studyrocket
+WorkingDirectory=/var/lib/studyrocket/cloud
+EnvironmentFile=/etc/studyrocket/cloud.env
+Environment=TZ=Asia/Shanghai
+Environment=LD_LIBRARY_PATH=/opt/studyrocket/cloud/current/lib
+ExecStart=/opt/studyrocket/cloud/current/StudyRocketCloud serve --repository /var/lib/studyrocket/cloud/repository --state /var/lib/studyrocket/cloud/state --host 127.0.0.1 --port 43818
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+UMask=0077
+MemoryAccounting=yes
+MemoryHigh=300M
+MemoryMax=384M
+MemorySwapMax=0
+CPUQuota=100%
+Nice=5
+TasksMax=128
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/studyrocket/cloud
+InaccessiblePaths=-/www/wwwroot/Soulcourse -/etc/soulcourse
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

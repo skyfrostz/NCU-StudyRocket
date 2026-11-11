@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 
 /// Synchronous, reentrant coordination for Desktop/Host Markdown transactions.
 /// Revision/hash checks must happen after acquiring the lock; no lock spans an await.

@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import StudyRocketShared
 
 let privateKey = P256.Signing.PrivateKey()
@@ -365,6 +369,8 @@ if case .table(_, let columns) = escapedTable.first { precondition(columns == 2)
 let fencedTable = StudyRocketMarkdownParser.blocks(from: "```markdown\n| A | B |\n|---|---|\n```")
 precondition(fencedTable.count == 1 && { if case .prose = fencedTable[0] { return true }; return false }())
 
+// Codex process ownership is a Mac transport concern; Linux cloud uses repository flock.
+#if os(macOS)
 let leaseURL = FileManager.default.temporaryDirectory.appendingPathComponent("studyrocket-lease-\(UUID().uuidString).json")
 let leaseStore = CodexLeaseStore(url: leaseURL)
 let lease = try leaseStore.acquire(owner: "shared-check")
@@ -376,6 +382,7 @@ do {
 }
 lease.release()
 precondition(!FileManager.default.fileExists(atPath: leaseURL.path))
+#endif
 let descriptorRoot = FileManager.default.temporaryDirectory.appendingPathComponent("studyrocket-descriptors-" + UUID().uuidString, isDirectory: true)
 let descriptorStore = StudyRocketTaskDescriptorStore(directory: descriptorRoot)
 let firstRoot = descriptorRoot.appendingPathComponent("repo-a", isDirectory: true)
@@ -406,7 +413,11 @@ precondition(descriptorStore.load(for: secondRoot) == StudyRocketTaskDescriptor(
 descriptorStore.remove(for: firstRoot)
 precondition(descriptorStore.load(for: firstRoot) == nil)
 try? FileManager.default.removeItem(at: descriptorRoot)
+#if os(macOS)
 print("StudyRocketSharedChecks: signing, DTO, lease and task descriptor checks passed")
+#else
+print("StudyRocketSharedChecks: signing, DTO and task descriptor checks passed; Mac Codex lease skipped")
+#endif
 
 // Beijing Monday, including the Sunday evening UTC boundary and a multi-line deliverable.
 do {
@@ -446,3 +457,25 @@ try checkLocalSaveHistory()
 #endif
 
 try runTaskLinkageChecks()
+
+// Historical and future daily ledgers must invalidate the same public snapshot CAS.
+do {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("studyrocket-daily-cas-" + UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let builder = AcademicSnapshotBuilder(root: root)
+    let writer = AcademicWriteService(root: root, backupRoot: root.appendingPathComponent("backups"), recordLocalHistory: false)
+    let baseline = builder.build().revision
+    let first = try writer.applyDaily(DailyWriteRequest(entry: DailySnapshot(date: "2025-01-15", deliverables: "Synthetic A"), metadata: WriteMetadata(baseRevision: baseline)))
+    precondition(first.revision != baseline)
+    do {
+        _ = try writer.applyDaily(DailyWriteRequest(entry: DailySnapshot(date: "2025-01-15", deliverables: "Synthetic B"), metadata: WriteMetadata(baseRevision: baseline)))
+        preconditionFailure("Historical month changed without invalidating snapshot revision")
+    } catch let error as AcademicWriteError { precondition(error.code == "conflict") }
+    let beforeFuture = builder.build().revision
+    _ = try writer.applyDaily(DailyWriteRequest(entry: DailySnapshot(date: "2099-01-15", deliverables: "Synthetic future"), metadata: WriteMetadata(baseRevision: beforeFuture)))
+    precondition(builder.build().revision != beforeFuture)
+    let original = try String(contentsOf: root.appendingPathComponent("工作台/每日记录/2025-01.md"), encoding: .utf8)
+    precondition(original.contains("Synthetic A") && !original.contains("Synthetic B"))
+    print("Daily revision checks passed: historical/future month CAS and stale-write rejection")
+}

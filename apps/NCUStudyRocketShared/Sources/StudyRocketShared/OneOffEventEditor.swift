@@ -1,3 +1,4 @@
+#if canImport(SwiftUI)
 import SwiftUI
 
 public struct OneOffEventEditor: View {
@@ -82,3 +83,5 @@ public struct OneOffEventEditor: View {
         }.environment(\.timeZone, PlanningDate.calendar.timeZone).frame(minWidth: 320, minHeight: 420)
     }
 }
+
+#endif

@@ -1,0 +1,20 @@
+[Unit]
+Description=Create a consistent StudyRocket local backup
+After=studyrocket-cloud.service
+
+[Service]
+Type=oneshot
+User=studyrocket
+Group=studyrocket
+Environment=TZ=Asia/Shanghai
+Environment=LD_LIBRARY_PATH=/opt/studyrocket/cloud/current/lib
+ExecStart=/usr/bin/python3 /opt/studyrocket/cloud/current/Deployment/backup.py
+UMask=0077
+Nice=10
+MemoryMax=256M
+CPUQuota=50%
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/studyrocket/cloud
+PrivateTmp=yes

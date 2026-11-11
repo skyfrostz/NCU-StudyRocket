@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 
 public struct QuickFact: Identifiable, Codable, Equatable, Sendable {
     public let id: UUID
