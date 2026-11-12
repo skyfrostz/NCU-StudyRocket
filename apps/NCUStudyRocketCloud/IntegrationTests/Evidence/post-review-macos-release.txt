@@ -1,0 +1,71 @@
+binary_sha256 349ebc749f310ca2d6cf38ab482d41806277762e4646297496c88c1bc81d5e0c
+
+RUN cloud_acceptance.py
+test_agent_cancel_during_provider_wait_is_prompt_and_durable (__main__.Acceptance) ... ok
+test_agent_context_budget_has_explicit_failure (__main__.Acceptance) ... ok
+test_agent_output_budget_is_failure_not_false_completion (__main__.Acceptance) ... ok
+test_agent_preserves_reasoning_and_tool_ids_between_rounds (__main__.Acceptance) ... ok
+test_agent_rejects_unread_hash_and_forbidden_tools (__main__.Acceptance) ... ok
+test_agent_tool_budget_has_explicit_persisted_failure (__main__.Acceptance) ... ok
+test_authentication_boundaries (__main__.Acceptance) ... ok
+test_chat_request_id_replay_cannot_duplicate_turn (__main__.Acceptance) ... ok
+test_complete_imported_history_paginates_and_reimport_deduplicates (__main__.Acceptance) ... ok
+test_crash_after_first_rename (__main__.Acceptance) ... ok
+test_crash_after_prepare (__main__.Acceptance) ... ok
+test_duplicate_and_payload_collision_survive_restart (__main__.Acceptance) ... ok
+test_fact_replay_preserves_exactly_one_entry (__main__.Acceptance) ... ok
+test_live_backup_restores_files_identity_versions_and_receipts (__main__.Acceptance) ... ok
+test_paths_cannot_escape_repository (__main__.Acceptance) ... ok
+test_proposals_are_durable_but_write_only_after_signed_confirmation (__main__.Acceptance) ... ok
+test_real_http_cancel_keeps_partial_and_does_not_wait_for_eof (__main__.Acceptance) ... ok
+test_real_http_complete_stream_has_visible_text_without_reasoning (__main__.Acceptance) ... ok
+test_real_http_crash_recovers_visible_partial_without_resending (__main__.Acceptance) ... ok
+test_real_http_stream_requires_done_and_preserves_truncated_text (__main__.Acceptance) ... ok
+test_repository_identity_survives_move (__main__.Acceptance) ... ok
+test_repository_rejects_second_writer_with_different_state (__main__.Acceptance) ... ok
+test_signature_and_nonce_replay_rejected (__main__.Acceptance) ... ok
+test_sse_reconnect_replays_only_missed_durable_events (__main__.Acceptance) ... ok
+test_stale_hash_rejects_whole_group (__main__.Acceptance) ... ok
+test_stale_proposal_cannot_partially_apply (__main__.Acceptance) ... ok
+test_two_clients_racing_cannot_overwrite (__main__.Acceptance) ... ok
+
+----------------------------------------------------------------------
+Ran 27 tests in 28.638s
+
+OK
+RESULT cloud_acceptance.py exit=0 seconds=28.694
+
+RUN backup_download_acceptance.py
+PASS backup download auth, chunk hashes/sizes, traversal, symlink, wrong-repository, no-completed-backup
+RESULT backup_download_acceptance.py exit=0 seconds=0.862
+
+RUN skill_update_acceptance.py
+PASS skill explicit confirmation/durable replay normal
+PASS skill rejection two-evidence
+PASS skill rejection yaml-change
+PASS skill rejection script-change
+PASS skill explicit confirmation/durable replay crash
+RESULT skill_update_acceptance.py exit=0 seconds=1.205
+
+RUN memory_admission_acceptance.py
+PASS available=349MiB current=100MiB denied=True: replay/read/confirmation remain available
+PASS available=1000MiB current=280MiB denied=True: replay/read/confirmation remain available
+PASS available=350MiB current=279MiB denied=False: replay/read/confirmation remain available
+RESULT memory_admission_acceptance.py exit=0 seconds=0.882
+
+RUN background_context_acceptance.py
+PASS full archive chunk coverage, no-tools bootstrap, invisible derived context, persistent hash cache, changed-source invalidation
+RESULT background_context_acceptance.py exit=0 seconds=0.76
+
+RUN review_regression_acceptance.py
+PASS legacy repository mapping visible only to signed clients
+PASS historical daily CAS: stale same base revision rejected 409
+PASS emoji JSON byte limit: partial read cannot grant proposal hash
+PASS all delivered chunks authorize the complete file
+PASS oversized combining Character rejects without read permission
+RESULT review_regression_acceptance.py exit=0 seconds=0.566
+
+RUN history_budget_acceptance.py
+PASS 3 long-history tool rounds retain current request/profile/reasoning; oversized current request fails explicitly; next small request recovers
+RESULT history_budget_acceptance.py exit=0 seconds=0.638
+ALL 7 SUITES PASSED

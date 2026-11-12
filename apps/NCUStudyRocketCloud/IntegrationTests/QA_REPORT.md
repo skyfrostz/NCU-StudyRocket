@@ -77,8 +77,8 @@ are reported separately rather than inflating that count.
 | Post-review macOS Release | `349ebc749f310ca2d6cf38ab482d41806277762e4646297496c88c1bc81d5e0c` | 27/27, 28.638 s | same six suites — all passed |
 
 Reproducible commands are `python3 IntegrationTests/<script>.py --binary <artifact>`.
-Raw synthetic results are in `Evidence/post-review-macos-debug.log` and
-`Evidence/post-review-macos-release.log`. Review regressions prove same-baseline
+Raw synthetic results are in `Evidence/post-review-macos-debug.txt` and
+`Evidence/post-review-macos-release.txt`. Review regressions prove same-baseline
 historical daily writes return 200 then 409; an 8000-emoji result is safely chunked
 and cannot authorize a proposal until all bytes are delivered; a single oversized
 combining Character cannot grant read permission. Legacy identity is absent from
@@ -96,7 +96,7 @@ month CAS case, signing, DTOs, timetable/planning and task linkage. The Mac-only
 Codex process lease and local Git-save-history fixtures remain macOS-only; Linux
 cloud uses its separately tested repository flock. The original Linux stdout
 mentioned “lease” generically; the test runner now prints its explicit Mac skip.
-Evidence: `Evidence/sharedchecks-linux-amd64.log`, `Evidence/sharedchecks-macos.log`.
+Evidence: `Evidence/sharedchecks-linux-amd64.txt`, `Evidence/sharedchecks-macos.txt`.
 No compilation occurred on the production server.
 
 ### Authorized live DeepSeek evidence — Linux candidate 1
@@ -138,3 +138,86 @@ driver/proxy require an explicitly prepared isolated `live-qa-*` directory and
 credentials remain only in the server environment. Final Linux post-review
 artifact testing, real-device use and the full 24-hour coexistence window remain
 owned by the deployment/client tasks and are not implied by this candidate-1 run.
+
+
+## Final Linux candidate 2 — independent isolated rerun
+
+The actual uploaded Ubuntu 24.04 amd64 candidate-2 binary was independently
+hash-checked before execution:
+`2c255b94a93bc5395344052901586659d0626b73bcbb4e0b37ec50a4c5ad9ee6`.
+It includes the historical-daily revision, delivered-read permission,
+authenticated legacy mapping and dynamic-history fixes. No server compilation
+was performed. The primary service/current symlink stayed on candidate 1 during
+this rerun.
+
+All **eight suites** passed on this exact Linux artifact as the `studyrocket`
+user in a separate systemd unit with MemoryHigh=300 MiB, MemoryMax=384 MiB,
+MemorySwapMax=0 and CPUQuota=100%: 27/27 core HTTP cases (24.178 s), completed
+backup download, five skill-update cases, memory-admission boundaries,
+background bootstrap, review regressions, long-history recovery, and 15/15
+restore cases (0.682 s). Evidence: `Evidence/linux-candidate2-all-suites.txt`.
+
+A second separate temporary service then ran the same candidate-2 binary against
+a fresh copy of the real organized Markdown, using the actual official DeepSeek
+API (`deepseek-flash`, high). Three consecutive turns completed in **18.126 s,
+8.075 s, and 4.061 s**. Observed tool names were `read_file`, `read_skill`,
+`web_search`, `web_fetch`, and `propose_changes`; tool argument keys and provider
+continuation structure are recorded without content. No tool errors occurred.
+The first turn included complete archive bootstrap and multiple file/skill reads,
+and returned the public citation `https://www.ncu.edu.cn/`. The largest observed
+serialized input was 45,022 bytes. The next two turns produced an isolated note
+proposal and continued with note/week/skill reads without a budget lockout.
+
+The note was absent before explicit signed confirmation, then matched the exact
+proposal after a 200 response; lost-receipt replay also returned 200. File
+CAS/replay/stale cases returned 200/200/409. **95 API requests** had median
+**10.58 ms** and p95 **628.36 ms**, measured separately from model waiting.
+The temporary model process `/proc/PID/status` RSS/HWM peak was **50,200,576 bytes
+(47.88 MiB)** and minimum system MemAvailable was **805,400,576 bytes
+(768.09 MiB)**. These are observed samples under this workload, not a guaranteed
+universal maximum. The resource limits match the production configuration; cgroup
+shared-page accounting was not substituted for RSS.
+
+After the run all original **36 Markdown files** still matched the isolated copy
+byte-for-byte, and primary history remained **455 messages**. The two temporary
+live services were stopped, the primary service remained active, and private
+remote test state was retained for root-controlled evidence review. Sanitized
+records are `Evidence/live-provider-candidate2-20261111.json` and
+`Evidence/live-provider-structure-candidate2-20261111.jsonl`; they contain metrics,
+public URLs and tool names/argument-key shapes only, never archive text, reasoning
+content, credentials or headers. This closes the final-artifact Linux/API/runtime
+check. Physical device acceptance and the full 24-hour coexistence observation
+remain separate milestones.
+
+## Reproducible rollback and client installation — 2026-11-12
+
+The committed `legacy_rollback_acceptance.py` passed both automatic compilation
+of the production Mac Host snapshot reader and explicit reuse of that reader.
+The cloud artifact was the previously tested macOS Release
+`349ebc749f310ca2d6cf38ab482d41806277762e4646297496c88c1bc81d5e0c`.
+Two synthetic cloud HTTP writes were confirmed before stopping the temporary
+writer, creating a verified backup and restoring into a new directory. All six
+Markdown hashes, one fact, stable task/assignment/delivery IDs, six management
+markers, unmanaged text and a separate old queue archive were preserved. The
+legacy snapshot matched the cloud week/facts while correctly producing its own
+path-based revision. An existing-output negative case returned exit 2 without
+changing the sentinel or adding files. Evidence:
+`Evidence/legacy-rollback-20261112.json`.
+
+This closes the reproducible **Host snapshot readback** rehearsal. Legacy Host
+HTTP/authentication, actual phone re-pairing/queue replay and production cutover
+remain NOT RUN. The fixture neither accessed the production cloud nor started
+the real Mac Host, application or Codex process.
+
+Separately, the physical iPhone connection succeeded on retry. The signed Mobile
+Release app was upgraded in place without uninstalling or automatically launching
+it. Application Support (nine files) and Preferences (one file) were privately
+copied before and after installation; inventories and every SHA-256 matched.
+No private bytes, device identifiers or pairing material are committed. The Mac
+app was gracefully exited, backed up outside Git and upgraded with its existing
+installer; strict codesign verification passed and the installed executable
+matched the built artifact. Opening Settings showed the cloud service section
+with the intended HTTPS endpoint and the existing local mode. No cloud pairing
+or authority switch was performed. All 36 original migration files still matched
+the preview manifest after installation. Installation and data preservation do
+not constitute physical cross-network, confirmation or offline acceptance.

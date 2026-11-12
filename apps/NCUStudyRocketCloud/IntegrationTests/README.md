@@ -69,3 +69,28 @@ destination; its credential is read from the server environment and never logged
 A working directory readable by the service user is required for Linux Foundation
 atomic writes (the driver changes into its isolated base). Do not run the live
 script as part of ordinary automated tests or point it at the primary service.
+
+## Cloud-to-legacy rollback rehearsal
+
+On macOS, run the committed fixture with a fresh output directory outside the
+repository:
+
+```sh
+python3 apps/NCUStudyRocketCloud/IntegrationTests/legacy_rollback_acceptance.py \
+  --binary apps/NCUStudyRocketCloud/.build/release/StudyRocketCloud \
+  --output /tmp/studyrocket-rollback-new-run
+```
+
+The default compiles `LegacyHostReadback.swift` together with the production
+`HostSnapshotBuilder` source in an isolated Swift scratch directory. A previously
+built reader can be supplied with `--host-readback /path/to/host-readback`.
+The fixture confirms synthetic plan/fact writes, stops its temporary cloud writer,
+verifies a consistent backup, restores into a new directory and compares the
+legacy Host's snapshot with the confirmed cloud data. It also checks stable IDs,
+management markers, unmanaged text and preservation of a separate synthetic
+phone-queue archive. Existing output directories are rejected without cleanup.
+
+Only `result.json` is sanitized for publication. Keep build logs, temporary
+snapshots, pairing state and backups local. This tests the actual Host snapshot
+projection; it does not test the legacy HTTP/authentication service, physical
+device re-pairing, phone-queue replay or a production cutover.

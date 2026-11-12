@@ -31,7 +31,7 @@ relevant original sections remain readable in chunks. Budget exhaustion produces
 an explicit failed terminal state rather than silently dropping required files.
 Complete `reasoning_content` stays in memory and is returned
 on subsequent tool rounds; it is not displayed, imported, or persisted as visible
-history. Public search/fetch use the separate official tools endpoints.
+history. Public search/fetch use the separate [official tools endpoints](https://api-docs.deepseek.com/guides/search/).
 
 HTTPS termination, request body limits, resource limits and
 systemd supervision are configured by the deployment layer. Bind to loopback behind
@@ -99,7 +99,9 @@ until the service has recovered them. Never copy a live SQLite file alone.
 
 ## Verification and boundaries
 
-All acceptance uses synthetic temporary repositories. The independent black-box
+Fault-injection acceptance uses synthetic temporary repositories. Live provider
+acceptance uses an isolated copy of approved material and keeps test messages and
+mutations out of the authoritative repository and conversation. The independent black-box
 suite lives in `IntegrationTests/cloud_acceptance.py`. Production must not enable
 `--allow-test-failpoints` or `--test-model-fixture`. Test-only failpoints after journal
 prepare / first rename deliberately terminate with exit 86 to exercise recovery.

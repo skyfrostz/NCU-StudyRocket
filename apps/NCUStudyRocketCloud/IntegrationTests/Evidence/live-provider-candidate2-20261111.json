@@ -1,0 +1,812 @@
+{
+  "api": [
+    {
+      "method": "POST",
+      "path": "/v1/pair",
+      "status": 200,
+      "ms": 8.93
+    },
+    {
+      "method": "GET",
+      "path": "/v1/health",
+      "status": 200,
+      "ms": 10.62
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 507.14
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 514.48
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 10.28
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 10.78
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals",
+      "status": 200,
+      "ms": 11.54
+    },
+    {
+      "method": "GET",
+      "path": "/v1/versions",
+      "status": 200,
+      "ms": 9.99
+    },
+    {
+      "method": "GET",
+      "path": "/v1/backups/latest",
+      "status": 404,
+      "ms": 10.02
+    },
+    {
+      "method": "GET",
+      "path": "/v1/health",
+      "status": 200,
+      "ms": 9.19
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 508.89
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 510.84
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 10.58
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.75
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals",
+      "status": 200,
+      "ms": 10.51
+    },
+    {
+      "method": "GET",
+      "path": "/v1/versions",
+      "status": 200,
+      "ms": 10.25
+    },
+    {
+      "method": "GET",
+      "path": "/v1/backups/latest",
+      "status": 404,
+      "ms": 12.91
+    },
+    {
+      "method": "GET",
+      "path": "/v1/health",
+      "status": 200,
+      "ms": 9.47
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 497.88
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 543.99
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 11.42
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.72
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals",
+      "status": 200,
+      "ms": 8.95
+    },
+    {
+      "method": "GET",
+      "path": "/v1/versions",
+      "status": 200,
+      "ms": 9.85
+    },
+    {
+      "method": "GET",
+      "path": "/v1/backups/latest",
+      "status": 404,
+      "ms": 9.02
+    },
+    {
+      "method": "GET",
+      "path": "/v1/health",
+      "status": 200,
+      "ms": 9.56
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 558.79
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 526.57
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 9.85
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.6
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals",
+      "status": 200,
+      "ms": 9.01
+    },
+    {
+      "method": "GET",
+      "path": "/v1/versions",
+      "status": 200,
+      "ms": 8.66
+    },
+    {
+      "method": "GET",
+      "path": "/v1/backups/latest",
+      "status": 404,
+      "ms": 9.03
+    },
+    {
+      "method": "GET",
+      "path": "/v1/health",
+      "status": 200,
+      "ms": 8.72
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 496.53
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 541.32
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 8.98
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 8.74
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals",
+      "status": 200,
+      "ms": 8.65
+    },
+    {
+      "method": "GET",
+      "path": "/v1/versions",
+      "status": 200,
+      "ms": 8.9
+    },
+    {
+      "method": "GET",
+      "path": "/v1/backups/latest",
+      "status": 404,
+      "ms": 8.56
+    },
+    {
+      "method": "POST",
+      "path": "/v1/files/read",
+      "status": 200,
+      "ms": 9.21
+    },
+    {
+      "method": "POST",
+      "path": "/v1/files/read",
+      "status": 200,
+      "ms": 9.98
+    },
+    {
+      "method": "POST",
+      "path": "/v1/files/read",
+      "status": 200,
+      "ms": 9.93
+    },
+    {
+      "method": "POST",
+      "path": "/v1/chat/send",
+      "status": 202,
+      "ms": 14.48
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 11.59
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.37
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.97
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.39
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.3
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.71
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 10.21
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.8
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 11.78
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 10.02
+    },
+    {
+      "method": "POST",
+      "path": "/v1/chat/send",
+      "status": 202,
+      "ms": 14.74
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 11.8
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 11.11
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 10.49
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.3
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 10.87
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals",
+      "status": 200,
+      "ms": 10.01
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals/challenge",
+      "status": 200,
+      "ms": 11.03
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 575.03
+    },
+    {
+      "method": "POST",
+      "path": "/v1/proposals/apply",
+      "status": 200,
+      "ms": 2110.75
+    },
+    {
+      "method": "POST",
+      "path": "/v1/proposals/apply",
+      "status": 200,
+      "ms": 12.24
+    },
+    {
+      "method": "POST",
+      "path": "/v1/chat/send",
+      "status": 202,
+      "ms": 19.62
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 16.79
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.94
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "ms": 9.84
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 557.71
+    },
+    {
+      "method": "POST",
+      "path": "/v1/files/commit",
+      "status": 200,
+      "ms": 3286.39
+    },
+    {
+      "method": "POST",
+      "path": "/v1/files/commit",
+      "status": 200,
+      "ms": 9.39
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "ms": 502.14
+    },
+    {
+      "method": "POST",
+      "path": "/v1/files/commit",
+      "status": 409,
+      "ms": 1067.55
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 526.85
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 9.17
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 494.91
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 10.74
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 511.37
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 10.13
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 628.36
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 10.64
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 679.68
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 17.98
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 614.34
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 9.81
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 646.67
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 10.57
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 581.94
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 10.48
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 597.21
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 11.07
+    },
+    {
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "status": 200,
+      "ms": 550.13
+    },
+    {
+      "method": "GET",
+      "path": "/v1/history",
+      "status": 200,
+      "ms": 12.32
+    }
+  ],
+  "turns": [
+    {
+      "label": "read_skill_web",
+      "send_status": 202,
+      "terminal": "completed",
+      "issue": null,
+      "seconds": 18.126,
+      "visible_chars": 248,
+      "public_urls": [
+        "https://www.ncu.edu.cn/"
+      ],
+      "api_calls": 11
+    },
+    {
+      "label": "propose_temporary_note",
+      "send_status": 202,
+      "terminal": "completed",
+      "issue": null,
+      "seconds": 8.075,
+      "visible_chars": 350,
+      "public_urls": [],
+      "api_calls": 6
+    },
+    {
+      "label": "continued_context",
+      "send_status": 202,
+      "terminal": "completed",
+      "issue": null,
+      "seconds": 4.061,
+      "visible_chars": 140,
+      "public_urls": [],
+      "api_calls": 4
+    }
+  ],
+  "resources": [
+    {
+      "VmHWM": 36700160,
+      "VmRSS": 36700160,
+      "MemAvailable": 811163648,
+      "memory.current": 4448256,
+      "memory.peak": 4706304,
+      "time": 1794405276.4158432
+    },
+    {
+      "VmHWM": 44302336,
+      "VmRSS": 44302336,
+      "MemAvailable": 807587840,
+      "memory.current": 6676480,
+      "memory.peak": 6909952,
+      "time": 1794405281.960512
+    },
+    {
+      "VmHWM": 45613056,
+      "VmRSS": 45613056,
+      "MemAvailable": 807178240,
+      "memory.current": 6565888,
+      "memory.peak": 7073792,
+      "time": 1794405283.9732764
+    },
+    {
+      "VmHWM": 45744128,
+      "VmRSS": 45744128,
+      "MemAvailable": 806608896,
+      "memory.current": 6606848,
+      "memory.peak": 7118848,
+      "time": 1794405285.9836621
+    },
+    {
+      "VmHWM": 45875200,
+      "VmRSS": 45875200,
+      "MemAvailable": 806002688,
+      "memory.current": 6656000,
+      "memory.peak": 7172096,
+      "time": 1794405287.9946413
+    },
+    {
+      "VmHWM": 45875200,
+      "VmRSS": 45875200,
+      "MemAvailable": 807362560,
+      "memory.current": 6443008,
+      "memory.peak": 7204864,
+      "time": 1794405290.0050569
+    },
+    {
+      "VmHWM": 45875200,
+      "VmRSS": 45875200,
+      "MemAvailable": 807153664,
+      "memory.current": 6471680,
+      "memory.peak": 7204864,
+      "time": 1794405292.0154018
+    },
+    {
+      "VmHWM": 45875200,
+      "VmRSS": 45875200,
+      "MemAvailable": 807186432,
+      "memory.current": 6483968,
+      "memory.peak": 7204864,
+      "time": 1794405294.0262887
+    },
+    {
+      "VmHWM": 49414144,
+      "VmRSS": 49414144,
+      "MemAvailable": 807149568,
+      "memory.current": 8151040,
+      "memory.peak": 8450048,
+      "time": 1794405296.0375934
+    },
+    {
+      "VmHWM": 49414144,
+      "VmRSS": 49414144,
+      "MemAvailable": 807960576,
+      "memory.current": 9338880,
+      "memory.peak": 9605120,
+      "time": 1794405298.0484624
+    },
+    {
+      "VmHWM": 49414144,
+      "VmRSS": 49414144,
+      "MemAvailable": 807759872,
+      "memory.current": 10092544,
+      "memory.peak": 10518528,
+      "time": 1794405300.0613918
+    },
+    {
+      "VmHWM": 49414144,
+      "VmRSS": 49414144,
+      "MemAvailable": 809205760,
+      "memory.current": 10108928,
+      "memory.peak": 10584064,
+      "time": 1794405300.0882797
+    },
+    {
+      "VmHWM": 49414144,
+      "VmRSS": 49414144,
+      "MemAvailable": 809107456,
+      "memory.current": 10113024,
+      "memory.peak": 10633216,
+      "time": 1794405302.1014912
+    },
+    {
+      "VmHWM": 49414144,
+      "VmRSS": 49414144,
+      "MemAvailable": 808374272,
+      "memory.current": 10141696,
+      "memory.peak": 10649600,
+      "time": 1794405304.1140025
+    },
+    {
+      "VmHWM": 49414144,
+      "VmRSS": 49414144,
+      "MemAvailable": 810233856,
+      "memory.current": 12144640,
+      "memory.peak": 12595200,
+      "time": 1794405306.1262035
+    },
+    {
+      "VmHWM": 49545216,
+      "VmRSS": 49545216,
+      "MemAvailable": 809635840,
+      "memory.current": 12161024,
+      "memory.peak": 12668928,
+      "time": 1794405308.1367257
+    },
+    {
+      "VmHWM": 49807360,
+      "VmRSS": 49807360,
+      "MemAvailable": 807493632,
+      "memory.current": 12644352,
+      "memory.peak": 13164544,
+      "time": 1794405310.895651
+    },
+    {
+      "VmHWM": 49807360,
+      "VmRSS": 49807360,
+      "MemAvailable": 807030784,
+      "memory.current": 12652544,
+      "memory.peak": 13164544,
+      "time": 1794405312.913741
+    },
+    {
+      "VmHWM": 49807360,
+      "VmRSS": 49807360,
+      "MemAvailable": 807514112,
+      "memory.current": 12640256,
+      "memory.peak": 13164544,
+      "time": 1794405314.9253116
+    },
+    {
+      "VmHWM": 50200576,
+      "VmRSS": 50200576,
+      "MemAvailable": 805400576,
+      "memory.current": 13082624,
+      "memory.peak": 13864960,
+      "time": 1794405326.3051484
+    }
+  ],
+  "proposal": {
+    "count": 1,
+    "file_exists_before_confirmation": false,
+    "apply_status": 200,
+    "replay_status": 200,
+    "exact_content_match": true
+  },
+  "cas": {
+    "first": 200,
+    "replay": 200,
+    "stale": 409
+  },
+  "summary": {
+    "requests": 95,
+    "median_ms": 10.58,
+    "p95_ms": 628.36,
+    "maximum_rss_bytes": 50200576,
+    "maximum_hwm_bytes": 50200576,
+    "minimum_available_bytes": 805400576,
+    "status_counts": {
+      "200": 86,
+      "404": 5,
+      "202": 3,
+      "409": 1
+    }
+  },
+  "isolation_verification": {
+    "primary_markdown_count": 36,
+    "all_primary_originals_match_isolated_copy": true,
+    "primary_visible_messages_after_test": 455,
+    "temporary_services_stopped": true
+  },
+  "artifact": {
+    "candidate": "candidate2",
+    "linux_binary_sha256": "2c255b94a93bc5395344052901586659d0626b73bcbb4e0b37ec50a4c5ad9ee6",
+    "model": "deepseek-flash",
+    "reasoning_effort": "high",
+    "memory_high_bytes": 314572800,
+    "memory_max_bytes": 402653184,
+    "swap_max_bytes": 0,
+    "cpu_quota_percent": 100
+  }
+}

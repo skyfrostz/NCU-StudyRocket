@@ -1,0 +1,94 @@
+binary_sha256 2c255b94a93bc5395344052901586659d0626b73bcbb4e0b37ec50a4c5ad9ee6
+
+RUN cloud_acceptance.py
+test_agent_cancel_during_provider_wait_is_prompt_and_durable (__main__.Acceptance.test_agent_cancel_during_provider_wait_is_prompt_and_durable) ... ok
+test_agent_context_budget_has_explicit_failure (__main__.Acceptance.test_agent_context_budget_has_explicit_failure) ... ok
+test_agent_output_budget_is_failure_not_false_completion (__main__.Acceptance.test_agent_output_budget_is_failure_not_false_completion) ... ok
+test_agent_preserves_reasoning_and_tool_ids_between_rounds (__main__.Acceptance.test_agent_preserves_reasoning_and_tool_ids_between_rounds) ... ok
+test_agent_rejects_unread_hash_and_forbidden_tools (__main__.Acceptance.test_agent_rejects_unread_hash_and_forbidden_tools) ... ok
+test_agent_tool_budget_has_explicit_persisted_failure (__main__.Acceptance.test_agent_tool_budget_has_explicit_persisted_failure) ... ok
+test_authentication_boundaries (__main__.Acceptance.test_authentication_boundaries) ... ok
+test_chat_request_id_replay_cannot_duplicate_turn (__main__.Acceptance.test_chat_request_id_replay_cannot_duplicate_turn) ... ok
+test_complete_imported_history_paginates_and_reimport_deduplicates (__main__.Acceptance.test_complete_imported_history_paginates_and_reimport_deduplicates) ... ok
+test_crash_after_first_rename (__main__.Acceptance.test_crash_after_first_rename) ... ok
+test_crash_after_prepare (__main__.Acceptance.test_crash_after_prepare) ... ok
+test_duplicate_and_payload_collision_survive_restart (__main__.Acceptance.test_duplicate_and_payload_collision_survive_restart) ... ok
+test_fact_replay_preserves_exactly_one_entry (__main__.Acceptance.test_fact_replay_preserves_exactly_one_entry) ... ok
+test_live_backup_restores_files_identity_versions_and_receipts (__main__.Acceptance.test_live_backup_restores_files_identity_versions_and_receipts) ... ok
+test_paths_cannot_escape_repository (__main__.Acceptance.test_paths_cannot_escape_repository) ... ok
+test_proposals_are_durable_but_write_only_after_signed_confirmation (__main__.Acceptance.test_proposals_are_durable_but_write_only_after_signed_confirmation) ... ok
+test_real_http_cancel_keeps_partial_and_does_not_wait_for_eof (__main__.Acceptance.test_real_http_cancel_keeps_partial_and_does_not_wait_for_eof) ... ok
+test_real_http_complete_stream_has_visible_text_without_reasoning (__main__.Acceptance.test_real_http_complete_stream_has_visible_text_without_reasoning) ... ok
+test_real_http_crash_recovers_visible_partial_without_resending (__main__.Acceptance.test_real_http_crash_recovers_visible_partial_without_resending) ... ok
+test_real_http_stream_requires_done_and_preserves_truncated_text (__main__.Acceptance.test_real_http_stream_requires_done_and_preserves_truncated_text) ... ok
+test_repository_identity_survives_move (__main__.Acceptance.test_repository_identity_survives_move) ... ok
+test_repository_rejects_second_writer_with_different_state (__main__.Acceptance.test_repository_rejects_second_writer_with_different_state) ... ok
+test_signature_and_nonce_replay_rejected (__main__.Acceptance.test_signature_and_nonce_replay_rejected) ... ok
+test_sse_reconnect_replays_only_missed_durable_events (__main__.Acceptance.test_sse_reconnect_replays_only_missed_durable_events) ... ok
+test_stale_hash_rejects_whole_group (__main__.Acceptance.test_stale_hash_rejects_whole_group) ... ok
+test_stale_proposal_cannot_partially_apply (__main__.Acceptance.test_stale_proposal_cannot_partially_apply) ... ok
+test_two_clients_racing_cannot_overwrite (__main__.Acceptance.test_two_clients_racing_cannot_overwrite) ... ok
+
+----------------------------------------------------------------------
+Ran 27 tests in 24.178s
+
+OK
+RESULT cloud_acceptance.py exit=0 seconds=24.327
+
+RUN backup_download_acceptance.py
+PASS backup download auth, chunk hashes/sizes, traversal, symlink, wrong-repository, no-completed-backup
+RESULT backup_download_acceptance.py exit=0 seconds=1.923
+
+RUN skill_update_acceptance.py
+PASS skill explicit confirmation/durable replay normal
+PASS skill rejection two-evidence
+PASS skill rejection yaml-change
+PASS skill rejection script-change
+PASS skill explicit confirmation/durable replay crash
+RESULT skill_update_acceptance.py exit=0 seconds=2.169
+
+RUN memory_admission_acceptance.py
+PASS available=349MiB current=100MiB denied=True: replay/read/confirmation remain available
+PASS available=1000MiB current=280MiB denied=True: replay/read/confirmation remain available
+PASS available=350MiB current=279MiB denied=False: replay/read/confirmation remain available
+RESULT memory_admission_acceptance.py exit=0 seconds=1.545
+
+RUN background_context_acceptance.py
+PASS full archive chunk coverage, no-tools bootstrap, invisible derived context, persistent hash cache, changed-source invalidation
+RESULT background_context_acceptance.py exit=0 seconds=0.927
+
+RUN review_regression_acceptance.py
+PASS legacy repository mapping visible only to signed clients
+PASS historical daily CAS: stale same base revision rejected 409
+PASS emoji JSON byte limit: partial read cannot grant proposal hash
+PASS all delivered chunks authorize the complete file
+PASS oversized combining Character rejects without read permission
+RESULT review_regression_acceptance.py exit=0 seconds=0.879
+
+RUN history_budget_acceptance.py
+PASS 3 long-history tool rounds retain current request/profile/reasoning; oversized current request fails explicitly; next small request recovers
+RESULT history_budget_acceptance.py exit=0 seconds=1.082
+
+RUN restore_backup_acceptance.py
+test_actual_cloud_snapshot_restores_pairing_and_idempotent_receipt (__main__.RestoreAcceptance.test_actual_cloud_snapshot_restores_pairing_and_idempotent_receipt) ... ok
+test_changed_file_and_receipt_mismatch_are_rejected (__main__.RestoreAcceptance.test_changed_file_and_receipt_mismatch_are_rejected) ... ok
+test_changed_manifest_even_with_new_receipt_is_rejected (__main__.RestoreAcceptance.test_changed_manifest_even_with_new_receipt_is_rejected) ... ok
+test_cli_restores_exact_files_database_identity_and_receipts (__main__.RestoreAcceptance.test_cli_restores_exact_files_database_identity_and_receipts) ... ok
+test_copy_failure_keeps_incomplete_destination_without_success_receipt (__main__.RestoreAcceptance.test_copy_failure_keeps_incomplete_destination_without_success_receipt) ... ok
+test_existing_destination_is_never_replaced (__main__.RestoreAcceptance.test_existing_destination_is_never_replaced) ... ok
+test_mac_download_can_restore_without_server_disk (__main__.RestoreAcceptance.test_mac_download_can_restore_without_server_disk) ... ok
+test_mac_download_rejects_invalid_receipt_or_ambiguous_markers (__main__.RestoreAcceptance.test_mac_download_rejects_invalid_receipt_or_ambiguous_markers) ... ok
+test_mac_download_rejects_tamper_and_unlisted_files (__main__.RestoreAcceptance.test_mac_download_rejects_tamper_and_unlisted_files) ... ok
+test_sqlite_damage_even_with_matching_receipt_is_rejected (__main__.RestoreAcceptance.test_sqlite_damage_even_with_matching_receipt_is_rejected) ... ok
+test_symlink_backup_argument_is_rejected (__main__.RestoreAcceptance.test_symlink_backup_argument_is_rejected) ... ok
+test_symlink_destination_parent_is_rejected (__main__.RestoreAcceptance.test_symlink_destination_parent_is_rejected) ... ok
+test_symlink_inside_backup_is_rejected (__main__.RestoreAcceptance.test_symlink_inside_backup_is_rejected) ... ok
+test_unlisted_file_and_path_traversal_are_rejected (__main__.RestoreAcceptance.test_unlisted_file_and_path_traversal_are_rejected) ... ok
+test_wrong_repository_and_unrecovered_journal_are_rejected (__main__.RestoreAcceptance.test_wrong_repository_and_unrecovered_journal_are_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 15 tests in 0.682s
+
+OK
+RESULT restore_backup_acceptance.py exit=0 seconds=0.833
+ALL 8 SUITES PASSED

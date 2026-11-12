@@ -1,0 +1,17 @@
+Building for debugging...
+[Provisioning 5 / 7]
+[1 / 5] StudyRocketShared
+[2 / 6] StudyRocketShared
+[8 / 10] StudyRocketSharedChecks-product
+[9 / 11] StudyRocketSharedChecks-product
+[13 / 16] StudyRocketSharedChecks-product
+[13 / 16] StudyRocketShared
+[14 / 17] StudyRocketShared
+[14 / 18] StudyRocketShared
+[15 / 18] StudyRocketShared
+[17 / 18] StudyRocketShared
+[18 / 18] StudyRocketSharedChecks-product
+Build complete! (7.39 secs)
+StudyRocketSharedChecks: signing, DTO, lease and task descriptor checks passed
+Task linkage checks passed: carryover, reschedule, cascade/undo, identities, migration, categories and one-off events
+Daily revision checks passed: historical/future month CAS and stale-write rejection

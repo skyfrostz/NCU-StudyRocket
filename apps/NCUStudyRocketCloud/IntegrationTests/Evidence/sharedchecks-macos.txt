@@ -1,0 +1,12 @@
+Building for debugging...
+[2 / 8] StudyRocketShared
+[4 / 10] StudyRocketShared
+[10 / 15] StudyRocketSharedChecks-product
+[12 / 17] StudyRocketSharedChecks-product
+[15 / 18] StudyRocketSharedChecks-product
+[17 / 18] StudyRocketSharedChecks-product
+Build complete! (1.76 secs)
+StudyRocketSharedChecks: signing, DTO, lease and task descriptor checks passed
+LocalSaveHistoryChecks: batching, path safety, staging isolation, exact saved bytes and local-only ref passed
+Task linkage checks passed: carryover, reschedule, cascade/undo, identities, migration, categories and one-off events
+Daily revision checks passed: historical/future month CAS and stale-write rejection
