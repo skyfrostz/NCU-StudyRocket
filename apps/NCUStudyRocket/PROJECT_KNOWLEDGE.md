@@ -490,3 +490,13 @@ shasum -a 256 '工作台/下周计划.md'
 - 后续 Mobile 完整测试增至 69 项并通过；两端最终 Release 已签名。Mac 使用现有安装脚本升级并通过严格签名验证，实际设置页显示云服务入口及“旧本机模式”；未配对、未建立云绑定。iPhone 原位升级成功，未自动启动；升级前后回读的九个应用数据文件与一个设置文件逐字节一致，私有备份位于仓库外。
 - Cloud 最终 Linux 候选 2 已部署但公网配对/聊天/写入闸门关闭。服务器专项、真实 DeepSeek 三回合和独立备份还原已通过；完整 24 小时观察与真机云端运行仍待完成，详见 `../NCUStudyRocketCloud/Deployment/DEPLOYMENT_STATUS.md`，不能沿用旧段落的未签名构建状态或将安装当作切换完成。
 - 已提交的回退 fixture 可在新临时目录还原云端新增内容并调用生产 HostSnapshotBuilder 校验。它不启动真实旧 Host，也不替代旧 HTTP/认证和真机重新配对验收。原 Mac 学业资料与旧 Host 继续保持旧模式，最终切换须冻结旧 writer 后重新做增量导出与身份审核。
+
+
+## 2026-11-12 原生界面与任务结构维护
+
+- 当前云权威及真实用户确认结果以 `../NCUStudyRocketCloud/Deployment/DEPLOYMENT_STATUS.md` 最新段落为准；前述“未配对/闸门关闭”是切换前历史，不能用作当前连接判断。24小时等待已获用户豁免，不记为通过。
+- 共享 `PlanningProposalValidation` 是云端和旧 Desktop/Host 的共同规则源。首次 task-links 必须基于当前文件 snapshot 生成 seed，保护稳定身份、来源和完成事实；后续草案及确认继续做管理边界/CAS校验。独立待办用明确分隔，不按自然语言中的每个分号自动拆分。
+- `WeeklyPlanEditingSession` 持有跨页草稿。顶部保存与行内完成先收取所有编辑，再走同一保存入口；保存失败不能重置原hash，切页不能丢文字。`StudyChatStore.prepare` 默认保留并追加已有输入，显式确认的合并才传 `replacingDraft: true`。
+- 草案变更组件为 Shared `StudyProposalDiffView`，宽窄布局按实际宽度和辅助字号切换；完整原文只是可选展开。用户在体验全宋体方案后改为并确认“原生系统字体为主”：两端控件、课表、聊天与输入跟随系统字体，仅首页诗句少量保留宋体。不要恢复全局宋体或强制 Times New Roman 混排；系统图标及代码等宽字体保留各自语义。字体通过 Shared 语义接口统一，Linux 不打包字体。Mac 课表只保留周视图，窄窗横向滚动限于网格内部。
+- Mobile请求重试必须用原请求身份查询权威历史，未知回执不能盲重发。显示合并只降低刷新频率，不改变累计文本；终态必须flush。显式刷新去最新，不能覆盖刷新等待期间用户已改变的滚动意图。
+- 回归入口：`Scripts/test_desktop_chat.sh`（快捷输入/迟到连接/流式）、`Scripts/test_weekly_editing.sh`（草稿收取/切页/CAS/保存防重入）、`Scripts/test_local_proposal_seed.sh`（实际Desktop与Host注册）。完整界面证据边界见 `UI_REPAIR_VALIDATION.md`。

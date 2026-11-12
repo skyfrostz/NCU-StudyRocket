@@ -1,0 +1,7 @@
+{
+  "result": "PASS",
+  "verifiedManifestFiles": 70,
+  "binarySHA256": "bde4011b53841a13074eebe6a68fe43ee000a46e1cccd86307dd2f11f15d987f",
+  "runtimeLibrariesResolved": true,
+  "currentRelease": "/opt/studyrocket/cloud/releases/20261112-context-fix"
+}

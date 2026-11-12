@@ -3,6 +3,8 @@
 
 Prepare a fresh directory (never copies real academic files):
   python3 live_chinese_context_acceptance.py prepare --base /tmp/live-qa-chinese-new
+  python3 live_chinese_context_acceptance.py prepare --base /tmp/live-qa-tasks-new \
+    --scenario independent-tasks
 
 The operator starts StudyRocketCloud with that repository/state, a dedicated
 non-production port and the existing fixed-target live_provider_proxy.py. Then:
@@ -40,6 +42,9 @@ SPEC = 'chinese-context-fixture.json'
 REPORT = 'chinese-context-report.json'
 WEEK = '工作台/下周计划.md'
 TIMETABLE = '工作台/学期/2026秋季个人课表.md'
+SCENARIOS = ('time-adjustment', 'independent-tasks')
+ORIGINAL_TASK = '合成学习任务'
+ADDED_TASK = '发送合成确认邮件'
 TARGET_BYTES = {'AGENTS.md': 11000, 'PROFILE.md': 9000,
                 '工作台/助理偏好与习惯.md': 3866, TIMETABLE: 27000, WEEK: 17000}
 
@@ -84,6 +89,31 @@ def safe_base(raw):
     return base
 
 
+def scenario_prompt(scenario):
+    require(scenario in SCENARIOS, 'Unsupported synthetic scenario')
+    preamble = (
+        '这是合成隔离验收，不含真实学业资料。请先用read_file完整读取工作台/下周计划.md和'
+        '工作台/学期/2026秋季个人课表.md，两份文件均须依nextOffset读到末尾，允许同轮读取多个文件。'
+    )
+    if scenario == 'independent-tasks':
+        action = (
+            '然后仅修改周计划今天上午的安排：在原有“合成学习任务”之外，新增一项独立的'
+            '“发送合成确认邮件”。原任务和新增任务必须能分别完成，保留原任务原文；'
+            '不要改日期、其他时段、交付物、管理标记或其他任何字节，不要改课表，也不要生成其他草案。'
+            '请用propose_changes的edits精确修改，oldText包含今天完整计划行以确保唯一匹配；'
+        )
+    else:
+        action = (
+            '然后仅对课表的“合成活动时段调整”这一行，用propose_changes的edits精确替换，把开始14:00改为15:00；'
+            '结束16:00、ID、日期、名称和其余所有字节保持不变。不要改周计划，不要生成其他草案。'
+            'oldText请包含完整活动行以确保唯一匹配；'
+        )
+    return preamble + action + (
+        'baseHash必须来自本回合完整读取。'
+        '最终只回复两份文件末尾核验码与“草案待确认”，不要复述资料正文或宣称已保存。'
+    )
+
+
 def prepare(args):
     base = safe_base(args.base)
     require(not base.exists(), 'Prepare requires a fresh base directory')
@@ -94,8 +124,14 @@ def prepare(args):
     try:
         today = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).date().isoformat()
         week_code, timetable_code = 'WEEK-CHINESE-48271', 'TABLE-CHINESE-73192'
-        old_row = f'| synthetic-time-adjustment | {today} | 14:00 | 16:00 | 合成活动时段调整 | 合成地点 | 仅验收 |'
-        new_row = old_row.replace('| 14:00 |', '| 15:00 |')
+        timetable_row = f'| synthetic-time-adjustment | {today} | 14:00 | 16:00 | 合成活动时段调整 | 合成地点 | 仅验收 |'
+        week_row = f'| {today} | {ORIGINAL_TASK} | 弹性缓冲 | 合成核对任务 |  | [ ] |'
+        if args.scenario == 'independent-tasks':
+            target_path, old_row = WEEK, week_row
+            new_row = week_row.replace(ORIGINAL_TASK, ORIGINAL_TASK + '<br>' + ADDED_TASK)
+        else:
+            target_path, old_row = TIMETABLE, timetable_row
+            new_row = timetable_row.replace('| 14:00 |', '| 15:00 |')
         sources = {
             'AGENTS.md': padded('# 合成隔离测试说明\n只依据当前用户要求操作合成文件，草案待确认。\n', '\n', 11000),
             'PROFILE.md': padded('# 合成个人档案\n这是虚构的分页验收资料，不含真实个人信息。\n', '\n', 9000),
@@ -103,7 +139,7 @@ def prepare(args):
             WEEK: padded(
                 '# 合成周计划\n\n<!-- studyrocket:weekly:start -->\n'
                 '| 日期 | 上午 | 中午 | 晚上 | 待分配 | 完成 |\n|---|---|---|---|---|---|\n'
-                f'| {today} | 合成学习任务 | 弹性缓冲 | 合成核对任务 |  | [ ] |\n'
+                + week_row + '\n'
                 '<!-- studyrocket:weekly:end -->\n\n<!-- studyrocket:deliveries:start -->\n'
                 '- [ ] 合成可核验交付物\n<!-- studyrocket:deliveries:end -->\n\n边界外说明保持不变。\n',
                 f'\n计划末尾核验码：{week_code}\n', 17000),
@@ -111,7 +147,7 @@ def prepare(args):
                 '\n<!-- studyrocket:events:start -->\n'
                 '| ID | 日期 | 开始 | 结束 | 名称 | 地点 | 说明 |\n'
                 '| --- | --- | --- | --- | --- | --- | --- |\n'
-                + old_row + '\n<!-- studyrocket:events:end -->\n'
+                + timetable_row + '\n<!-- studyrocket:events:end -->\n'
                 + f'课表末尾核验码：{timetable_code}\n', 27000),
         }
         for name, content in sources.items():
@@ -120,12 +156,12 @@ def prepare(args):
         shutil.copytree(fixture.repo, base / 'repository')
         (base / 'state').mkdir(mode=0o700)
         (base / MARKER).write_text(MARKER_BODY, encoding='utf-8')
-        spec = {'version': 1, 'syntheticOnly': True, 'date': today,
-                'targetPath': TIMETABLE, 'oldRow': old_row, 'newRow': new_row,
+        spec = {'version': 1, 'syntheticOnly': True, 'date': today, 'scenario': args.scenario,
+                'targetPath': target_path, 'oldRow': old_row, 'newRow': new_row,
                 'weekCode': week_code, 'timetableCode': timetable_code,
                 'files': {name: fingerprint(base / 'repository' / name) for name in sources}}
         write_json(base / SPEC, spec, exclusive=True)
-        result = {'result': 'PREPARED', 'syntheticOnly': True,
+        result = {'result': 'PREPARED', 'syntheticOnly': True, 'scenario': args.scenario,
                   'requiredReferenceBytes': sum(TARGET_BYTES[name] for name in TARGET_BYTES if name not in (WEEK, TIMETABLE)),
                   'timetableBytes': TARGET_BYTES[TIMETABLE], 'planBytes': TARGET_BYTES[WEEK],
                   'fileCount': len(list((base / 'repository').rglob('*.md'))),
@@ -220,10 +256,14 @@ def run(args):
     require(proxy_log.is_file(), 'Dedicated proxy structure log must exist')
     spec = json.loads((base / SPEC).read_text(encoding='utf-8'))
     require(spec.get('version') == 1 and spec.get('syntheticOnly') is True, 'Invalid synthetic fixture spec')
+    scenario = spec.get('scenario', 'time-adjustment')
+    require(scenario in SCENARIOS, 'Unsupported synthetic scenario')
+    target_path = WEEK if scenario == 'independent-tasks' else TIMETABLE
+    require(spec['targetPath'] == target_path, 'Scenario target does not match prepared fixture')
     repo = base / 'repository'
     for name, expected in spec['files'].items():
         require(fingerprint(repo / name) == expected, 'Fixture source differs from prepared synthetic bytes')
-    report = {'result': 'RUNNING', 'syntheticOnly': True, 'productionAccessed': False,
+    report = {'result': 'RUNNING', 'syntheticOnly': True, 'productionAccessed': False, 'scenario': scenario,
               'realDeviceTested': False, 'binarySHA256': sha(binary.read_bytes()),
               'requiredReferenceBytes': sum(spec['files'][name]['bytes'] for name in TARGET_BYTES if name not in (WEEK, TIMETABLE)),
               'timetableBytes': spec['files'][TIMETABLE]['bytes'], 'planBytes': spec['files'][WEEK]['bytes'],
@@ -245,7 +285,7 @@ def run(args):
     fixture = Live()
     report_path = base / REPORT
     operation = str(uuid.uuid4())
-    original = (repo / TIMETABLE).read_text(encoding='utf-8')
+    original = (repo / target_path).read_text(encoding='utf-8')
     expected = original.replace(spec['oldRow'], spec['newRow'])
     require(original.count(spec['oldRow']) == 1, 'Synthetic edit row must be unique')
     before = {path.relative_to(repo).as_posix(): sha(path.read_bytes()) for path in repo.rglob('*.md')}
@@ -253,14 +293,7 @@ def run(args):
     stage = 'pair-and-send'
     try:
         fixture.pair()
-        prompt = (
-            '这是合成隔离验收，不含真实学业资料。请先用read_file完整读取工作台/下周计划.md和'
-            '工作台/学期/2026秋季个人课表.md，两份文件均须依nextOffset读到末尾，允许同轮读取多个文件。'
-            '然后仅对课表的“合成活动时段调整”这一行，用propose_changes的edits精确替换，把开始14:00改为15:00；'
-            '结束16:00、ID、日期、名称和其余所有字节保持不变。不要改周计划，不要生成其他草案。'
-            'oldText请包含完整活动行以确保唯一匹配；baseHash必须来自本回合完整读取。'
-            '最终只回复两份文件末尾核验码与“草案待确认”，不要复述资料正文或宣称已保存。'
-        )
+        prompt = scenario_prompt(scenario)
         status, _ = fixture.request('POST', '/v1/chat/send', {'text': prompt, 'clientRequestID': operation, 'apiVersion': 1})
         require(status == 202, 'Chat send was not accepted')
         started = time.monotonic()
@@ -290,11 +323,11 @@ def run(args):
         status, pending = fixture.request('GET', '/v1/proposals')
         require(status == 200, 'Proposal list failed')
         proposals = pending.get('proposals', [])
-        require(len(proposals) == 1 and proposals[0]['relativePath'] == TIMETABLE, 'Expected exactly one timetable proposal')
+        require(len(proposals) == 1 and proposals[0]['relativePath'] == target_path, 'Expected exactly one scenario target proposal')
         proposal = proposals[0]
-        require(proposal['baseHash'] == before[TIMETABLE], 'Proposal base hash differs')
+        require(proposal['baseHash'] == before[target_path], 'Proposal base hash differs')
         require(proposal['originalContent'] == original and proposal['proposedContent'] == expected,
-                'Proposal changed more than the requested synthetic time')
+                'Proposal differs from the exact requested synthetic replacement')
         markers = re.findall(r'^<!-- studyrocket:[^\n]+ -->$', original, flags=re.M)
         require(re.findall(r'^<!-- studyrocket:[^\n]+ -->$', expected, flags=re.M) == markers,
                 'Proposal management markers changed')
@@ -312,15 +345,38 @@ def run(args):
         first = fixture.request('POST', '/v1/proposals/apply', request)
         replay = fixture.request('POST', '/v1/proposals/apply', request)
         require(first[0] == 200 and replay == first, 'Signed confirmation or exact replay failed')
-        require((repo / TIMETABLE).read_text(encoding='utf-8') == expected, 'Confirmed bytes differ from preview')
+        require((repo / target_path).read_text(encoding='utf-8') == expected, 'Confirmed bytes differ from preview')
         after = {path.relative_to(repo).as_posix(): sha(path.read_bytes()) for path in repo.rglob('*.md')}
-        require({name: value for name, value in after.items() if name != TIMETABLE}
-                == {name: value for name, value in before.items() if name != TIMETABLE}, 'An unrelated source changed')
+        require({name: value for name, value in after.items() if name != target_path}
+                == {name: value for name, value in before.items() if name != target_path}, 'An unrelated source changed')
         status, pending = fixture.request('GET', '/v1/proposals')
         require(status == 200 and pending.get('proposals') == [], 'Confirmed proposal was not consumed')
         report['confirmation'] = {'applyStatus': first[0], 'replayStatus': replay[0],
                                   'replayReceiptMatched': True, 'exactAppliedBytes': True,
                                   'unrelatedMarkdownUnchanged': True, 'proposalConsumed': True}
+        if scenario == 'independent-tasks':
+            stage = 'verify-independent-task-snapshot'
+            status, snapshot = fixture.request('GET', '/v1/snapshot')
+            require(status == 200, 'Confirmed task snapshot read failed')
+            today = next((day for day in snapshot['week']['days'] if day['id'] == spec['date']), None)
+            require(today is not None, 'Prepared date is outside the current snapshot window')
+            week_period = next((slot for slot in today['slots'] if slot['id'] == 'morning'), None)
+            home_period = next((slot for slot in snapshot['home']['periods'] if slot['id'] == 'morning'), None)
+            require(week_period is not None and home_period is not None, 'Morning task period is missing')
+            tasks = week_period['tasks']
+            independent = {
+                'weekTaskCount': len(tasks), 'homeTaskCount': len(home_period['tasks']),
+                'titlesMatched': [task['text'] for task in tasks] == [ORIGINAL_TASK, ADDED_TASK],
+                'distinctTaskIDs': len({task['id'] for task in tasks}) == 2,
+                'noCheckboxPrefixes': all(not re.match(r'^\s*(?:[-*]\s+)?\[[ xX]\]', task['text']) for task in tasks),
+                'bothInitiallyIncomplete': len(tasks) == 2 and all(not task['isCompleted'] for task in tasks),
+                'homeWeekTasksMatched': home_period['tasks'] == tasks,
+                'canonicalTaskSeparatorObserved': '<br>' in proposal['proposedContent'] and '<br>' in spec['newRow'],
+            }
+            report['independentTasks'] = independent
+            require(independent['weekTaskCount'] == 2 and independent['homeTaskCount'] == 2
+                    and all(value for key, value in independent.items() if key not in ('weekTaskCount', 'homeTaskCount')),
+                    'Confirmed morning tasks are not independently represented in home and week')
         stage = 'verify-model-structure'
         structure = structure_summary(proxy_log, log_start)
         report['modelStructure'] = structure
@@ -360,6 +416,7 @@ def main():
     commands = parser.add_subparsers(dest='command', required=True)
     prepare_parser = commands.add_parser('prepare')
     prepare_parser.add_argument('--base', type=Path, required=True)
+    prepare_parser.add_argument('--scenario', choices=SCENARIOS, default='time-adjustment')
     live = commands.add_parser('run')
     live.add_argument('--base', type=Path, required=True)
     live.add_argument('--allow-live-provider', action='store_true')

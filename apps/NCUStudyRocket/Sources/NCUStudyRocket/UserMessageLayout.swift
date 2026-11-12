@@ -1,4 +1,5 @@
 import SwiftUI
+import StudyRocketShared
 
 /// Measures the padded bubble against the real row width, without stretching short text.
 struct UserMessageLayout: Layout {
@@ -32,19 +33,19 @@ struct UserMessageView: View {
     var body: some View {
         UserMessageLayout {
             Text(message.text)
-                .font(.system(size: StudyRocketTheme.bodySize))
-                .multilineTextAlignment(.trailing)
+                .studyChatTypography(size: StudyRocketTheme.bodySize)
+                .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 14).padding(.vertical, 11)
                 .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous)).foregroundStyle(.white)
-                .contextMenu { Button("复制", systemImage: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.text, forType: .string) } }
+                .contextMenu { StudyButton("复制", systemImage: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.text, forType: .string) } }
             HStack(spacing: 5) {
                 if let state = message.turnState, state != .completed { Text(state == .interrupted ? "已中断" : state == .failed ? "未完成" : "进行中") }
                 Text(message.date.formatted(date: .omitted, time: .shortened))
                     .opacity(showTime ? 1 : 0)
                     .accessibilityHidden(!showTime)
             }
-            .font(.caption2).foregroundStyle(.secondary)
+            .studyTypography(.caption2).foregroundStyle(.secondary)
             .frame(minHeight: 16, alignment: .top)
         }
         .frame(maxWidth: .infinity, alignment: .trailing)

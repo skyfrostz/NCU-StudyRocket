@@ -2,6 +2,7 @@ import Foundation
 import Hummingbird
 import HTTPTypes
 import NIOCore
+import ServiceLifecycle
 import StudyRocketShared
 
 @main enum StudyRocketCloudMain {
@@ -149,6 +150,7 @@ struct CloudHTTP: Sendable {
             }
         } catch let error as CloudError { return errorResponse(error) }
         catch let error as AcademicWriteError { return errorResponse(CloudError(error.code == "conflict" ? 409:422,error.code,error.message)) }
+        catch let error as PlanningProposalValidation.BoundaryError { return errorResponse(CloudError(422,"invalid_planning_boundaries",error.localizedDescription)) }
         catch is DecodingError { return errorResponse(CloudError(400,"invalid_request","请求 JSON 格式不正确。")) }
         catch { return errorResponse(CloudError(422,"request_failed","操作未完成，请检查内容或刷新后重试。")) }
     }
@@ -162,18 +164,26 @@ struct CloudHTTP: Sendable {
     }
     func stream(after:Int,device:String)->Response {
         Response(status:.ok,headers:[.contentType:"text/event-stream",.cacheControl:"no-cache",HTTPField.Name("X-Accel-Buffering")!:"no"],body:ResponseBody { writer in
+            // HTTP graceful shutdown waits for in-flight responses. An SSE body
+            // must end itself; the response writer remains on its owning task.
             var cursor=max(after,0),idle=0
-            while !Task.isCancelled {
+            while !Task.isCancelled && !Task.isShuttingDownGracefully {
                 guard try await store.deviceActive(device) else { break }
                 let events=try await store.events(after:cursor)
                 for event in events {
+                    guard !Task.isCancelled && !Task.isShuttingDownGracefully else { break }
                     try await writer.write(ByteBuffer(string:"id: \(event.id)\nevent: message\ndata: \(event.body)\n\n"));cursor=event.id
                 }
+                guard !Task.isCancelled && !Task.isShuttingDownGracefully else { break }
                 if events.isEmpty { idle += 1 } else { idle=0 }
                 if idle == 1 || idle >= 20 {
                     try await writer.write(ByteBuffer(string:"event: heartbeat\ndata: {\"kind\":\"heartbeat\"}\n\n"));idle=1
                 }
-                try await Task.sleep(for:.seconds(1))
+                do {
+                    // Wake the poll immediately on shutdown without transferring
+                    // Hummingbird's non-Sendable, inout writer to a child task.
+                    try await cancelWhenGracefulShutdown { try await Task.sleep(for:.seconds(1)) }
+                } catch is CancellationError { break }
             }
             try await writer.finish(nil)
         })

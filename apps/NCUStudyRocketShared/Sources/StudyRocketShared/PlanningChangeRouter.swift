@@ -53,15 +53,17 @@ public enum PlanningChangeRouter {
         public let timetable: String?
     }
     public static func route(week proposed: String, original: String, timetable: String, now: Date = .now) throws -> Result {
-        var lines = proposed.components(separatedBy: .newlines)
+        try PlanningProposalValidation.validateManagedBoundaries(path: "工作台/下周计划.md", original: original, proposed: proposed)
+        var lines = PlanningMarkdownLines.parse(proposed)
         var events = try OneOffSchedule.read(timetable)
         var graph = try TaskLinkageMarkdown.read(proposed)
+        let beforeGraph = graph
         let beforeEvents = events
         var inWeek = false
         for index in lines.indices {
-            if lines[index] == "<!-- studyrocket:weekly:start -->" { inWeek = true; continue }
-            if lines[index] == "<!-- studyrocket:weekly:end -->" { inWeek = false; continue }
-            guard inWeek, var cells = cells(lines[index]), cells.count >= 6,
+            if lines[index].text == "<!-- studyrocket:weekly:start -->" { inWeek = true; continue }
+            if lines[index].text == "<!-- studyrocket:weekly:end -->" { inWeek = false; continue }
+            guard inWeek, var cells = cells(lines[index].text), cells.count >= 6,
                   let date = PlanningDate.date(cells[0], relativeTo: now), PlanningDate.key(date) >= PlanningDate.key(now) else { continue }
             let day = PlanningDate.key(date)
             var changed = false
@@ -71,13 +73,19 @@ public enum PlanningChangeRouter {
                 let tasks = PeriodTaskParser.tasks(from: cells[column])
                 var retained: [String] = []
                 for task in tasks {
-                    guard PlanningCategory.infer(task.text) == .event else { retained.append(task.text); continue }
+                    let assignment = graph?.assignments.first(where: { $0.active && $0.date == day && $0.periodID == periodID && $0.legacyTaskID == task.id })
+                    let linked = assignment.flatMap { a in graph?.tasks.first(where: { $0.id == a.taskID }) }
+                    let category = linked?.category ?? PlanningCategory.infer(task.text)
+                    guard category == .event else { retained.append(task.text); continue }
                     guard let time = times(task.text) else {
                         throw RoutingError("活动“\(task.text)”缺少明确开始时间，请先询问用户，尚未生成修改草案。")
                     }
                     let title = task.text.replacingOccurrences(of: #"^\s*\d{1,2}:\d{2}(?:\s*[-–—~至]\s*\d{1,2}:\d{2})?\s*"#, with: "", options: .regularExpression)
-                    if !events.contains(where: { $0.date == day && $0.start == time.0 && $0.title == title }) {
-                        events.append(OneOffEvent(date: day, start: time.0, end: time.1, title: title))
+                    let eventID = linked.map { PlanningDate.stableID("event|" + $0.id) }
+                    if let index = events.firstIndex(where: { $0.id == eventID }) {
+                        events[index].date = day; events[index].start = time.0; events[index].end = time.1; events[index].title = title
+                    } else if !events.contains(where: { $0.date == day && $0.start == time.0 && $0.title == title }) {
+                        events.append(OneOffEvent(id: eventID ?? UUID().uuidString, date: day, start: time.0, end: time.1, title: title))
                     }
                     if let a = graph?.assignments.first(where: { $0.date == day && $0.periodID == periodID && $0.legacyTaskID == task.id }),
                        let i = graph?.tasks.firstIndex(where: { $0.id == a.taskID }) {
@@ -89,12 +97,16 @@ public enum PlanningChangeRouter {
                 }
                 if columnChanged { cells[column] = retained.joined(separator: "<br>") }
             }
-            if changed { lines[index] = "| " + cells.map { $0.replacingOccurrences(of: "|", with: "\\|") }.joined(separator: " | ") + " |" }
+            if changed { lines[index].text = "| " + cells.map { $0.replacingOccurrences(of: "|", with: "\\|") }.joined(separator: " | ") + " |" }
         }
-        var week = lines.joined(separator: "\n")
-        if let graph { week = try TaskLinkageMarkdown.write(graph, in: week) }
+        var week = PlanningMarkdownLines.joined(lines)
+        if let graph, graph != beforeGraph { week = try TaskLinkageMarkdown.write(graph, in: week) }
         week = try PlanningProposalValidation.prepare(path: "工作台/下周计划.md", original: original, proposed: week)
-        return Result(week: week, timetable: events == beforeEvents ? nil : try OneOffSchedule.write(events, in: timetable))
+        let routedTimetable = events == beforeEvents ? nil : try OneOffSchedule.write(events, in: timetable)
+        if let routedTimetable {
+            try PlanningProposalValidation.validateManagedBoundaries(path: StudyRocketTimetableParser.sourceFile, original: timetable, proposed: routedTimetable)
+        }
+        return Result(week: week, timetable: routedTimetable)
     }
     private static func cells(_ line: String) -> [String]? {
         let value = line.trimmingCharacters(in: .whitespaces)

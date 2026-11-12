@@ -11,22 +11,22 @@ private struct MobileStubResponse {
 
 private final class MobileStubDeliveryGate: @unchecked Sendable {
     private let lock = NSLock()
-    private var delivery: (@Sendable () -> Void)?
+    private var deliveries: [@Sendable () -> Void] = []
     private var isOpen = false
 
     func enqueue(_ action: @escaping @Sendable () -> Void) {
         lock.lock()
         if isOpen { lock.unlock(); action() }
-        else { delivery = action; lock.unlock() }
+        else { deliveries.append(action); lock.unlock() }
     }
 
     func release() {
         lock.lock()
         isOpen = true
-        let action = delivery
-        delivery = nil
+        let actions = deliveries
+        deliveries.removeAll()
         lock.unlock()
-        action?()
+        actions.forEach { $0() }
     }
 }
 
@@ -79,11 +79,25 @@ private final class MobileSyncFixture: @unchecked Sendable {
     private var healthReads = 0
     private var snapshotReads = 0
     private var chatHistoryReads = 0
+    private var totalChatHistoryReads = 0
+    var totalChatHistoryReadCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return totalChatHistoryReads
+    }
+    private var forcedChatHistory: ChatHistoryResponse?
+    func setChatHistory(_ value: ChatHistoryResponse) {
+        lock.lock(); defer { lock.unlock() }
+        forcedChatHistory = value
+    }
     private var acceptedChatText: String?
     private var acceptedChatID: String?
     private var chatCompletionAfterHistoryReads: Int?
     private let chatTerminalIssue: APIErrorBody?
     private let chatSendCancellation: Bool
+    private var firstChatRejection: APIErrorBody?
+    private let chatTurnIDOverride: String?
+    private let cloudBackend: Bool
     private let firstChatReceiptGate: MobileStubDeliveryGate?
     private var recordedChatRequests: [SendChatRequest] = []
     var chatRequests: [SendChatRequest] {
@@ -111,6 +125,9 @@ private final class MobileSyncFixture: @unchecked Sendable {
         chatCompletionAfterHistoryReads: Int? = nil,
         chatTerminalIssue: APIErrorBody? = nil,
         chatSendCancellation: Bool = false,
+        firstChatRejection: APIErrorBody? = nil,
+        chatTurnIDOverride: String? = nil,
+        cloudBackend: Bool = false,
         firstChatReceiptGate: MobileStubDeliveryGate? = nil
     ) {
         authoritative = snapshot
@@ -122,6 +139,9 @@ private final class MobileSyncFixture: @unchecked Sendable {
         self.chatCompletionAfterHistoryReads = chatCompletionAfterHistoryReads
         self.chatTerminalIssue = chatTerminalIssue
         self.chatSendCancellation = chatSendCancellation
+        self.firstChatRejection = firstChatRejection
+        self.chatTurnIDOverride = chatTurnIDOverride
+        self.cloudBackend = cloudBackend
         self.firstChatReceiptGate = firstChatReceiptGate
     }
 
@@ -152,7 +172,7 @@ private final class MobileSyncFixture: @unchecked Sendable {
                 pairedDeviceCount: 1,
                 activeThreadID: "academic",
                 repositoryID: "repo-test",
-                dynamicToolsReady: codexReady, backend: legacyRepositoryID == nil ? nil : "cloud", legacyRepositoryID: legacyRepositoryID
+                dynamicToolsReady: codexReady, backend: cloudBackend || legacyRepositoryID != nil ? "cloud" : nil, legacyRepositoryID: legacyRepositoryID
             )))
         case ("GET", "/v1/snapshot"):
             snapshotReads += 1
@@ -198,13 +218,21 @@ private final class MobileSyncFixture: @unchecked Sendable {
             }
             let send = try JSONDecoder().decode(SendChatRequest.self, from: Self.bodyData(for: request))
             recordedChatRequests.append(send)
+            if let rejection = firstChatRejection {
+                firstChatRejection = nil
+                return MobileStubResponse(statusCode: 409, data: try encoder.encode(rejection))
+            }
             acceptedChatText = send.text
-            acceptedChatID = send.clientRequestID
+            acceptedChatID = chatTurnIDOverride ?? send.clientRequestID
             chatHistoryReads = 0
             if chatSendCancellation { throw URLError(.cancelled) }
             return MobileStubResponse(statusCode: 202, data: try encoder.encode(ChatHistoryResponse(revision: "0", messages: [])),
                 deliveryGate: recordedChatRequests.count == 1 ? firstChatReceiptGate : nil)
         case ("GET", "/v1/chat/history"):
+            totalChatHistoryReads += 1
+            if let forcedChatHistory {
+                return MobileStubResponse(statusCode: 200, data: try encoder.encode(forcedChatHistory))
+            }
             guard let text = acceptedChatText, let turnID = acceptedChatID, let completionRead = chatCompletionAfterHistoryReads else {
                 return MobileStubResponse(statusCode: 200, data: try encoder.encode(ChatHistoryResponse(revision: "0", messages: [])))
             }
@@ -1084,6 +1112,430 @@ final class MobileSessionSyncTests: XCTestCase {
         XCTAssertEqual(fixture.chatRequests.count, 2, "Only the two explicitly submitted requests may be posted")
         fixture.setChatCompletionRead(1)
         await session.refreshChat()
+    }
+
+    func testStreamingTerminalFlushesImmediatelyAndHistoryKeepsItemIdentity() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 1)
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(10)])
+        await session.refresh()
+        session.inputDraft = "流式展示测试"
+        await session.sendDraft()
+        let turn = try XCTUnwrap(fixture.chatRequests.first?.clientRequestID)
+        let item = turn + "/assistant"
+        session.consumeHostEvent(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(
+            kind: "delta", turnID: turn, itemID: item, text: "已恢复的回复", phase: "final_answer")))
+        session.consumeHostEvent(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(
+            kind: "status", turnID: turn, status: "completed")))
+        let message = try XCTUnwrap(session.chatMessages.first { $0.role == "assistant" })
+        XCTAssertEqual(message.text, "已恢复的回复", "Terminal flush must not leave buffered words behind")
+        XCTAssertEqual(message.status, "completed", "Rich rendering must be available without waiting for history")
+        await session.refreshChat()
+        XCTAssertEqual(session.chatMessages.first { $0.role == "assistant" }?.id, message.id)
+        XCTAssertFalse(session.isChatBusy)
+    }
+
+    func testExplicitRetryChecksFailedTurnAndPreservesNewComposerDraft() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 1,
+            chatTerminalIssue: APIErrorBody(code: "context_budget", message: "请缩小问题。"))
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(10)])
+        await session.refresh()
+        session.inputDraft = "原问题"
+        await session.sendDraft()
+        await session.refreshChat()
+        let firstID = fixture.chatRequests.first?.clientRequestID
+        session.inputDraft = "正在写的另一条草稿"
+        let reads = fixture.totalChatHistoryReadCount
+        await session.retryFailedChat()
+        XCTAssertGreaterThan(fixture.totalChatHistoryReadCount, reads)
+        XCTAssertEqual(fixture.chatRequests.count, 2)
+        XCTAssertNotEqual(firstID, fixture.chatRequests.last?.clientRequestID)
+        XCTAssertEqual(fixture.chatRequests.last?.text, "原问题")
+        XCTAssertEqual(session.inputDraft, "正在写的另一条草稿")
+        await session.refreshChat()
+    }
+
+    func testObservedReplayIsSettledWhenTerminalHistoryArrivesBeforeSSETerminal() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        // Read-only fixture DB sequence: four turns, terminal states completed,
+        // completed, failed, completed; each SSE sequence is status(inProgress),
+        // delta(s), item_completed, status(terminal). A concurrent history read
+        // can arrive between the last turn's initial and terminal SSE events.
+        session.consumeHostEvent(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(
+            kind: "status", turnID: "fixture-4", status: "inProgress")))
+        XCTAssertTrue(session.isChatBusy)
+        let statuses = ["completed", "completed", "failed", "completed"]
+        let messages = statuses.enumerated().flatMap { index, status in
+            ["user", "assistant"].map { role in
+                ChatMessageDTO(id: "fixture-\(index + 1)/\(role)", role: role, text: "合成历史",
+                    date: Date(timeIntervalSinceReferenceDate: Double(index)), turnID: "fixture-\(index + 1)", status: status)
+            }
+        }
+        let terminals = statuses.enumerated().map {
+            ChatTurnTerminalDTO(turnID: "fixture-\($0.offset + 1)", status: $0.element)
+        }
+        fixture.setChatHistory(ChatHistoryResponse(revision: "8", messages: messages, terminalTurns: terminals))
+        await session.refreshChat()
+        XCTAssertFalse(session.isChatBusy, "Authoritative terminal history must settle an observed remote turn")
+        session.consumeHostEvent(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(
+            kind: "item_completed", turnID: "fixture-4", itemID: "fixture-4/assistant", text: "合成历史", status: "completed")))
+        session.consumeHostEvent(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(
+            kind: "status", turnID: "fixture-4", status: "completed")))
+        XCTAssertFalse(session.isChatBusy, "A deduplicated terminal must not strand remote activity")
+        XCTAssertTrue(fixture.chatRequests.isEmpty)
+    }
+
+    func testFixture67EventReplayAcrossAllFourHistoryInterleavings() async throws {
+        // Credential/content-free sequence read from the isolated runtime DB:
+        // starts at seq 1,10,54,59; the last turn emits proposals.updated at 60.
+        let statuses = ["completed", "completed", "failed", "completed"]
+        let deltaCounts = [6, 41, 2, 5]
+        var events: [HostEventEnvelope] = []
+        for index in 0..<4 {
+            let turn = "fixture-\(index + 1)"
+            events.append(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(kind: "status", turnID: turn, status: "inProgress")))
+            if index == 3 { events.append(HostEventEnvelope(kind: "proposals.updated")) }
+            for _ in 0..<deltaCounts[index] {
+                events.append(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(kind: "delta", turnID: turn, itemID: turn + "/assistant", text: "片段")))
+            }
+            events.append(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(kind: "item_completed", turnID: turn,
+                itemID: turn + "/assistant", text: "合成完整回复", status: statuses[index])))
+            events.append(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(kind: "status", turnID: turn, status: statuses[index])))
+        }
+        XCTAssertEqual(events.count, 67)
+        let messages = statuses.enumerated().flatMap { index, status in
+            ["user", "assistant"].map { role in
+                ChatMessageDTO(id: "fixture-\(index + 1)/\(role)", role: role, text: "合成完整回复",
+                    date: Date(timeIntervalSinceReferenceDate: Double(index)), turnID: "fixture-\(index + 1)", status: status)
+            }
+        }
+        let history = ChatHistoryResponse(revision: "8", messages: messages, terminalTurns: statuses.enumerated().map {
+            ChatTurnTerminalDTO(turnID: "fixture-\($0.offset + 1)", status: $0.element)
+        })
+        for sequence in [1, 10, 54, 59] {
+            let directory = try temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let fixture = MobileSyncFixture(snapshot: makeSnapshot(), cloudBackend: true)
+            let session = makeSession(directory: directory, fixture: fixture)
+            await session.refresh()
+            fixture.setChatHistory(history)
+            for (index, event) in events.enumerated() {
+                session.consumeHostEvent(event)
+                if index + 1 == sequence { await session.refreshChat() }
+            }
+            await session.refreshChat()
+            XCTAssertFalse(session.isChatBusy, "History interleaving after SSE sequence \(sequence)")
+            XCTAssertNil(session.chatProgress)
+            XCTAssertFalse(session.chatMessages.contains { $0.status == "inProgress" })
+            XCTAssertTrue(fixture.chatRequests.isEmpty)
+        }
+    }
+
+    func testTerminalOnlyHistoryBlocksReplayedProgressAndAnonymousStart() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), cloudBackend: true)
+        fixture.setChatHistory(ChatHistoryResponse(revision: "1", messages: [], terminalTurns: [
+            ChatTurnTerminalDTO(turnID: "finished-without-message", status: "failed")]))
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        await session.refreshChat()
+        session.consumeHostEvent(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(
+            kind: "status", turnID: "finished-without-message", status: "inProgress")))
+        XCTAssertFalse(session.isChatBusy)
+        session.consumeHostEvent(HostEventEnvelope(kind: "chat.started"))
+        XCTAssertFalse(session.isChatBusy, "Anonymous legacy events must reconcile history rather than invent a live turn")
+        await session.refreshChat()
+        XCTAssertFalse(session.isChatBusy)
+        XCTAssertTrue(fixture.chatRequests.isEmpty)
+    }
+
+    func testAuthoritativeRemoteRunningTurnRemainsBusyUntilItsOwnTerminal() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), cloudBackend: true)
+        let running = ChatMessageDTO(id: "remote/user", role: "user", text: "另一个客户端的回合",
+            date: .now, turnID: "remote", status: "inProgress")
+        fixture.setChatHistory(ChatHistoryResponse(revision: "1", messages: [running]))
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        await session.refreshChat()
+        XCTAssertTrue(session.isChatBusy)
+        session.consumeHostEvent(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(
+            kind: "status", turnID: "unrelated-old", status: "completed")))
+        XCTAssertTrue(session.isChatBusy, "An unrelated terminal must not clear a live remote turn")
+        fixture.setChatHistory(ChatHistoryResponse(revision: "2", messages: [running], terminalTurns: [
+            ChatTurnTerminalDTO(turnID: "remote", status: "completed")]))
+        await session.refreshChat()
+        XCTAssertFalse(session.isChatBusy)
+        XCTAssertTrue(fixture.chatRequests.isEmpty)
+    }
+
+    func testOldSSETerminalAndItemCannotSettleNewPendingOperation() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 100, cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(10)])
+        await session.refresh()
+        session.inputDraft = "当前请求 A"
+        await session.sendDraft()
+        let currentID = try XCTUnwrap(fixture.chatRequests.last?.clientRequestID)
+        let pendingURL = directory.appendingPathComponent("pending-cloud-chats.json")
+        let before = try Data(contentsOf: pendingURL)
+        for status in ["failed", "inProgress", "completed"] {
+            session.consumeHostEvent(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(
+                kind: "status", turnID: "old-B", text: "旧消息", status: status)))
+        }
+        session.consumeHostEvent(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(
+            kind: "item_completed", turnID: "old-B", itemID: "old-item", text: "旧回复")))
+        XCTAssertTrue(session.isChatBusy)
+        XCTAssertEqual(try Data(contentsOf: pendingURL), before)
+        XCTAssertNil(session.lastFailedChatText)
+        session.consumeHostEvent(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(
+            kind: "status", turnID: currentID, status: "completed")))
+        XCTAssertFalse(session.isChatBusy)
+        let remaining = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: pendingURL)) as? [[String: Any]])
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
+    func testLegacyHostTerminalBeforeHistorySettlesOnlyAfterProvenBinding() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 1,
+            chatTurnIDOverride: "legacy-host-turn")
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(10)])
+        await session.refresh()
+        session.inputDraft = "Host 使用自己的 turn ID"
+        await session.sendDraft()
+        let pendingURL = directory.appendingPathComponent("pending-cloud-chats.json")
+        let before = try Data(contentsOf: pendingURL)
+        session.consumeHostEvent(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(
+            kind: "status", turnID: "legacy-host-turn", status: "completed")))
+        XCTAssertTrue(session.isChatBusy)
+        XCTAssertEqual(try Data(contentsOf: pendingURL), before)
+        await session.refreshChat()
+        XCTAssertFalse(session.isChatBusy)
+        let remaining = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: pendingURL)) as? [[String: Any]])
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
+    func testSameTextOldHistoryDoesNotConsumeNewOptimisticMessageOrOperation() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 1,
+            chatTerminalIssue: APIErrorBody(code: "context_budget", message: "原回合失败"), cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(10)])
+        await session.refresh()
+        session.inputDraft = "相同问题"
+        await session.sendDraft()
+        await session.refreshChat()
+        let oldID = try XCTUnwrap(fixture.chatRequests.last?.clientRequestID)
+        let oldHistory = ChatHistoryResponse(revision: "old", messages: session.chatMessages,
+            terminalTurns: [ChatTurnTerminalDTO(turnID: oldID, status: "failed")])
+        MobileStubURLProtocol.handler = { request in
+            if request.url?.path == "/v1/chat/history" {
+                return MobileStubResponse(statusCode: 200, data: try JSONEncoder().encode(oldHistory))
+            }
+            return try fixture.response(for: request)
+        }
+        session.inputDraft = "相同问题"
+        await session.sendDraft()
+        let newID = try XCTUnwrap(fixture.chatRequests.last?.clientRequestID)
+        let pendingURL = directory.appendingPathComponent("pending-cloud-chats.json")
+        let before = try Data(contentsOf: pendingURL)
+        await session.refreshChat()
+        XCTAssertTrue(session.chatMessages.contains { $0.id == "mobile-pending-" + newID })
+        XCTAssertTrue(session.isChatBusy)
+        session.inputDraft = "相同问题"
+        await session.sendDraft()
+        XCTAssertEqual(fixture.chatRequests.count, 2)
+        XCTAssertEqual(try Data(contentsOf: pendingURL), before)
+        MobileStubURLProtocol.handler = fixture.response
+        await session.refreshChat()
+    }
+
+    func testPersistedUnknownOperationWinsOverOldSameTextFailureWhenRetrying() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 1,
+            chatTerminalIssue: APIErrorBody(code: "context_budget", message: "旧回合失败"), cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(10)])
+        await session.refresh()
+        session.inputDraft = "相同问题"
+        await session.sendDraft()
+        await session.refreshChat()
+        let pendingURL = directory.appendingPathComponent("pending-cloud-chats.json")
+        let unknown = try JSONSerialization.data(withJSONObject: [["id": UUID().uuidString, "text": "相同问题",
+            "endpoint": "https://studyrocket.test", "repositoryID": "repo-test"]])
+        try unknown.write(to: pendingURL)
+        await session.retryFailedChat()
+        XCTAssertEqual(fixture.chatRequests.count, 1)
+        XCTAssertEqual(try Data(contentsOf: pendingURL), unknown)
+    }
+
+    func testExplicitPreAdmissionRejectionCanRetryThroughSendButton() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 1,
+            firstChatRejection: APIErrorBody(code: "chat_busy", message: "上一回合仍在执行"), cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(10)])
+        await session.refresh()
+        session.inputDraft = "被拒绝但尚未创建的请求"
+        await session.sendDraft()
+        XCTAssertFalse(session.isChatBusy)
+        let rejectedID = fixture.chatRequests.first?.clientRequestID
+        await session.sendDraft()
+        XCTAssertEqual(fixture.chatRequests.count, 2)
+        XCTAssertNotEqual(fixture.chatRequests.last?.clientRequestID, rejectedID)
+        await session.refreshChat()
+    }
+
+    func testRetryStatusReadBlocksConcurrentSendWithoutLosingComposerDraft() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 1,
+            chatTerminalIssue: APIErrorBody(code: "context_budget", message: "失败"), cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(10)])
+        await session.refresh()
+        session.inputDraft = "请求 A"
+        await session.sendDraft()
+        await session.refreshChat()
+        let gate = MobileStubDeliveryGate()
+        defer { gate.release() }
+        MobileStubURLProtocol.handler = { request in
+            var response = try fixture.response(for: request)
+            if request.url?.path == "/v1/chat/history" { response.deliveryGate = gate }
+            return response
+        }
+        let retry = Task { await session.retryFailedChat() }
+        for _ in 0..<50 where !session.retryingChat { try await Task.sleep(for: .milliseconds(10)) }
+        session.inputDraft = "新草稿 B"
+        await session.sendDraft()
+        XCTAssertEqual(fixture.chatRequests.count, 1)
+        XCTAssertEqual(session.inputDraft, "新草稿 B")
+        gate.release()
+        await retry.value
+        XCTAssertEqual(fixture.chatRequests.count, 2)
+        XCTAssertEqual(fixture.chatRequests.last?.text, "请求 A")
+        XCTAssertEqual(session.inputDraft, "新草稿 B")
+        await session.refreshChat()
+    }
+
+    func testStopAcknowledgementDoesNotDiscardUnknownOperationBeforeTerminal() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 100, cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(10)])
+        await session.refresh()
+        session.inputDraft = "等待停止回执"
+        await session.sendDraft()
+        let pendingURL = directory.appendingPathComponent("pending-cloud-chats.json")
+        let before = try Data(contentsOf: pendingURL)
+        MobileStubURLProtocol.handler = { request in
+            if request.url?.path == "/v1/chat/interrupt" {
+                return MobileStubResponse(statusCode: 200, data: Data("{}".utf8))
+            }
+            return try fixture.response(for: request)
+        }
+        await session.interruptChat()
+        XCTAssertTrue(session.isChatBusy)
+        XCTAssertEqual(try Data(contentsOf: pendingURL), before)
+        fixture.setChatCompletionRead(1)
+        await session.refreshChat()
+        XCTAssertFalse(session.isChatBusy)
+    }
+
+    func testEmptyAcceptanceReceiptPreservesVisibleConversation() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 1)
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(10)])
+        await session.refresh()
+        session.inputDraft = "上一轮问题"
+        await session.sendDraft()
+        await session.refreshChat()
+        let prior = session.chatMessages
+        session.inputDraft = "下一轮问题"
+        await session.sendDraft()
+        XCTAssertTrue(prior.allSatisfy { session.chatMessages.contains($0) }, "An empty send receipt must not clear rendered history")
+        XCTAssertTrue(session.chatMessages.contains { $0.text == "下一轮问题" })
+        await session.refreshChat()
+    }
+
+    func testRelaunchedConversationRestoresFailedMessageRetryWithoutSending() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 1,
+            chatTerminalIssue: APIErrorBody(code: "context_budget", message: "请缩小问题。"))
+        let first = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(10)])
+        await first.refresh()
+        first.inputDraft = "上次失败的问题"
+        await first.sendDraft()
+        await first.refreshChat()
+        let next = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(10)])
+        await next.refresh()
+        await next.refreshConversation()
+        XCTAssertEqual(next.lastFailedChatText, "上次失败的问题")
+        XCTAssertEqual(next.lastChatIssueCode, "context_budget")
+        let failedUser = try XCTUnwrap(next.chatMessages.first { $0.role == "user" })
+        XCTAssertTrue(next.isFailedChatMessage(failedUser))
+        XCTAssertFalse(next.isFailedChatMessage(ChatMessageDTO(id: "older-user", role: "user", text: failedUser.text,
+            date: failedUser.date, turnID: "different-turn", status: "failed")))
+        XCTAssertEqual(fixture.chatRequests.count, 1)
+        await next.retryFailedChat()
+        XCTAssertEqual(fixture.chatRequests.count, 2)
+        await next.refreshChat()
+    }
+
+    func testRetryOfUnknownReceiptOnlyChecksHistoryAndNeverPostsAgain() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 100)
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(10)])
+        await session.refresh()
+        MobileStubURLProtocol.handler = { request in
+            let response = try fixture.response(for: request)
+            if request.url?.path == "/v1/chat/send" { throw URLError(.networkConnectionLost) }
+            return response
+        }
+        session.inputDraft = "回执丢失的原问题"
+        await session.sendDraft()
+        XCTAssertTrue(session.isChatBusy)
+        XCTAssertEqual(session.lastFailedChatText, "回执丢失的原问题")
+        await session.retryFailedChat()
+        await session.sendDraft()
+        XCTAssertEqual(fixture.chatRequests.count, 1)
+        XCTAssertTrue(session.isChatBusy)
+        fixture.setChatCompletionRead(1)
+        await session.retryFailedChat()
+        XCTAssertEqual(fixture.chatRequests.count, 1, "A remotely completed operation must not be repeated")
+        XCTAssertFalse(session.isChatBusy)
+        XCTAssertNil(session.lastFailedChatText)
+    }
+
+    func testRetryDoesNotSendWhenAuthoritativeReadFails() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 1,
+            chatTerminalIssue: APIErrorBody(code: "context_budget", message: "请缩小问题。"))
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(10)])
+        await session.refresh()
+        session.inputDraft = "原问题"
+        await session.sendDraft()
+        await session.refreshChat()
+        MobileStubURLProtocol.handler = { _ in throw URLError(.notConnectedToInternet) }
+        await session.retryFailedChat()
+        XCTAssertEqual(fixture.chatRequests.count, 1)
+        XCTAssertEqual(session.lastFailedChatText, "原问题")
+        XCTAssertTrue(session.lastChatIssue?.contains("未重复发送") == true)
+        XCTAssertFalse(session.retryingChat)
     }
 
     func testConflictRemainsAWriteIssueWhileHostStaysOnline() async throws {

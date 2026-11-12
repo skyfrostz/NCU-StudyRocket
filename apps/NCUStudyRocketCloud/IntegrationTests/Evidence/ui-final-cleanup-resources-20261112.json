@@ -1,0 +1,47 @@
+{
+  "result": "PASS",
+  "temporaryUnitsStopped": true,
+  "releaseChecksumsStillValid": true,
+  "productionReleaseUnchanged": true,
+  "productionPIDUnchanged": true,
+  "resources": {
+    "studyrocket-ui-final-live-cloud.service": {
+      "MainPID": "1184893",
+      "ControlGroup": "/system.slice/studyrocket-ui-final-live-cloud.service",
+      "MemoryCurrent": "11685888",
+      "MemoryPeak": "12189696",
+      "MemorySwapCurrent": "0",
+      "CPUQuotaPerSecUSec": "1s",
+      "MemoryHigh": "314572800",
+      "MemoryMax": "402653184",
+      "MemorySwapMax": "0",
+      "ActiveState": "active",
+      "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+      "memory.peak": "12189696",
+      "memory.swap.peak": "0",
+      "afterStop": {
+        "MainPID": "0",
+        "ActiveState": "inactive"
+      }
+    },
+    "studyrocket-ui-final-live-proxy.service": {
+      "MainPID": "1184891",
+      "ControlGroup": "/system.slice/studyrocket-ui-final-live-proxy.service",
+      "MemoryCurrent": "12247040",
+      "MemoryPeak": "12898304",
+      "MemorySwapCurrent": "0",
+      "CPUQuotaPerSecUSec": "1s",
+      "MemoryHigh": "100663296",
+      "MemoryMax": "134217728",
+      "MemorySwapMax": "0",
+      "ActiveState": "active",
+      "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+      "memory.peak": "12898304",
+      "memory.swap.peak": "0",
+      "afterStop": {
+        "MainPID": "0",
+        "ActiveState": "inactive"
+      }
+    }
+  }
+}

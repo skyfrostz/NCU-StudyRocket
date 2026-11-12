@@ -1,0 +1,33 @@
+{
+  "upstream": "https://github.com/adobe-fonts/source-han-serif",
+  "commit": "7889f11bf31170b5d092a083b357c8c8130f89e0",
+  "license": "SIL Open Font License 1.1",
+  "distribution": "Official Simplified Chinese region-specific CN OTF; unmodified, not subset to app text",
+  "files": [
+    {
+      "file": "SourceHanSerifCN-Regular.otf",
+      "bytes": 11626108,
+      "sha256": "3754ea669c530e2473354f8f6d9f79680a44d7e26ec7d00eeabee4a7e0753c5d",
+      "source": "https://raw.githubusercontent.com/adobe-fonts/source-han-serif/7889f11bf31170b5d092a083b357c8c8130f89e0/SubsetOTF/CN/SourceHanSerifCN-Regular.otf",
+      "postscriptName": "SourceHanSerifCN-Regular",
+      "glyphs": 31058,
+      "bmpUnifiedCJKCoverage": 20992
+    },
+    {
+      "file": "SourceHanSerifCN-Bold.otf",
+      "bytes": 12094680,
+      "sha256": "4ee555ae58b3d22f6a95c2c494f2c36b7cccfc1d2224635f6461a03756f0e3c1",
+      "source": "https://raw.githubusercontent.com/adobe-fonts/source-han-serif/7889f11bf31170b5d092a083b357c8c8130f89e0/SubsetOTF/CN/SourceHanSerifCN-Bold.otf",
+      "postscriptName": "SourceHanSerifCN-Bold",
+      "glyphs": 31058,
+      "bmpUnifiedCJKCoverage": 20992
+    },
+    {
+      "file": "OFL.txt",
+      "bytes": 4463,
+      "sha256": "9ff5bb567e1b92c801fc1069e5fbf992ff8efccacb9db94e5959a5b3ba9bb903",
+      "source": "https://raw.githubusercontent.com/adobe-fonts/source-han-serif/7889f11bf31170b5d092a083b357c8c8130f89e0/LICENSE.txt"
+    }
+  ],
+  "version": "2.003"
+}

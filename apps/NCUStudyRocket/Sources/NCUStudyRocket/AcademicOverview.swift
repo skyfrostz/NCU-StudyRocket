@@ -64,12 +64,18 @@ private struct OverviewItem: Identifiable {
 
 private struct BoardContent {
     var sources: [BoardFile: AcademicSource] = [:]
+    var unreadable: Set<BoardFile> = []
     var timetable: TimetableSnapshot?
+    var timetableUnavailable = false
     init() {}
     init(root: URL) {
         let repo = MarkdownRepository(root: root)
-        for file in BoardFile.allCases { sources[file] = (try? repo.read(file.rawValue)).map(AcademicSource.init) }
-        timetable = StudyRocketTimetableParser.snapshot(from: try? repo.read(StudyRocketTimetableParser.sourceFile))
+        for file in BoardFile.allCases {
+            do { sources[file] = AcademicSource(try repo.read(file.rawValue)) }
+            catch { unreadable.insert(file) }
+        }
+        do { timetable = StudyRocketTimetableParser.snapshot(from: try repo.read(StudyRocketTimetableParser.sourceFile)) }
+        catch { timetableUnavailable = true }
     }
 
     subscript(_ file: BoardFile) -> AcademicSource { sources[file] ?? AcademicSource() }
@@ -131,19 +137,43 @@ struct AcademicOverview: View {
     @State private var editor = false
     @State private var showReadError = false
     @State private var confirmClose = false
+    @State private var expandedSummaries: Set<String> = []
 
     private var title: String { admission ? "保研" : "四条航线" }
-    private var items: [OverviewItem] { admission ? content.subjects : content.routes }
+    private var items: [OverviewItem] {
+        (admission ? content.subjects : content.routes).map { value in
+            guard content.unreadable.contains(value.source) else { return value }
+            return OverviewItem(title: value.title, symbol: value.symbol, summary: "暂时无法读取来源",
+                                detail: value.detail, source: value.source)
+        }
+    }
     private var item: OverviewItem? { items.first { $0.id == selected } }
 
     var body: some View {
         PageScaffold {
             VStack(alignment: .leading, spacing: 20) {
+                if !content.unreadable.isEmpty || content.timetableUnavailable {
+                    StudySurface {
+                        VStack(alignment: .leading, spacing: 8) {
+                            StudyLabel("部分来源暂时无法读取", systemImage: "exclamationmark.circle")
+                                .studyTypography(.headline)
+                            Text("已读取的内容仍可查看。检查文件是否存在，或稍后重新读取。")
+                                .foregroundStyle(.secondary)
+                            DisclosureGroup("查看来源") {
+                                ForEach(content.unreadable.sorted(by: { $0.rawValue < $1.rawValue }), id: \.self) {
+                                    Text($0.rawValue).studyTypography(.caption).textSelection(.enabled)
+                                }
+                                if content.timetableUnavailable { Text(StudyRocketTimetableParser.sourceFile).studyTypography(.caption) }
+                            }
+                            StudyButton("重新读取", action: reload)
+                        }
+                    }
+                }
                 if let item {
-                    Button(title, systemImage: "chevron.left") { selected = nil }.buttonStyle(.link)
+                    StudyButton(title, systemImage: "chevron.left") { selected = nil }.buttonStyle(.link)
                     PageTitleBar(title: item.title, subtitle: item.summary) {
                         if content.sources[item.source] != nil {
-                            Button("查看／编辑原文") {
+                            StudyButton("查看／编辑原文") {
                                 document.updateRoot(workspace.rootURL)
                                 document.load(item.source.rawValue)
                                 editor = document.errorMessage == nil && document.relative == item.source.rawValue
@@ -151,64 +181,81 @@ struct AcademicOverview: View {
                             }
                         }
                     }
-                    ForEach(item.detail.indices, id: \.self) { index in
-                        linesCard(item.detail[index].0, item.detail[index].1)
+                    if !content.unreadable.contains(item.source) {
+                        ForEach(item.detail.indices, id: \.self) { index in
+                            if item.detail[index].0 == "本周课表", content.timetableUnavailable {
+                                Text("课表尚未载入").foregroundStyle(.secondary)
+                            } else {
+                                linesCard(item.detail[index].0, item.detail[index].1)
+                            }
+                        }
                     }
                 } else {
                     PageTitleBar(title: title, subtitle: admission ? content[.board].updated : "课程、科研、保研与生活") { EmptyView() }
                     if admission {
-                        linesCard("阶段目标", Array(content.goals.prefix(2)))
-                        linesCard("下一步行动", Array(content.actions.prefix(2)))
-                        linesCard("待核实的规则", content.rules)
-                        Text("分项查看").font(.headline)
+                        if !content.unreadable.contains(.board) {
+                            linesCard("阶段目标", content.goals, previewLimit: 2)
+                            linesCard("下一步行动", content.actions, previewLimit: 2)
+                        }
+                        if !content.unreadable.contains(.admission) { linesCard("待核实的规则", content.rules) }
+                        Text("分项查看").studyTypography(.headline)
                     }
                     ForEach(items) { item in
                         Button { selected = item.id } label: {
                             HStack(spacing: 14) {
-                                Image(systemName: item.symbol).font(.title2).foregroundStyle(.tint).frame(width: 32)
+                                Image(systemName: item.symbol).studyTypography(.title2).foregroundStyle(.tint).frame(width: 32)
                                 VStack(alignment: .leading, spacing: 5) {
-                                    Text(item.title).font(.headline)
-                                    Text(item.summary).font(.subheadline).foregroundStyle(.secondary)
+                                    Text(item.title).studyTypography(.headline)
+                                    Text(item.summary).studyTypography(.subheadline).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                                Image(systemName: "chevron.right").studyTypography(.caption).foregroundStyle(.secondary)
                             }.padding(.vertical, 5).contentShape(Rectangle())
                         }.buttonStyle(.plain)
                         Divider()
                     }
                 }
-            }.frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(maxWidth: 960, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
         }
         .onAppear(perform: reload)
         .onChange(of: workspace.rootURL) { _, _ in selected = nil; reload() }
         .onReceive(NotificationCenter.default.publisher(for: .studyRocketWorkspaceChanged)) { _ in reload() }
         .onReceive(NotificationCenter.default.publisher(for: .studyRocketTimetableChanged)) { _ in reload() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in reload() }
-        .alert("无法打开原文", isPresented: $showReadError) { Button("好", role: .cancel) {} } message: {
+        .alert("无法打开原文", isPresented: $showReadError) { StudyButton("好", role: .cancel) {} } message: {
             Text(document.errorMessage ?? "请检查来源文件是否仍在当前仓库中。")
         }
         .sheet(isPresented: $editor, onDismiss: reload) {
             VStack(alignment: .trailing) {
                 MarkdownDocumentView(document: document)
-                Button("完成") { if document.isDirty { confirmClose = true } else { editor = false } }.padding()
+                StudyButton("完成") { if document.isDirty { confirmClose = true } else { editor = false } }.padding()
             }.frame(minWidth: 580, minHeight: 420)
             .interactiveDismissDisabled(document.isDirty)
             .confirmationDialog("保存原文修改？", isPresented: $confirmClose) {
-                Button("保存并关闭") { Task { if await document.save() { workspace.notifyWorkspaceChanged(); editor = false } } }
-                Button("放弃修改", role: .destructive) { document.text = document.original; editor = false }
-                Button("继续编辑", role: .cancel) {}
+                StudyButton("保存并关闭") { Task { if await document.save() { workspace.notifyWorkspaceChanged(); editor = false } } }
+                StudyButton("放弃修改", role: .destructive) { document.text = document.original; editor = false }
+                StudyButton("继续编辑", role: .cancel) {}
             }
         }
     }
 
     private func reload() { content = BoardContent(root: workspace.rootURL) }
 
-    private func linesCard(_ title: String, _ values: [String]) -> some View {
-        StudySurface {
+    private func linesCard(_ title: String, _ values: [String], previewLimit: Int? = nil) -> some View {
+        let isExpanded = expandedSummaries.contains(title)
+        let visible = previewLimit.map { isExpanded ? values : Array(values.prefix($0)) } ?? values
+        return StudySurface {
             VStack(alignment: .leading, spacing: 9) {
-                Text(title).font(.headline)
-                ForEach(Array(values.enumerated()), id: \.offset) { _, line in Text(verbatim: line).textSelection(.enabled) }
+                Text(title).studyTypography(.headline)
+                ForEach(Array(visible.enumerated()), id: \.offset) { _, line in Text(verbatim: line).textSelection(.enabled) }
                 if values.isEmpty { Text("尚无记录").foregroundStyle(.secondary) }
+                if let limit = previewLimit, values.count > limit {
+                    StudyButton(isExpanded ? "收起" : "查看全部 \(values.count) 项") {
+                        if isExpanded { expandedSummaries.remove(title) } else { expandedSummaries.insert(title) }
+                    }.buttonStyle(.link)
+                    if !isExpanded { Text("显示 \(visible.count) / \(values.count) 项").studyTypography(.caption).foregroundStyle(.secondary) }
+                }
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
     }

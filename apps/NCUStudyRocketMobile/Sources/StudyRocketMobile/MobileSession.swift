@@ -126,6 +126,8 @@ private struct ActiveMobileChatRequest {
     let pendingID: String
     let text: String
     var turnID: String?
+    var priorTurnIDs: Set<String> = []
+    var operationID: String { String(pendingID.dropFirst("mobile-pending-".count)) }
 }
 
 private struct MobilePendingDrafts: Codable {
@@ -226,6 +228,10 @@ public final class MobileSession: ObservableObject {
     @Published public private(set) var lastChatIssue: String?
     @Published public private(set) var lastChatIssueCode: String?
     @Published public private(set) var lastFailedChatText: String?
+    @Published public private(set) var retryingChat = false
+    private var failedChatTurnID: String?
+    private var failedChatPendingID: String?
+    private var failedChatWasRejected = false
     @Published public private(set) var repositoryGeneration: UInt64 = 0
     @Published private(set) var isReplayingPendingToggles = false
     @Published private(set) var pendingToggleSyncIssue: String?
@@ -314,6 +320,7 @@ public final class MobileSession: ObservableObject {
     private var pendingChatDeltas: [String: PendingChatDelta] = [:]
     private var deltaFlushTask: Task<Void, Never>?
     private var activeChatRequest: ActiveMobileChatRequest?
+    private var observedChatTurnID: String?
     private var chatRecoveryTask: Task<Void, Never>?
     private var activeDeliveryMutations = Set<MobileDeliveryMutation>()
     private var completedDeliveryMutations: [MobileDeliveryMutation: MobileDeliveryToggleResult] = [:]
@@ -603,15 +610,86 @@ public final class MobileSession: ObservableObject {
         try JSONEncoder().encode(entries).write(to: cloudChatsURL, options: .atomic)
         return entry.id
     }
-    private func completePersistedChat(text: String?) {
-        guard let text, let data = try? Data(contentsOf: cloudChatsURL),
+    private func completePersistedChat(id: String?) {
+        guard let id, let data = try? Data(contentsOf: cloudChatsURL),
               let entries = try? JSONDecoder().decode([PendingCloudChat].self, from: data) else { return }
-        let remaining = entries.filter { !($0.text == text && $0.endpoint == clientEndpoint && $0.repositoryID == activeRepositoryID) }
+        let remaining = entries.filter { !($0.id == id && $0.endpoint == clientEndpoint && $0.repositoryID == activeRepositoryID) }
+        guard remaining.count != entries.count else { return }
         try? JSONEncoder().encode(remaining).write(to: cloudChatsURL, options: .atomic)
     }
 
     public func sendDraft() async {
+        guard !retryingChat else { return }
         let text = inputDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A saved operation without a terminal receipt is not a new message.
+        if let data = try? Data(contentsOf: cloudChatsURL),
+           let entries = try? JSONDecoder().decode([PendingCloudChat].self, from: data),
+           let pending = entries.first(where: { $0.text == text && $0.endpoint == clientEndpoint && $0.repositoryID == activeRepositoryID }) {
+            lastFailedChatText = text
+            let pendingID = "mobile-pending-" + pending.id
+            if failedChatPendingID != pendingID { failedChatTurnID = nil; failedChatWasRejected = false }
+            failedChatPendingID = pendingID
+            await retryFailedChat()
+            return
+        }
+        await sendChatText(text)
+    }
+
+    func isFailedChatMessage(_ message: ChatMessageDTO) -> Bool {
+        guard message.role == "user", message.text == lastFailedChatText else { return false }
+        if let failedChatTurnID { return message.turnID == failedChatTurnID }
+        if let activeChatRequest, activeChatRequest.pendingID == failedChatPendingID,
+           let turnID = activeChatRequest.turnID { return message.turnID == turnID }
+        return message.id == failedChatPendingID
+    }
+
+    /// Explicit retry always reconciles the authoritative history before POST.
+    /// Missing history is not evidence that an operation was never accepted.
+    public func retryFailedChat() async {
+        guard !retryingChat, let text = lastFailedChatText, let client else { return }
+        let generation = clientGeneration
+        let repository = repositoryGeneration
+        let failedTurn = failedChatTurnID
+        let rejected = failedChatWasRejected
+        let rejectedPendingID = failedChatPendingID
+        retryingChat = true
+        defer { if generation == clientGeneration, repository == repositoryGeneration { retryingChat = false } }
+        do {
+            let history = try await client.chatHistory()
+            guard generation == clientGeneration, repository == repositoryGeneration, !Task.isCancelled else { return }
+            let pending = (try? Data(contentsOf: cloudChatsURL)).flatMap { try? JSONDecoder().decode([PendingCloudChat].self, from: $0) }?
+                .first(where: { $0.text == text && $0.endpoint == clientEndpoint && $0.repositoryID == activeRepositoryID })
+            // An unresolved operation wins over an older same-text failure.
+            // Only a proven binding may translate a Host operation to its turn.
+            let boundTurn = activeChatRequest.flatMap { request in
+                pending?.id == request.operationID ? request.turnID : nil
+            }
+            let turnID = pending.map { boundTurn ?? $0.id } ?? failedTurn
+            let confirmedRejection = pending.map { rejected && "mobile-pending-" + $0.id == rejectedPendingID } ?? false
+            let terminal = history.terminalTurns?.last(where: { $0.turnID == turnID })
+            let status = terminal?.status ?? history.messages.last(where: { $0.turnID == turnID })?.status
+            mergeHistory(history)
+            if status == "completed" {
+                completePersistedChat(id: pending?.id ?? turnID)
+                lastFailedChatText = nil
+                lastChatIssue = nil
+                return
+            }
+            guard status == "failed" || status == "interrupted" || (confirmedRejection && status == nil) else {
+                lastChatIssue = "正在核对原消息的远端状态，尚未确认结果；没有重复发送。"
+                return
+            }
+            guard !isChatBusy else { return }
+            completePersistedChat(id: pending?.id ?? turnID)
+            if let pending { chatMessages.removeAll { $0.id == "mobile-pending-" + pending.id } }
+            await sendChatText(text)
+        } catch {
+            guard generation == clientGeneration, repository == repositoryGeneration, !Self.isRequestCancellation(error) else { return }
+            lastChatIssue = "无法核对原消息的远端状态，未重复发送：" + error.localizedDescription
+        }
+    }
+
+    private func sendChatText(_ text: String) async {
         guard !text.isEmpty, let client else { return }
         guard isChatAvailable else { return }
         guard !isChatBusy else { return }
@@ -620,11 +698,18 @@ public final class MobileSession: ObservableObject {
         do { requestID = try persistedChatID(for: text) }
         catch { lastChatIssue = "无法持久保存发送草稿，请保留文字后重试。"; return }
         let pendingID = "mobile-pending-" + requestID
-        activeChatRequest = ActiveMobileChatRequest(pendingID: pendingID, text: text)
+        activeChatRequest = ActiveMobileChatRequest(pendingID: pendingID, text: text,
+            turnID: health?.backend == "cloud" ? requestID : nil,
+            priorTurnIDs: Set(chatMessages.compactMap(\.turnID)))
+        observedChatTurnID = nil
         isChatBusy = true
         chatProgress = .sending
         lastChatIssue = nil
         lastChatIssueCode = nil
+        lastFailedChatText = nil
+        failedChatTurnID = nil
+        failedChatPendingID = nil
+        failedChatWasRejected = false
         chatMessages.append(ChatMessageDTO(id: pendingID, role: "user", text: text, date: .now, status: "inProgress"))
         chatRevision &+= 1
         do {
@@ -632,7 +717,15 @@ public final class MobileSession: ObservableObject {
             guard generation == clientGeneration,
                   activeChatRequest?.pendingID == pendingID else { return }
             if inputDraft.trimmingCharacters(in: .whitespacesAndNewlines) == text { inputDraft = "" }
-            if let acceptedHistory { mergeHistory(acceptedHistory) }
+            if let acceptedHistory {
+                if !acceptedHistory.messages.isEmpty {
+                    mergeHistory(acceptedHistory)
+                } else {
+                    // An acceptance receipt is not an instruction to erase the
+                    // visible conversation while authoritative history loads.
+                    reconcileChatActivity(with: chatMessages, terminals: acceptedHistory.terminalTurns ?? [])
+                }
+            }
             if isChatBusy {
                 if chatProgress != .responding { chatProgress = .thinking }
                 startChatRecovery(generation: generation)
@@ -640,14 +733,24 @@ public final class MobileSession: ObservableObject {
         } catch {
             guard generation == clientGeneration,
                   activeChatRequest?.pendingID == pendingID else { return }
-            if Self.isRequestCancellation(error) {
+            failedChatPendingID = pendingID
+            let rejected = (error as? StudyRocketRemoteError).map {
+                ["codex_starting", "provider_auth_failed", "invalid_chat", "chat_busy"].contains($0.body.code)
+            } ?? false
+            if !rejected {
                 // Cancellation does not tell us whether the server accepted the
                 // send. Keep its original ID and resolve it through history only.
                 chatProgress = .recovering
+                if !Self.isRequestCancellation(error) {
+                    lastFailedChatText = text
+                    lastChatIssueCode = (error as? StudyRocketRemoteError)?.body.code
+                    lastChatIssue = error.localizedDescription + "；发送回执未确认，正在核对远端状态。"
+                }
                 startChatRecovery(generation: generation)
                 return
             }
             lastFailedChatText = text
+            failedChatWasRejected = true
             if let index = chatMessages.firstIndex(where: { $0.id == pendingID }) {
                 let pending = chatMessages[index]
                 chatMessages[index] = ChatMessageDTO(id: pending.id, role: pending.role, text: pending.text, date: pending.date, turnID: pending.turnID, phase: pending.phase, status: "failed")
@@ -664,17 +767,26 @@ public final class MobileSession: ObservableObject {
     public func interruptChat() async {
         guard let client, isChatBusy else { return }
         let generation = clientGeneration
+        let pendingID = activeChatRequest?.pendingID
+        let observedTurnID = observedChatTurnID
         do {
             try await client.interruptChat()
         } catch {
-            guard generation == clientGeneration else { return }
-            // Proposals are a separate, optional read surface. The terminal
-            // reducer will still refresh them after a completed turn, while a
-            // transient proposals read must not overwrite that turn's result.
-            NSLog("StudyRocket Mobile proposal refresh failed: %@", error.localizedDescription)
+            guard generation == clientGeneration, activeChatRequest?.pendingID == pendingID,
+                  observedChatTurnID == observedTurnID else { return }
+            if !Self.isRequestCancellation(error) {
+                setChatIssue(code: (error as? StudyRocketRemoteError)?.body.code, message: error.localizedDescription)
+            }
         }
-        guard generation == clientGeneration else { return }
-        finishChatActivity()
+        guard generation == clientGeneration, activeChatRequest?.pendingID == pendingID,
+              observedChatTurnID == observedTurnID else { return }
+        // Stop acknowledgement is not a turn terminal. Keep the original
+        // operation until history proves interrupted/completed/failed.
+        chatProgress = .recovering
+        await refreshChat()
+        if generation == clientGeneration, activeChatRequest?.pendingID == pendingID, isChatBusy {
+            startChatRecovery(generation: generation)
+        }
     }
 
     public func refreshConversation() async {
@@ -858,7 +970,7 @@ public final class MobileSession: ObservableObject {
         }
     }
 
-    private func consumeHostEvent(_ event: HostEventEnvelope) {
+    func consumeHostEvent(_ event: HostEventEnvelope) {
         if event.kind == "heartbeat" { return }
         if let snapshot = event.snapshot {
             self.snapshot = snapshot
@@ -870,12 +982,13 @@ public final class MobileSession: ObservableObject {
         case "chat.ready", "chat.protocolReady":
             Task { [weak self] in await self?.refresh() }
         case "chat.started":
-            isChatBusy = true
-            if chatProgress == nil || chatProgress == .sending { chatProgress = .thinking }
-        case "chat.completed", "chat.interrupted":
-            finishChatActivity()
-        case "chat.failed":
-            finishChatActivity(issue: lastChatIssue ?? "学业对话未能完成，请重新发送。", issueCode: lastChatIssueCode)
+            // Legacy envelopes have no turn identity and may be replayed.
+            // Only identified progress or authoritative history can mark busy.
+            Task { [weak self] in await self?.refreshChat() }
+        case "chat.completed", "chat.interrupted", "chat.failed":
+            // Legacy envelopes have no operation identity. History, rather
+            // than an anonymous terminal event, must settle the pending send.
+            Task { [weak self] in await self?.refreshChat() }
         default: break
         }
 
@@ -895,18 +1008,20 @@ public final class MobileSession: ObservableObject {
             } else {
                 pendingChatDeltas[key] = PendingChatDelta(turnID: turnID, itemID: itemID, text: text, phase: event.phase)
             }
-            adoptActiveChatTurn(turnID)
-            isChatBusy = true
-            chatProgress = .responding
+            if acceptChatProgress(turnID) {
+                isChatBusy = true
+                chatProgress = .responding
+            }
             scheduleDeltaFlush()
         case "item_completed":
             guard let turnID = event.turnID, let itemID = event.itemID, let text = event.text else { return }
             let key = streamKey(turnID: turnID, itemID: itemID)
             pendingChatDeltas.removeValue(forKey: key)
             guard completedItemKeys.insert(key).inserted else { return }
-            adoptActiveChatTurn(turnID)
-            isChatBusy = true
-            chatProgress = .responding
+            if acceptChatProgress(turnID) {
+                isChatBusy = true
+                chatProgress = .responding
+            }
             let id = "stream-\(turnID)-\(itemID)"
             if let index = chatMessages.firstIndex(where: { $0.id == id }) {
                 let current = chatMessages[index]
@@ -920,11 +1035,12 @@ public final class MobileSession: ObservableObject {
             if let turnID = event.turnID { adoptActiveChatTurn(turnID) }
             switch event.status {
             case "inProgress":
+                guard let turnID = event.turnID, acceptChatProgress(turnID) else { return }
                 isChatBusy = true
                 if chatProgress != .responding { chatProgress = .thinking }
             case "completed", "interrupted", "failed":
                 guard let turnID = event.turnID else {
-                    finishChatActivity(issue: event.status == "failed" ? event.text ?? "学业对话未能完成，请重新发送。" : nil, issueCode: event.issueCode)
+                    Task { [weak self] in await self?.refreshChat() }
                     return
                 }
                 applyTerminal(ChatTurnTerminalDTO(turnID: turnID, status: event.status ?? "failed", issueCode: event.issueCode, message: event.text, completedAt: event.completedAt))
@@ -959,16 +1075,30 @@ public final class MobileSession: ObservableObject {
         }
     }
 
-    private func adoptActiveChatTurn(_ turnID: String) {
-        guard var request = activeChatRequest else { return }
+    @discardableResult
+    private func adoptActiveChatTurn(_ turnID: String) -> Bool {
+        guard var request = activeChatRequest,
+              !request.priorTurnIDs.contains(turnID), !completedTurnIDs.contains(turnID) else { return false }
+        if let bound = request.turnID { return bound == turnID }
+        let matchedUser = chatMessages.contains { $0.role == "user" && $0.turnID == turnID && $0.text == request.text }
+        guard turnID == request.operationID || matchedUser else { return false }
         request.turnID = turnID
         activeChatRequest = request
+        return true
+    }
+
+    private func acceptChatProgress(_ turnID: String) -> Bool {
+        guard !completedTurnIDs.contains(turnID) else { return false }
+        if activeChatRequest != nil { return adoptActiveChatTurn(turnID) }
+        observedChatTurnID = turnID
+        return true
     }
 
     private func finishChatActivity(issue: String? = nil, issueCode: String? = nil) {
         chatRecoveryTask?.cancel()
         chatRecoveryTask = nil
         activeChatRequest = nil
+        observedChatTurnID = nil
         isChatBusy = false
         chatProgress = nil
         if let issue { setChatIssue(code: issueCode, message: issue) }
@@ -992,17 +1122,37 @@ public final class MobileSession: ObservableObject {
 
     private func applyTerminal(_ terminal: ChatTurnTerminalDTO) {
         guard Self.isTerminalChatStatus(terminal.status) else { return }
-        guard completedTurnIDs.insert(terminal.turnID).inserted else { return }
-        completePersistedChat(text: activeChatRequest?.text)
-        if terminal.status == "failed" {
-            lastFailedChatText = activeChatRequest?.text ?? lastFailedChatText
-            finishChatActivity(issue: terminal.message ?? "学业对话未能完成，请重新发送。", issueCode: terminal.issueCode)
-        } else {
-            completePersistedChat(text: activeChatRequest?.text)
-            finishChatActivity()
-            lastChatIssue = nil
-            lastChatIssueCode = nil
-            lastFailedChatText = nil
+        let newlyCompleted = completedTurnIDs.insert(terminal.turnID).inserted
+        let matchesActive = activeChatRequest.map { $0.turnID == terminal.turnID || $0.operationID == terminal.turnID } ?? false
+        let matchesObserved = activeChatRequest == nil && observedChatTurnID == terminal.turnID
+        guard newlyCompleted || matchesActive || matchesObserved else { return }
+        // Publish terminal presentation in the same event, without waiting for
+        // another network round trip to switch the live text to rich Markdown.
+        chatMessages = chatMessages.map { message in
+            guard message.turnID == terminal.turnID else { return message }
+            return ChatMessageDTO(id: message.id, role: message.role, text: message.text, date: message.date,
+                turnID: message.turnID, phase: message.phase, status: terminal.status)
+        }
+        chatRevision &+= 1
+        // A replayed terminal may settle only its own operation, never a
+        // newer pending message that happens to be active on this device.
+        completePersistedChat(id: terminal.turnID)
+        let request = activeChatRequest
+        let settlesActive = request.map { $0.turnID == terminal.turnID || $0.operationID == terminal.turnID } ?? false
+        let settlesObserved = request == nil && (observedChatTurnID == nil || observedChatTurnID == terminal.turnID)
+        if settlesActive || settlesObserved {
+            if settlesActive { completePersistedChat(id: request?.operationID) }
+            if terminal.status == "failed" {
+                failedChatTurnID = terminal.turnID
+                failedChatWasRejected = false
+                lastFailedChatText = request?.text ?? chatMessages.last(where: { $0.role == "user" && $0.turnID == terminal.turnID })?.text
+                finishChatActivity(issue: terminal.message ?? "学业对话未能完成，请重试这条消息。", issueCode: terminal.issueCode)
+            } else {
+                finishChatActivity()
+                lastChatIssue = nil
+                lastChatIssueCode = nil
+                lastFailedChatText = nil
+            }
         }
         Task { [weak self] in
             await self?.refreshChat()
@@ -1010,11 +1160,44 @@ public final class MobileSession: ObservableObject {
         }
     }
 
-    private func reconcileChatActivity(with history: [ChatMessageDTO], terminals: [ChatTurnTerminalDTO]) {
-        guard var request = activeChatRequest else { return }
-        let matchedTurnID = request.turnID ?? history.reversed().first(where: {
-            $0.role == "user" && $0.text == request.text
+    private func historyTurnID(for request: ActiveMobileChatRequest, in history: [ChatMessageDTO]) -> String? {
+        if let turnID = request.turnID { return turnID }
+        if health?.backend == "cloud" { return request.operationID }
+        return history.reversed().first(where: {
+            $0.role == "user" && $0.text == request.text && !request.priorTurnIDs.contains($0.turnID ?? "")
         })?.turnID
+    }
+
+    private func reconcileChatActivity(with history: [ChatMessageDTO], terminals: [ChatTurnTerminalDTO]) {
+        guard var request = activeChatRequest else {
+            // History and SSE replay race on first connection. A terminal may
+            // already be presentation-deduplicated while remote activity still
+            // needs settlement. Never apply this branch to a local pending send.
+            if let observed = observedChatTurnID {
+                if let terminal = terminals.last(where: { $0.turnID == observed }) {
+                    applyTerminal(terminal)
+                } else if let status = history.last(where: {
+                    $0.turnID == observed && $0.status.map(Self.isTerminalChatStatus) == true
+                })?.status {
+                    applyTerminal(ChatTurnTerminalDTO(turnID: observed, status: status))
+                } else {
+                    // A stale history page can omit a genuinely live SSE turn.
+                    // Absence is not terminal evidence.
+                    return
+                }
+            }
+            if let running = history.last(where: {
+                $0.status == "inProgress" && $0.turnID.map { !completedTurnIDs.contains($0) } == true
+            }), let turnID = running.turnID {
+                observedChatTurnID = turnID
+                isChatBusy = true
+                chatProgress = running.role == "assistant" ? .responding : .thinking
+            } else if isChatBusy {
+                finishChatActivity()
+            }
+            return
+        }
+        let matchedTurnID = historyTurnID(for: request, in: history)
         guard let turnID = matchedTurnID else {
             if isChatBusy, chatProgress == .sending { chatProgress = .thinking }
             return
@@ -1053,6 +1236,7 @@ public final class MobileSession: ObservableObject {
         let values = Array(pendingChatDeltas.values)
         pendingChatDeltas.removeAll(keepingCapacity: true)
         for value in values {
+            guard !completedTurnIDs.contains(value.turnID) else { continue }
             let id = "stream-\(value.turnID)-\(value.itemID)"
             if let index = chatMessages.firstIndex(where: { $0.id == id }) {
                 let current = chatMessages[index]
@@ -1065,7 +1249,11 @@ public final class MobileSession: ObservableObject {
     }
 
     private func mergeHistory(_ response: ChatHistoryResponse) {
-        let terminalIDs = Set((response.terminalTurns ?? []).filter { Self.isTerminalChatStatus($0.status) }.map(\.turnID))
+        let restoringConversation = chatMessages.isEmpty && activeChatRequest == nil
+        let terminalStatuses = (response.terminalTurns ?? []).filter { Self.isTerminalChatStatus($0.status) }
+            .reduce(into: [String: String]()) { $0[$1.turnID] = $1.status }
+        let terminalIDs = Set(terminalStatuses.keys)
+        completedTurnIDs.formUnion(terminalIDs)
         if !terminalIDs.isEmpty, let data = try? Data(contentsOf: cloudChatsURL),
            let entries = try? JSONDecoder().decode([PendingCloudChat].self, from: data) {
             let remaining = entries.filter { !($0.endpoint == clientEndpoint && $0.repositoryID == activeRepositoryID && terminalIDs.contains($0.id)) }
@@ -1078,13 +1266,12 @@ public final class MobileSession: ObservableObject {
             inputDraft = unresolved.text
         }
         let history = response.messages
-        let activeHistoryTurnID = activeChatRequest?.turnID ?? history.reversed().first(where: {
-            $0.role == "user" && $0.text == activeChatRequest?.text
-        })?.turnID
+        let activeHistoryTurnID = activeChatRequest.flatMap { historyTurnID(for: $0, in: history) }
         let streamMessages = chatMessages.filter { $0.id.hasPrefix("stream-") }
         let pendingMessages = chatMessages.filter { $0.id.hasPrefix("mobile-pending-") }
         var merged = history.map { message in
-            let status = message.status ?? (message.turnID.map { completedTurnIDs.contains($0) } == true ? "completed" : nil)
+            let status = message.turnID.flatMap { terminalStatuses[$0] } ?? message.status
+                ?? (message.turnID.map { completedTurnIDs.contains($0) } == true ? "completed" : nil)
             if let turnID = message.turnID {
                 if (status == "completed" || status == "interrupted" || status == "failed"), turnID != activeHistoryTurnID {
                     completedTurnIDs.insert(turnID)
@@ -1104,15 +1291,31 @@ public final class MobileSession: ObservableObject {
                     merged[index] = ChatMessageDTO(id: message.id, role: message.role,
                         text: message.text.count >= historyMessage.text.count ? message.text : historyMessage.text,
                         date: message.date, turnID: turnID, phase: message.phase, status: "inProgress")
-                } else { merged[index] = historyMessage }
+                } else {
+                    merged[index] = ChatMessageDTO(id: message.id, role: historyMessage.role, text: historyMessage.text,
+                        date: historyMessage.date, turnID: turnID, phase: historyMessage.phase ?? message.phase, status: historyMessage.status)
+                }
             }
         }
-        for message in pendingMessages where !history.contains(where: { $0.role == "user" && $0.text == message.text }) {
-            merged.append(message)
+        for message in pendingMessages {
+            let operationID = String(message.id.dropFirst("mobile-pending-".count))
+            let boundTurnID = activeChatRequest?.pendingID == message.id ? activeHistoryTurnID : nil
+            let acknowledged = history.contains {
+                $0.role == "user" && ($0.turnID == operationID || (boundTurnID != nil && $0.turnID == boundTurnID))
+            }
+            if !acknowledged { merged.append(message) }
         }
         let sorted = merged.sorted { $0.date < $1.date }
         if chatMessages != sorted { chatMessages = sorted; chatRevision &+= 1 }
-        reconcileChatActivity(with: sorted, terminals: response.terminalTurns ?? [])
+        reconcileChatActivity(with: history, terminals: response.terminalTurns ?? [])
+        if restoringConversation, let user = sorted.last(where: { $0.role == "user" }), let turnID = user.turnID {
+            let terminal = response.terminalTurns?.last(where: { $0.turnID == turnID })
+            if (terminal?.status ?? user.status) == "failed" {
+                failedChatTurnID = turnID
+                lastFailedChatText = user.text
+                setChatIssue(code: terminal?.issueCode, message: terminal?.message ?? "上一条消息未完成，可以核对状态后重试。")
+            }
+        }
     }
 
     private func streamKey(turnID: String, itemID: String) -> String { "\(turnID)|\(itemID)" }
@@ -2289,6 +2492,7 @@ public final class MobileSession: ObservableObject {
         conversationToken = UUID(); conversationTask?.cancel(); conversationTask = nil
         refreshingConversation = false; conversationRefreshError = nil
         lastChatIssue = nil; lastChatIssueCode = nil; lastFailedChatText = nil
+        retryingChat = false; failedChatTurnID = nil; failedChatPendingID = nil; failedChatWasRejected = false
         factSyncToken = nil; factSyncError = nil
         pendingReplayTask?.cancel()
         pendingReplayTask = nil

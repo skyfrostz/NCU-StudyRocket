@@ -1,0 +1,277 @@
+{
+  "evidenceVersion": 1,
+  "observedDate": "2026-11-12",
+  "result": "PASS",
+  "scope": {
+    "syntheticFixturesOnly": true,
+    "academicTextIncluded": false,
+    "credentialsOrDeviceIdentifiersIncluded": false,
+    "productionDeployedByThisRun": false,
+    "realDeviceTested": false,
+    "liveProvider": "official DeepSeek endpoint through a fixed-target loopback proxy"
+  },
+  "artifact": {
+    "binarySHA256": "732d4d3fa4cd686027b710c9356c1c2a6ff34b16106f5be8113b14579beba551",
+    "releaseName": "20261112-ui-shutdown-lock-final",
+    "verifiedManifestFiles": 75,
+    "runtimeLibrariesResolved": true,
+    "buildImage": "swift:6.4.2-noble@sha256:bca121f6eb59fd80340d1296887b2698ed8f3eb9eca7d80c181f8af769dc7ee0",
+    "toolchain": "Swift version 6.4.2 (swift-6.4.2-RELEASE)\nTarget: x86_64-unknown-linux-gnu",
+    "sourceManifest": "linux-732d4d3f-source-tree-20261112.json",
+    "sourceManifestSHA256": "ab309141b80e6c1cb3f78a0587fea622333fbf02dc3e2267dd84f6fadbe4afd6",
+    "sourceFiles": 33,
+    "sourceMismatchAtFinalVerification": 0,
+    "sourceScope": "Frozen build input. Later source edits do not rewrite this manifest or establish that the recorded binary contains those edits."
+  },
+  "strictSandbox": {
+    "protectSystem": "strict",
+    "privateTmp": true,
+    "productionAndSoulCourseDirectoriesInaccessible": true,
+    "productionPolicyRelaxed": false,
+    "cloudMemoryHighBytes": 314572800,
+    "cloudMemoryMaxBytes": 402653184,
+    "memorySwapMaxBytes": 0,
+    "cpuQuota": "100%"
+  },
+  "automatedSuites": [
+    {
+      "suite": "cloud_acceptance.py",
+      "expectedTests": 27,
+      "testsRun": 27,
+      "exitCode": 0,
+      "seconds": 11.996,
+      "result": "PASS"
+    },
+    {
+      "suite": "independent_tasks_acceptance.py",
+      "expectedTests": 5,
+      "testsRun": 5,
+      "exitCode": 0,
+      "seconds": 2.926,
+      "result": "PASS"
+    },
+    {
+      "suite": "task_linkage_agent_acceptance.py",
+      "expectedTests": 7,
+      "testsRun": 7,
+      "exitCode": 0,
+      "seconds": 9.356,
+      "result": "PASS"
+    },
+    {
+      "suite": "proposal_safety_acceptance.py",
+      "expectedTests": 4,
+      "testsRun": 4,
+      "exitCode": 0,
+      "seconds": 2.323,
+      "result": "PASS"
+    },
+    {
+      "suite": "graceful_shutdown_acceptance.py",
+      "expectedTests": 4,
+      "testsRun": 4,
+      "exitCode": 0,
+      "seconds": 1.771,
+      "result": "PASS"
+    }
+  ],
+  "automatedTestsPassed": 47,
+  "liveIndependentTasks": {
+    "result": "PASS",
+    "scenario": "independent-tasks",
+    "binarySHA256": "732d4d3fa4cd686027b710c9356c1c2a6ff34b16106f5be8113b14579beba551",
+    "terminal": {
+      "status": "completed",
+      "issueCode": null,
+      "seconds": 6.049
+    },
+    "bothFileTailCodesObserved": true,
+    "allMarkdownUnchangedBeforeConfirmation": true,
+    "proposal": {
+      "count": 1,
+      "exactReplacement": true,
+      "baseHashMatched": true,
+      "managementMarkersPreserved": 4,
+      "originalSHA256": "33aaa1377293f34e3aa8feca7a1ba7ea625a0ea52842b9ceb84340a51a7fe974",
+      "proposedSHA256": "a17ad762ec86e3ff8cfc86ec52933ece354e4face45dc5d02ba39125e9b87edf"
+    },
+    "confirmation": {
+      "applyStatus": 200,
+      "replayStatus": 200,
+      "replayReceiptMatched": true,
+      "exactAppliedBytes": true,
+      "unrelatedMarkdownUnchanged": true,
+      "proposalConsumed": true
+    },
+    "independentTasks": {
+      "weekTaskCount": 2,
+      "homeTaskCount": 2,
+      "titlesMatched": true,
+      "distinctTaskIDs": true,
+      "noCheckboxPrefixes": true,
+      "bothInitiallyIncomplete": true,
+      "homeWeekTasksMatched": true,
+      "canonicalTaskSeparatorObserved": true
+    },
+    "modelStructure": {
+      "requestCount": 5,
+      "responseCount": 5,
+      "maximumInputBytes": 83512,
+      "maximumReasoningCharacters": 416,
+      "allModelsFlash": true,
+      "readFileCalls": 5,
+      "exactEditProposalCalls": 1,
+      "paginatedReadResults": 5,
+      "toolErrors": [],
+      "usage": [
+        {
+          "prompt_tokens": 7250,
+          "completion_tokens": 87,
+          "total_tokens": 7337,
+          "prompt_cache_hit_tokens": 1024,
+          "prompt_cache_miss_tokens": 6226
+        },
+        {
+          "prompt_tokens": 12423,
+          "completion_tokens": 129,
+          "total_tokens": 12552,
+          "prompt_cache_hit_tokens": 1280,
+          "prompt_cache_miss_tokens": 11143
+        },
+        {
+          "prompt_tokens": 16266,
+          "completion_tokens": 86,
+          "total_tokens": 16352,
+          "prompt_cache_hit_tokens": 1280,
+          "prompt_cache_miss_tokens": 14986
+        },
+        {
+          "prompt_tokens": 17258,
+          "completion_tokens": 377,
+          "total_tokens": 17635,
+          "prompt_cache_hit_tokens": 1280,
+          "prompt_cache_miss_tokens": 15978
+        },
+        {
+          "prompt_tokens": 17694,
+          "completion_tokens": 35,
+          "total_tokens": 17729,
+          "prompt_cache_hit_tokens": 1408,
+          "prompt_cache_miss_tokens": 16286
+        }
+      ],
+      "transportErrors": 0
+    },
+    "summary": {
+      "requests": 13,
+      "medianMilliseconds": 11.79,
+      "maximumRSSBytes": 46006272,
+      "maximumHWMBytes": 46006272,
+      "minimumAvailableBytes": 724103168
+    }
+  },
+  "shutdown": {
+    "suiteEvidence": "linux-732d4d3f-shutdown-20261112.txt",
+    "suiteEvidenceSHA256": "f1c072d816ce3b11799c664d73f62536347fdd2684152c8cb61b6af5c8898975",
+    "cases": 4,
+    "minimumSIGTERMSeconds": 0.003,
+    "maximumSIGTERMSeconds": 0.008,
+    "allExitCodesZero": true,
+    "repositoryBytesUnchanged": true,
+    "coverage": [
+      "idle without SSE",
+      "open SSE",
+      "active model without SSE",
+      "active model with SSE"
+    ],
+    "restartChecks": [
+      "interrupted/server_restarted terminal and history",
+      "visible partial response preserved",
+      "provider request not resent"
+    ]
+  },
+  "resourcesAndCleanup": {
+    "services": {
+      "cloud": {
+        "MemoryCurrent": 7421952,
+        "MemoryPeak": 7933952,
+        "MemorySwapCurrent": 0,
+        "MemoryHigh": 314572800,
+        "MemoryMax": 402653184,
+        "MemorySwapMax": 0,
+        "cpuQuota": "1s",
+        "memoryEvents": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0
+        },
+        "swapPeakBytes": 0,
+        "stopSeconds": 0.025,
+        "stopCommandExitCode": 0,
+        "stopped": true,
+        "stopResult": "success"
+      },
+      "proxy": {
+        "MemoryCurrent": 12263424,
+        "MemoryPeak": 12914688,
+        "MemorySwapCurrent": 0,
+        "MemoryHigh": 100663296,
+        "MemoryMax": 134217728,
+        "MemorySwapMax": 0,
+        "cpuQuota": "1s",
+        "memoryEvents": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0
+        },
+        "swapPeakBytes": 0,
+        "stopSeconds": 0.013,
+        "stopCommandExitCode": 0,
+        "stopped": true,
+        "stopResult": "success"
+      }
+    },
+    "temporaryUnitsStopped": true,
+    "releaseChecksumsStillValid": true,
+    "productionReleaseUnchanged": true,
+    "productionPIDUnchanged": true
+  },
+  "earlierAttempts": [
+    {
+      "binarySHA256": "87639904f6d04baba025601cbc781084c985a32b18eca4c3b8cac22d7cc4c557",
+      "result": "REJECTED",
+      "strictCoreTestsPassed": 26,
+      "failedCheck": "facts first write returned 422",
+      "cause": "The Linux Shared planning lock attempted to create a file in Application Support outside the service writable directory.",
+      "repair": "Linux now flocks the canonical repository directory inode; macOS lock behavior is unchanged.",
+      "diagnostic": "A separate relaxed synthetic single-case run passed. It was diagnostic only and did not relax the production unit; old-style lock metadata may remain in the service account Application Support directory."
+    },
+    {
+      "binarySHA256": "732d4d3fa4cd686027b710c9356c1c2a6ff34b16106f5be8113b14579beba551",
+      "result": "HARNESS_PREFLIGHT_FAILURE",
+      "stage": "pair-and-send",
+      "apiRequests": 0,
+      "cause": "runuser inherited an unreadable working directory",
+      "resolution": "Temporary services were stopped; a fresh fixture and explicit readable working directory produced the live PASS recorded here."
+    }
+  ],
+  "sharedLockRegression": {
+    "macOSChecks": "PASS",
+    "linuxReleaseChecks": "PASS",
+    "coverage": [
+      "canonical path aliases and nested acquisition",
+      "cross-process mutual exclusion",
+      "lock release after SIGKILL",
+      "failed acquisition releases process state and file descriptors",
+      "Unicode repository bytes unchanged",
+      "no Linux Application Support lock file created"
+    ],
+    "homeEnvironmentOverridden": false
+  }
+}

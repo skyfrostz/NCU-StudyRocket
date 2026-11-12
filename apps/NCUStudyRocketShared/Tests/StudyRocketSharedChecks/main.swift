@@ -6,6 +6,8 @@ import Crypto
 #endif
 import StudyRocketShared
 
+try handlePlanningRepositoryLockChild()
+
 let privateKey = P256.Signing.PrivateKey()
 let timestamp = Int64(Date().timeIntervalSince1970)
 let body = Data("studyrocket-check".utf8)
@@ -457,6 +459,9 @@ try checkLocalSaveHistory()
 #endif
 
 try runTaskLinkageChecks()
+runProposalLineDiffChecks()
+try runPlanningProposalSafetyChecks()
+try runPlanningRepositoryLockChecks()
 
 // Historical and future daily ledgers must invalidate the same public snapshot CAS.
 do {
@@ -479,3 +484,5 @@ do {
     precondition(original.contains("Synthetic A") && !original.contains("Synthetic B"))
     print("Daily revision checks passed: historical/future month CAS and stale-write rejection")
 }
+
+try runOneOffEventEditorChecks()

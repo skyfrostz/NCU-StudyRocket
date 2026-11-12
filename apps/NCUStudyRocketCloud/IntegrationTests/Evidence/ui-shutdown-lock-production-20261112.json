@@ -1,0 +1,198 @@
+{
+  "checkedAt": "2026-11-12T05:01:43.677402+00:00",
+  "result": {
+    "checked_at": "2026-11-12T05:00:59.689490+00:00",
+    "current_release": "/opt/studyrocket/cloud/releases/20261112-ui-shutdown-lock-final",
+    "error": null,
+    "restore_errors": [],
+    "result": "PASS",
+    "twenty_four_hour_wait": "waived_not_passed",
+    "units": {
+      "studyrocket-backup.timer": {
+        "ActiveState": "active",
+        "Result": "success",
+        "SubState": "waiting"
+      },
+      "studyrocket-cloud.service": {
+        "ActiveState": "active",
+        "ExecMainStartTimestamp": "Thu 2026-11-12 13:00:57 CST",
+        "MainPID": "1193197",
+        "NRestarts": "0",
+        "Result": "success",
+        "SubState": "running"
+      }
+    }
+  },
+  "backup": {
+    "path": "/var/lib/studyrocket/cloud/backups/20261112T050056Z-eb395af9",
+    "sha256_manifest": "1cb283de583aa542f379258c5929ad011a80819e2e8595990f0ac3f0db62ba78",
+    "sha256_receipt": "e01b0f995afe15c28610e0fc9b03fec58547a0826733cb5b27b82301e0bef884",
+    "verified_items": 38
+  },
+  "currentRelease": "/opt/studyrocket/cloud/releases/20261112-ui-shutdown-lock-final",
+  "unsignedWrites": [
+    {
+      "endpoint": "local",
+      "path": "/v1/chat/send",
+      "status": 401
+    },
+    {
+      "endpoint": "local",
+      "path": "/v1/files/commit",
+      "status": 401
+    },
+    {
+      "endpoint": "local",
+      "path": "/v1/facts",
+      "status": 401
+    },
+    {
+      "endpoint": "public",
+      "path": "/v1/chat/send",
+      "status": 401
+    },
+    {
+      "endpoint": "public",
+      "path": "/v1/files/commit",
+      "status": 401
+    },
+    {
+      "endpoint": "public",
+      "path": "/v1/facts",
+      "status": 401
+    }
+  ],
+  "studyrocket-cloud.service": {
+    "Result": "success",
+    "NRestarts": "0",
+    "ExecMainStartTimestamp": "Thu 2026-11-12 13:00:57 CST",
+    "ExecMainStatus": "0",
+    "MemoryCurrent": "4141056",
+    "MemoryPeak": "4657152",
+    "ActiveState": "active",
+    "SubState": "running",
+    "runningBinarySHA256": "732d4d3fa4cd686027b710c9356c1c2a6ff34b16106f5be8113b14579beba551",
+    "VmHWMKiB": 34304,
+    "VmRSSKiB": 34304,
+    "memoryEvents": {
+      "low": "0",
+      "high": "0",
+      "max": "0",
+      "oom": "0",
+      "oom_kill": "0",
+      "oom_group_kill": "0"
+    }
+  },
+  "studyrocket-backup.timer": {
+    "Result": "success",
+    "ActiveState": "active",
+    "SubState": "waiting"
+  },
+  "soulcourse.service": {
+    "Result": "success",
+    "NRestarts": "0",
+    "ExecMainStartTimestamp": "Tue 2026-09-01 00:24:00 CST",
+    "ExecMainStatus": "0",
+    "MemoryCurrent": "64933888",
+    "MemoryPeak": "100933632",
+    "ActiveState": "active",
+    "SubState": "running",
+    "memoryEvents": {
+      "low": "0",
+      "high": "0",
+      "max": "0",
+      "oom": "0",
+      "oom_kill": "0",
+      "oom_group_kill": "0"
+    }
+  },
+  "deploymentSnapshotUnchanged": true,
+  "currentMarkdownUnchanged": true,
+  "markdownCount": 36,
+  "markdownManifestSHA256": "2056f3fec79fbfc8c039ea832efe6f1d908d8b8c1c749a6909719547be9ee464",
+  "sqliteQuickCheck": [
+    [
+      "ok"
+    ]
+  ],
+  "currentTableDigestsUnchanged": true,
+  "tableCounts": {
+    "devices": 2,
+    "events": 1848,
+    "messages": 467,
+    "operations": 9,
+    "partials": 0,
+    "proposals": 2,
+    "sqlite_sequence": 2,
+    "turns": 6
+  },
+  "tableSHA256": {
+    "devices": "c63cfd1fda7c323996d7c85e50a1e2948c4eb24bc40c438191ea057b360f5824",
+    "events": "48927d084970de757b8c42012d12505df38eb8676acac3200718973ea4e4cfef",
+    "messages": "88ae3916e54217c871e98c58c1ce218a5f1312118719047761689a6be150a62a",
+    "operations": "6e6fdce3a1ebe13a44e1d8df7108d7c657fb7b6a9f65be7277339ce75cb23971",
+    "partials": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "proposals": "9acfa6861207fcea7711cd579199cab19877b95ec0089f0284dcd9e12fc36878",
+    "sqlite_sequence": "49c7aef72c3b7b5a67710d57d4cd20f2cbadcc593ac392df87e92c79edb6ecf0",
+    "turns": "e80fd568e34035837cf00727ab634f5295f09e5fb5c70a6e9187c5711f3490e6"
+  },
+  "identityUnchanged": true,
+  "activeTurns": 0,
+  "unfinishedOperations": 0,
+  "soulcourseConfigSHA256": {
+    "/www/server/panel/vhost/nginx/soulcourse.cn.conf": "f0798c1ce05f5999c9e5b3e0dee118a2221f55483f42ff3e755a79ca4099b180",
+    "/www/server/panel/vhost/nginx/proxy/soulcourse.cn/9f6e6800cfae7749eb6c486619254b9c_soulcourse.cn.conf": "74864b9b52feefc31a483aaac54f684e12a0a7ef2349184e0fed5c8011607df6"
+  },
+  "soulcourseConfigUnchanged": true,
+  "studyrocketVhostSHA256": "a3e914c8d37cfefebd5e980b0e88f0f1ca3cfe1b3d1b69dd899fb233706d3053",
+  "studyrocketVhostRestored": true,
+  "health": {
+    "cloud_local": {
+      "chatState": "ready",
+      "http_status": 200
+    },
+    "cloud_public": {
+      "chatState": "ready",
+      "http_status": 200
+    },
+    "soulcourse_local": {
+      "database": "ok",
+      "http_status": 200
+    },
+    "soulcourse_public": {
+      "database": "ok",
+      "http_status": 200
+    }
+  },
+  "memoryMiB": {
+    "available": 717.37890625,
+    "swapUsed": 0.0
+  },
+  "stopJournal": {
+    "timeoutLines": 0,
+    "sigkillLines": 0,
+    "events": [
+      {
+        "timeUTC": "2026-11-12T05:00:55.779889+00:00",
+        "categories": [
+          "normal_exit"
+        ]
+      },
+      {
+        "timeUTC": "2026-11-12T05:00:57.154563+00:00",
+        "categories": [
+          "started"
+        ]
+      }
+    ]
+  },
+  "backupRecheck": {
+    "items": 38,
+    "allHashesAndLengthsValid": true,
+    "sqliteQuickCheck": [
+      [
+        "ok"
+      ]
+    ]
+  }
+}

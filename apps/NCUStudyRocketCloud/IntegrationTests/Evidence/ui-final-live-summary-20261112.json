@@ -1,0 +1,93 @@
+{
+  "result": "PASS",
+  "scenario": "independent-tasks",
+  "terminal": {
+    "status": "completed",
+    "issueCode": null,
+    "seconds": 8.06
+  },
+  "bothFileTailCodesObserved": true,
+  "allMarkdownUnchangedBeforeConfirmation": true,
+  "proposal": {
+    "count": 1,
+    "exactReplacement": true,
+    "baseHashMatched": true,
+    "managementMarkersPreserved": 4,
+    "originalSHA256": "33aaa1377293f34e3aa8feca7a1ba7ea625a0ea52842b9ceb84340a51a7fe974",
+    "proposedSHA256": "a17ad762ec86e3ff8cfc86ec52933ece354e4face45dc5d02ba39125e9b87edf"
+  },
+  "confirmation": {
+    "applyStatus": 200,
+    "replayStatus": 200,
+    "replayReceiptMatched": true,
+    "exactAppliedBytes": true,
+    "unrelatedMarkdownUnchanged": true,
+    "proposalConsumed": true
+  },
+  "independentTasks": {
+    "weekTaskCount": 2,
+    "homeTaskCount": 2,
+    "titlesMatched": true,
+    "distinctTaskIDs": true,
+    "noCheckboxPrefixes": true,
+    "bothInitiallyIncomplete": true,
+    "homeWeekTasksMatched": true,
+    "canonicalTaskSeparatorObserved": true
+  },
+  "modelStructure": {
+    "requestCount": 5,
+    "responseCount": 5,
+    "maximumInputBytes": 83621,
+    "maximumReasoningCharacters": 571,
+    "allModelsFlash": true,
+    "readFileCalls": 5,
+    "exactEditProposalCalls": 1,
+    "paginatedReadResults": 5,
+    "toolErrors": [],
+    "usage": [
+      {
+        "prompt_tokens": 7260,
+        "completion_tokens": 87,
+        "total_tokens": 7347,
+        "prompt_cache_hit_tokens": 1024,
+        "prompt_cache_miss_tokens": 6236
+      },
+      {
+        "prompt_tokens": 12421,
+        "completion_tokens": 123,
+        "total_tokens": 12544,
+        "prompt_cache_hit_tokens": 1280,
+        "prompt_cache_miss_tokens": 11141
+      },
+      {
+        "prompt_tokens": 16259,
+        "completion_tokens": 74,
+        "total_tokens": 16333,
+        "prompt_cache_hit_tokens": 1280,
+        "prompt_cache_miss_tokens": 14979
+      },
+      {
+        "prompt_tokens": 17239,
+        "completion_tokens": 410,
+        "total_tokens": 17649,
+        "prompt_cache_hit_tokens": 1280,
+        "prompt_cache_miss_tokens": 15959
+      },
+      {
+        "prompt_tokens": 17708,
+        "completion_tokens": 64,
+        "total_tokens": 17772,
+        "prompt_cache_hit_tokens": 1280,
+        "prompt_cache_miss_tokens": 16428
+      }
+    ],
+    "transportErrors": 0
+  },
+  "summary": {
+    "requests": 14,
+    "medianMilliseconds": 10.35,
+    "maximumRSSBytes": 45899776,
+    "maximumHWMBytes": 45899776,
+    "minimumAvailableBytes": 737656832
+  }
+}

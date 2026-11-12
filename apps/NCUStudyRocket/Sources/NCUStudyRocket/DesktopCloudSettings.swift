@@ -14,45 +14,60 @@ struct DesktopCloudSettingsSection: View {
     @State private var history: [CloudArchivedMessage] = []
     @State private var historyCursor: Int?
     @State private var historyLoaded = false
+    @State private var showPairing = false
+
+    private var isManaged: Bool { DesktopCloudBinding.isManaged(root) }
 
     var body: some View {
         Section("云学业服务") {
-            LabeledContent("当前模式", value: DesktopCloudBinding.isManaged(root) ? "云 Markdown 权威 · Mac 是本地镜像" : "旧本机模式")
-            TextField("HTTPS 服务地址", text: $endpoint)
-            SecureField("一次性配对码", text: $code)
-            Button(busy ? "正在连接…" : "配对并启用云模式") { Task { await pair() } }.disabled(busy || code.isEmpty)
+            LabeledContent("当前模式", value: isManaged ? "云端同步" : "本机资料")
+            if isManaged {
+                LabeledContent("服务地址") {
+                    Text(endpoint).foregroundStyle(.secondary).textSelection(.enabled)
+                        .multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
+                }
+                DisclosureGroup("更换或重新配对服务", isExpanded: $showPairing) { pairingFields }
+            } else {
+                pairingFields
+            }
             Text("与手机共用学业会话和草案。离线保存进入独立草稿，正式文件仅在云服务确认后更新。首次同步发现本机差异会保留原文供审核。")
-                .font(.caption).foregroundStyle(.secondary)
-            if DesktopCloudBinding.isManaged(root) {
-                Button("刷新云文件与待提交草稿") { Task { await refresh() } }.disabled(busy)
+                .studyTypography(.caption).foregroundStyle(.secondary)
+            if isManaged {
+                StudyButton("刷新云文件与待提交草稿") { Task { await refresh() } }.disabled(busy)
                 ForEach(drafts) { draft in
                     Button { selected = draft } label: {
                         VStack(alignment: .leading) {
                             Text(draft.fact?.text ?? draft.files.map(\.path).joined(separator: "、")).lineLimit(2)
-                            Text(draft.message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            Text(draft.message).studyTypography(.caption).foregroundStyle(.secondary).lineLimit(2)
                         }
                     }.buttonStyle(.plain)
                 }
-                if drafts.isEmpty { Text("没有待提交草稿").font(.caption).foregroundStyle(.secondary) }
-                Text(backupStatus.repositoryID == (try? DesktopCloudBinding.read(root).repositoryID) ? backupStatus.message : "当前仓库的一致备份尚未校验").font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("检查并下载最新一致备份") { Task { await DesktopCloudBackup.shared.refreshAutomatically(root: root) } }
-                    if backupStatus.repositoryID == (try? DesktopCloudBinding.read(root).repositoryID), let location = backupStatus.location { Button("在 Finder 查看备份") { NSWorkspace.shared.activateFileViewerSelecting([location]) } }
+                if drafts.isEmpty { Text("没有待提交草稿").studyTypography(.caption).foregroundStyle(.secondary) }
+                Text(backupStatus.repositoryID == (try? DesktopCloudBinding.read(root).repositoryID) ? backupStatus.message : "当前仓库的一致备份尚未校验").studyTypography(.caption).foregroundStyle(.secondary)
+                ViewThatFits(in: .horizontal) {
+                  HStack {
+                    StudyButton("检查并下载最新一致备份") { Task { await DesktopCloudBackup.shared.refreshAutomatically(root: root) } }
+                    if backupStatus.repositoryID == (try? DesktopCloudBinding.read(root).repositoryID), let location = backupStatus.location { StudyButton("在 Finder 查看备份") { NSWorkspace.shared.activateFileViewerSelecting([location]) } }
+                  }
+                  VStack(alignment: .leading, spacing: 8) {
+                    StudyButton("检查并下载最新一致备份") { Task { await DesktopCloudBackup.shared.refreshAutomatically(root: root) } }
+                    if backupStatus.repositoryID == (try? DesktopCloudBinding.read(root).repositoryID), let location = backupStatus.location { StudyButton("在 Finder 查看备份") { NSWorkspace.shared.activateFileViewerSelecting([location]) } }
+                  }
                 }
                 DesktopCloudVersionsView(root: root).id((try? DesktopCloudBinding.read(root).repositoryID) ?? root.path)
                 DisclosureGroup("完整文字历史（只读）") {
                     ForEach(history) { message in
                         VStack(alignment: .leading) {
-                            Text("\(message.role) · \(message.date.formatted())").font(.caption).foregroundStyle(.secondary)
+                            Text("\(message.role) · \(message.date.formatted())").studyTypography(.caption).foregroundStyle(.secondary)
                             Text(message.text).textSelection(.enabled)
                         }.padding(.vertical, 4)
                     }
                     if !historyLoaded || historyCursor != nil {
-                        Button("加载更多历史") { Task { await loadHistory() } }.disabled(busy)
+                        StudyButton("加载更多历史") { Task { await loadHistory() } }.disabled(busy)
                     }
                 }
             }
-            if !issue.isEmpty { Text(issue).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+            if !issue.isEmpty { Text(issue).studyTypography(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
         }
         .task(id: root) {
             history = []; historyCursor = nil; historyLoaded = false
@@ -61,6 +76,14 @@ struct DesktopCloudSettingsSection: View {
         }
         .sheet(item: $selected) { draft in
             DesktopCloudDraftReview(root: root, draft: draft) { Task { await refresh() } }
+        }
+    }
+    private var pairingFields: some View {
+        Group {
+            TextField("HTTPS 服务地址", text: $endpoint)
+            SecureField("一次性配对码", text: $code)
+            StudyButton(busy ? "正在连接…" : "配对并启用云模式") { Task { await pair() } }
+                .disabled(busy || code.isEmpty)
         }
     }
     private func pair() async {
@@ -84,6 +107,7 @@ struct DesktopCloudSettingsSection: View {
                 lock.unlock()
             } catch { lock.unlock(); throw error }
             code = ""
+            showPairing = false
             history = []; historyCursor = nil; historyLoaded = false
             NotificationCenter.default.post(name: .studyRocketCloudBindingChanged, object: nil)
             try await DesktopCloudWorkspace.shared.synchronize(root: root)
@@ -113,23 +137,22 @@ private struct DesktopCloudDraftReview: View {
     let changed: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var cloud: [String: CloudFileContent] = [:]
+    @State private var loadingCloud = true
     @State private var issue = ""
     @State private var busy = false
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("云保存草稿与冲突").font(.title2)
+            Text("云保存草稿与冲突").studyTypography(.title2)
             Text(draft.message).foregroundStyle(.secondary)
             if draft.repositoryID != (try? DesktopCloudBinding.read(root).repositoryID) { Text("此草稿属于其他仓库，仅供核对，不能直接提交。").foregroundStyle(.orange) }
             ScrollView {
                 if let fact = draft.fact { Text(fact.text).textSelection(.enabled) }
                 ForEach(draft.files, id: \.path) { file in
-                    Text(file.path).font(.headline)
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading) { Text("本机草稿").font(.caption); Text(file.content).textSelection(.enabled) }.frame(maxWidth: .infinity, alignment: .leading)
-                        VStack(alignment: .leading) { Text("当前云版本").font(.caption); Text(cloud[file.path]?.content ?? "读取中…").textSelection(.enabled) }.frame(maxWidth: .infinity, alignment: .leading)
-                    }.font(.system(.body, design: .monospaced))
+                    Text(file.path).studyTypography(.headline)
                     if let current = cloud[file.path] {
-                        Button("采用此云版本更新本机（保留草稿副本）") { Task {
+                        StudyProposalDiffView(original: file.content, proposed: current.content,
+                            originalTitle: "本机草稿", proposedTitle: "当前云版本")
+                        StudyButton("采用此云版本更新本机（保留草稿副本）") { Task {
                             busy = true; defer { busy = false }
                             do {
                                 try await DesktopCloudWorkspace.shared.acceptCloud(path: file.path, root: root,
@@ -137,27 +160,36 @@ private struct DesktopCloudDraftReview: View {
                                 issue = "本机已采用云版本；原草稿仍保留。"; cloud[file.path] = current; changed()
                             } catch { issue = error.localizedDescription }
                         } }.disabled(busy || draft.repositoryID != (try? DesktopCloudBinding.read(root).repositoryID))
+                    } else if loadingCloud {
+                        ProgressView("正在读取云版本…").controlSize(.small)
+                    } else {
+                        StudyLabel("云版本尚未载入，本机草稿仍保留。", systemImage: "exclamationmark.circle")
+                            .foregroundStyle(.secondary)
+                        StudyButton("重新读取") { Task { await loadCloud() } }
                     }
                 }
             }
-            if !issue.isEmpty { Text(issue).font(.caption) }
+            if !issue.isEmpty { Text(issue).studyTypography(.caption) }
             HStack {
-                Button("关闭") { dismiss() }
+                StudyButton("关闭") { dismiss() }
                 Spacer()
-                Button("按原版本安全重试") { Task {
+                StudyButton("按原版本安全重试") { Task {
                     busy = true; defer { busy = false }
                     do { try await DesktopCloudWorkspace.shared.submit(draft, root: root); changed(); dismiss() }
                     catch { issue = error.localizedDescription }
                 } }.disabled(busy || draft.repositoryID != (try? DesktopCloudBinding.read(root).repositoryID))
             }
             Text("重试使用原操作编号与原版本；冲突时不会覆盖。需要合并的内容请在文件编辑器逐项修改后保存。")
-                .font(.caption).foregroundStyle(.secondary)
-        }.padding(24).frame(minWidth: 780, minHeight: 560)
-        .task {
-            for file in draft.files {
-                do { cloud[file.path] = try await DesktopCloudWorkspace.shared.cloudContent(path: file.path, root: root) }
-                catch { issue = error.localizedDescription }
-            }
+                .studyTypography(.caption).foregroundStyle(.secondary)
+        }.padding(24).frame(minWidth: 520, idealWidth: 840, minHeight: 480, idealHeight: 620)
+        .task { await loadCloud() }
+    }
+    private func loadCloud() async {
+        loadingCloud = true
+        defer { loadingCloud = false }
+        for file in draft.files {
+            do { cloud[file.path] = try await DesktopCloudWorkspace.shared.cloudContent(path: file.path, root: root) }
+            catch { if !Task.isCancelled { issue = error.localizedDescription } }
         }
     }
 }
@@ -173,11 +205,11 @@ private struct DesktopCloudVersionsView: View {
     var body: some View {
         DisclosureGroup("云文件版本历史") {
             Text("历史版本只读；需要恢复时请复制到编辑器，确认差异后按当前版本保存。")
-                .font(.caption).foregroundStyle(.secondary)
+                .studyTypography(.caption).foregroundStyle(.secondary)
             ForEach(versions) { version in
                 DisclosureGroup(version.date.formatted()) {
                     ForEach(version.paths, id: \.self) { path in
-                        Button(path) { Task {
+                        StudyButton(path) { Task {
                             do {
                                 let binding = try DesktopCloudBinding.read(root)
                                 let file: CloudFileContent = try await DesktopCloudAPI(endpoint: binding.endpoint).post("/v1/versions/read", body: CloudVersionReadRequest(id: version.id, path: path), as: CloudFileContent.self)
@@ -187,14 +219,14 @@ private struct DesktopCloudVersionsView: View {
                     }
                 }
             }
-            if !loaded || cursor != nil { Button("加载更多版本") { Task { await load() } }.disabled(busy) }
-            if !issue.isEmpty { Text(issue).font(.caption) }
+            if !loaded || cursor != nil { StudyButton("加载更多版本") { Task { await load() } }.disabled(busy) }
+            if !issue.isEmpty { Text(issue).studyTypography(.caption) }
         }
         .sheet(isPresented: Binding(get: { selectedText != nil }, set: { if !$0 { selectedText = nil } })) {
             VStack(alignment: .leading) {
-                Text("历史版本（只读）").font(.title2)
+                Text("历史版本（只读）").studyTypography(.title2)
                 ScrollView { Text(selectedText ?? "").textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                Button("关闭") { selectedText = nil }
+                StudyButton("关闭") { selectedText = nil }
             }.padding(24).frame(minWidth: 650, minHeight: 500)
         }
     }

@@ -33,23 +33,24 @@ public struct StudyRocketMobileRoot: View {
   public var body: some View {
     TabView(selection: $selectedTab) {
       MobileHomeView(session: session) { navigate($0) }
-        .tabItem { Label("首页", systemImage: "house") }
+        .tabItem { StudyLabel("首页", systemImage: "house") }
         .tag(0)
       MobileChatView(session: session)
-        .tabItem { Label("对话", systemImage: "bubble.left.and.bubble.right.fill") }
+        .tabItem { StudyLabel("对话", systemImage: "bubble.left.and.bubble.right.fill") }
         .tag(1)
       MobileTimetableView(session: session)
-        .tabItem { Label("课表", systemImage: "calendar.badge.clock") }
+        .tabItem { StudyLabel("课表", systemImage: "calendar") }
         .tag(2)
       MobilePlanView(session: session) { navigate($0) }
-        .tabItem { Label("计划", systemImage: "calendar.badge.clock") }
+        .tabItem { StudyLabel("计划", systemImage: "checklist") }
         .tag(3)
       MobileMoreView(session: session) { showFact = true }
-        .tabItem { Label("更多", systemImage: "ellipsis.circle") }
+        .tabItem { StudyLabel("更多", systemImage: "ellipsis.circle") }
         .tag(5)
     }
     .sheet(isPresented: $showFact) { MobileDailyView(session: session) }
     .tint(MobileTheme.brand)
+    .studyTypography()
     .onOpenURL { url in
       guard let destination = MobileWidgetDestination.parse(url) else { return }
       navigate(destination.tabIndex)
@@ -116,7 +117,7 @@ private struct MobileLegacyPendingReviewSheet: View {
       List {
         Section {
           Text("这些操作来自旧版手机缓存。请确认后再写入正式仓库；任务已变化的项目不会自动同步。")
-            .font(.footnote)
+            .studyTypography(.footnote)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -141,11 +142,11 @@ private struct MobileLegacyPendingReviewSheet: View {
                 .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
                   Text(item.title)
-                    .font(.subheadline.weight(.medium))
+                    .studyTypography(.subheadline, weight: .medium)
                     .foregroundStyle(.primary)
                     .fixedSize(horizontal: false, vertical: true)
                   Text(item.detail)
-                    .font(.caption)
+                    .studyTypography(.caption)
                     .foregroundStyle(item.canSync ? Color.secondary : Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
                 }
@@ -174,7 +175,7 @@ private struct MobileLegacyPendingReviewSheet: View {
             }
           }
           .disabled(selectedIDs.isEmpty || isApplying)
-          Button("全部丢弃", role: .destructive) {
+          StudyButton("全部丢弃", role: .destructive) {
             showDiscardConfirmation = true
           }
           .disabled(isApplying)
@@ -188,7 +189,7 @@ private struct MobileLegacyPendingReviewSheet: View {
       #endif
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
-          Button("暂不处理") {
+          StudyButton("暂不处理") {
             session.deferLegacyPendingReview()
             dismiss()
           }
@@ -198,11 +199,11 @@ private struct MobileLegacyPendingReviewSheet: View {
       .confirmationDialog(
         "丢弃全部旧版操作？", isPresented: $showDiscardConfirmation, titleVisibility: .visible
       ) {
-        Button("全部丢弃", role: .destructive) {
+        StudyButton("全部丢弃", role: .destructive) {
           session.discardLegacyPendingToggles()
           dismiss()
         }
-        Button("取消", role: .cancel) {}
+        StudyButton("取消", role: .cancel) {}
       } message: {
         Text("只会删除这些尚未写入正式仓库的旧版勾选操作，无法撤销。")
       }
@@ -219,7 +220,7 @@ private struct MobileStatusBanner: View {
       MobileConnectionPill(state: session.state)
       if session.chatUnavailableMessage != nil {
         Text("对话未就绪")
-          .font(.caption2.weight(.medium))
+          .studyTypography(.caption2, weight: .medium)
           .foregroundStyle(.orange)
       }
     }
@@ -237,7 +238,7 @@ private struct MobileSnapshotFreshness: View {
           .foregroundStyle(.orange)
           .accessibilityHidden(true)
         Text(statusText(for: snapshot.fetchedAt))
-          .font(.footnote)
+          .studyTypography(.footnote)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
         Spacer(minLength: 8)
@@ -245,8 +246,8 @@ private struct MobileSnapshotFreshness: View {
           Task { await session.refresh() }
         } label: {
           Image(systemName: "arrow.clockwise")
-            .font(.body.weight(.semibold))
-            .frame(width: 36, height: 36)
+            .studyTypography(.body, weight: .semibold)
+            .frame(width: 44, height: 44)
         }
         .buttonStyle(.borderless)
         .disabled(session.state == .connecting)
@@ -291,10 +292,10 @@ private struct HomeScheduleSection<Content: View>: View {
             expanded.toggle()
           } label: {
             HStack {
-              Label("今日安排", systemImage: "point.3.connected.trianglepath.dotted").font(.headline)
+              StudyLabel("今日安排", systemImage: "point.3.connected.trianglepath.dotted").studyTypography(.headline)
               Spacer()
-              Text("暂无安排").font(.subheadline)
-              Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption)
+              Text("暂无安排").studyTypography(.subheadline)
+              Image(systemName: expanded ? "chevron.down" : "chevron.right").studyTypography(.caption)
             }
             .frame(minHeight: 44).contentShape(Rectangle())
           }
@@ -321,6 +322,7 @@ private struct MobileHomeView: View {
   @State private var deliveryConfirmation: DeliverySnapshot?
   @State private var confirmedChildIDs: [String] = []
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
     NavigationStack {
@@ -338,9 +340,9 @@ private struct MobileHomeView: View {
     }
     .confirmationDialog("将一并完成这些子任务", isPresented: Binding(get: { deliveryConfirmation != nil }, set: { if !$0 { deliveryConfirmation = nil } }), titleVisibility: .visible) {
       if let delivery = deliveryConfirmation {
-        Button("确认全部完成") { deliveryConfirmation = nil; submitDeliveryToggle(delivery, confirmedTaskIDs: confirmedChildIDs) }
+        StudyButton("确认全部完成") { deliveryConfirmation = nil; submitDeliveryToggle(delivery, confirmedTaskIDs: confirmedChildIDs) }
       }
-      Button("取消", role: .cancel) { deliveryConfirmation = nil }
+      StudyButton("取消", role: .cancel) { deliveryConfirmation = nil }
     } message: {
       Text(deliveryConfirmation.map { session.snapshot?.week.linkage?.pendingChildren(of: $0.id).map(\.text).joined(separator: "\n") ?? "" } ?? "")
     }
@@ -356,21 +358,18 @@ private struct MobileHomeView: View {
 
   private var unconfiguredContent: some View {
     GeometryReader { proxy in
-      VStack(alignment: .leading, spacing: 18) {
-        homeHeader
-        quickActions
-
-        Spacer(minLength: 0)
-
-        MobileUnframedConnectionPrompt {
-          onNavigate(5)
+      ScrollView {
+        VStack(alignment: .leading, spacing: 18) {
+          homeHeader
+          quickActions
+          Spacer(minLength: 24)
+          MobileUnframedConnectionPrompt { onNavigate(5) }
+            .frame(maxWidth: .infinity)
+          Spacer(minLength: 24)
         }
-        .frame(maxWidth: .infinity)
-
-        Spacer(minLength: 0)
+        .frame(minHeight: max(0, proxy.size.height - 2 * MobileTheme.pageInset), alignment: .top)
+        .padding(MobileTheme.pageInset)
       }
-      .padding(MobileTheme.pageInset)
-      .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
     }
   }
 
@@ -401,20 +400,20 @@ private struct MobileHomeView: View {
                 switch focus {
                 case .task(let task, _, _):
                   Text(task)
-                    .font(.system(.title3, design: .rounded, weight: .semibold))
+                    .studyTypography(.title3, weight: .semibold)
                     .fixedSize(horizontal: false, vertical: true)
                   Button {
                     onNavigate(1)
                   } label: {
-                    Label("和学业助理确认下一步", systemImage: "arrow.right")
-                      .font(.subheadline.weight(.medium))
+                    StudyLabel("和学业助理确认下一步", systemImage: "arrow.right")
+                      .studyTypography(.subheadline, weight: .medium)
                       .frame(minHeight: 44)
                       .contentShape(Rectangle())
                   }
                   .buttonStyle(.borderless)
                 case .completed:
-                  Label("今日安排已完成", systemImage: "checkmark.seal.fill")
-                    .font(.title3.weight(.semibold))
+                  StudyLabel("今日安排已完成", systemImage: "checkmark.seal.fill")
+                    .studyTypography(.title3, weight: .semibold)
                     .foregroundStyle(MobileTheme.completion)
                     .frame(minHeight: 44, alignment: .leading)
                 case .unplanned:
@@ -468,15 +467,15 @@ private struct MobileHomeView: View {
               }
               let unassigned = PeriodTaskParser.tasks(from: today.unassigned)
               if !unassigned.isEmpty {
-                Text("待分时").font(.subheadline.weight(.semibold))
+                Text("待分时").studyTypography(.subheadline, weight: .semibold)
                 ForEach(unassigned) { task in
-                  Label(task.text, systemImage: "tray").font(.subheadline)
+                  StudyLabel(task.text, systemImage: "tray").studyTypography(.subheadline)
                 }
-                Button("去周计划安排", action: { onNavigate(3) })
+                StudyButton("去周计划安排", action: { onNavigate(3) })
               }
               if !emptyDay && visiblePeriods.isEmpty && unassigned.isEmpty {
-                Label("今天有待同步的安排", systemImage: "arrow.triangle.2.circlepath")
-                  .font(.subheadline).foregroundStyle(.secondary)
+                StudyLabel("今天有待同步的安排", systemImage: "arrow.triangle.2.circlepath")
+                  .studyTypography(.subheadline).foregroundStyle(.secondary)
               }
               if let issue = session.lastConnectionIssue, session.state != .online {
                 MobileInlineNotice(
@@ -535,8 +534,8 @@ private struct MobileHomeView: View {
                   tint: .orange
                 )
                 HStack {
-                  Button("刷新") { Task { await session.refresh() } }
-                  Button("检查连接设置") { onNavigate(5) }
+                  StudyButton("刷新") { Task { await session.refresh() } }
+                  StudyButton("检查连接设置") { onNavigate(5) }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
@@ -559,8 +558,8 @@ private struct MobileHomeView: View {
       MobileBrandMark(size: 46)
       VStack(alignment: .leading, spacing: 3) {
         Text("NCU StudyRocket")
-          .font(.system(.title2, design: .rounded, weight: .bold))
-          .lineLimit(2)
+          .studyTypography(.title2, weight: .bold)
+          .fixedSize(horizontal: false, vertical: true)
         ViewThatFits(in: .horizontal) {
           HStack(alignment: .center, spacing: 8) {
             homeDateLabel
@@ -578,17 +577,18 @@ private struct MobileHomeView: View {
 
   private var homeDateLabel: some View {
     Text(session.snapshot?.home.dateLabel ?? "你的学习工作台")
-      .font(.subheadline)
+      .studyTypography(.subheadline)
       .foregroundStyle(.secondary)
-      .lineLimit(1)
+      .fixedSize(horizontal: false, vertical: true)
   }
 
   private var quickActions: some View {
-    HStack(spacing: 8) {
-      MobileQuickAction(
-        title: "学业对话", symbol: "bubble.left.and.bubble.right", action: { onNavigate(1) })
-      MobileQuickAction(title: "周计划", symbol: "calendar", action: { onNavigate(3) })
-      MobileQuickAction(title: "记一件事", symbol: "square.and.pencil", action: { onNavigate(4) })
+    let accessible = dynamicTypeSize.isAccessibilitySize
+    let layout = accessible ? AnyLayout(VStackLayout(spacing: 10)) : AnyLayout(HStackLayout(spacing: 8))
+    return layout {
+      MobileQuickAction(title: "学业对话", symbol: "bubble.left.and.bubble.right", isWide: accessible, action: { onNavigate(1) })
+      MobileQuickAction(title: "周计划", symbol: "calendar", isWide: accessible, action: { onNavigate(3) })
+      MobileQuickAction(title: "记一件事", symbol: "square.and.pencil", isWide: accessible, action: { onNavigate(4) })
     }
   }
 
@@ -912,10 +912,10 @@ private struct MobileTimetableCard: View {
               .padding(.bottom, entries.isEmpty ? 8 : 10)
           }
           if entries.isEmpty {
-            Label(
+            StudyLabel(
               "今日无课程安排", systemImage: holidays.isEmpty ? "calendar" : "calendar.badge.checkmark"
             )
-            .font(.body)
+            .studyTypography(.body)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
           } else {
@@ -957,6 +957,7 @@ private struct MobileTimetableCard: View {
 }
 
 private struct MobileTimetableRow: View {
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   let entry: TimetableEntrySnapshot
 
   private var confirmedLocation: String? {
@@ -981,49 +982,51 @@ private struct MobileTimetableRow: View {
     let title = StudyRocketTimetableCourseCatalog.displayTitle(for: entry.title)
     HStack(alignment: .top, spacing: 10) {
       Image(systemName: entry.symbol)
-        .font(.body.weight(.medium))
+        .studyTypography(.body, weight: .medium)
         .foregroundStyle(entry.kind == .course ? MobileTheme.brand : .secondary)
         .frame(width: 22, height: 22)
         .padding(.top, 1)
         .accessibilityHidden(true)
 
       VStack(alignment: .leading, spacing: 4) {
-        HStack(alignment: .firstTextBaseline, spacing: 9) {
+        (dynamicTypeSize.isAccessibilitySize
+          ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+          : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 9))) {
           Text(entry.timeText)
-            .font(.caption.weight(.semibold))
+            .studyTypography(.footnote, weight: .semibold)
             .foregroundStyle(.secondary)
           if let periodLabel = entry.periodLabel, !periodLabel.isEmpty {
             Text(entry.periodText(periodLabel))
-              .font(.caption)
-              .foregroundStyle(.tertiary)
+              .studyTypography(.footnote)
+              .foregroundStyle(.secondary)
           }
         }
         Text(title.primary)
-          .font(.body.weight(entry.kind == .course ? .medium : .regular))
+          .studyTypography(.body, weight: entry.kind == .course ? .medium : .regular)
           .foregroundStyle(entry.kind == .course ? .primary : .secondary)
           .fixedSize(horizontal: false, vertical: true)
         if let secondary = title.secondary {
           Text(secondary)
-            .font(.subheadline)
+            .studyTypography(.subheadline)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
         if let location = locationText {
-          Label(location, systemImage: "mappin.and.ellipse")
-            .font(.caption)
-            .foregroundStyle(confirmedLocation == nil ? .tertiary : .secondary)
+          StudyLabel(location, systemImage: "mappin.and.ellipse")
+            .studyTypography(.footnote)
+            .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
         if let instructor = instructorText {
-          Label(instructor, systemImage: "person")
-            .font(.caption)
-            .foregroundStyle(confirmedInstructor == nil ? .tertiary : .secondary)
+          StudyLabel(instructor, systemImage: "person")
+            .studyTypography(.footnote)
+            .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
         if let note = entry.note, !note.isEmpty {
           Text(note)
-            .font(.caption)
-            .foregroundStyle(.tertiary)
+            .studyTypography(.footnote)
+            .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -1102,6 +1105,8 @@ private enum MobileTimetableWeekNavigationDirection {
 }
 
 private struct MobileTimetableView: View {
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  @State private var showingAccessibleDatePicker = false
   @ObservedObject var session: MobileSession
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var detail: DocumentDetail?
@@ -1126,12 +1131,21 @@ private struct MobileTimetableView: View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: 18) {
-          DatePicker("查看日期", selection: $viewingDate, displayedComponents: .date)
-            .environment(\.timeZone, PlanningDate.calendar.timeZone)
-            .onChange(of: viewingDate) { _, date in
-              availableWeekRange = nil
-              selectedDayID = PlanningDate.key(date); agendaDayID = selectedDayID
+          MobileSurface {
+            ViewThatFits(in: .horizontal) {
+              HStack(spacing: 12) {
+                StudyLabel("查看日期", systemImage: "calendar")
+                  .studyTypography(.subheadline, weight: .medium)
+                Spacer(minLength: 8)
+                viewingDatePicker
+              }
+              VStack(alignment: .leading, spacing: 10) {
+                StudyLabel("查看日期", systemImage: "calendar")
+                  .studyTypography(.subheadline, weight: .medium)
+                viewingDatePicker
+              }
             }
+          }
           if let detail, let range = availableWeekRange, let snapshot = displayedSnapshot {
             timetableContent(detail: detail, range: range, snapshot: snapshot)
           } else if let detail {
@@ -1150,6 +1164,29 @@ private struct MobileTimetableView: View {
         .padding(MobileTheme.pageInset)
       }
       .background(MobileTheme.groupedBackground)
+      .sheet(isPresented: $showingAccessibleDatePicker) {
+        NavigationStack {
+          DatePicker("查看日期", selection: $viewingDate, displayedComponents: .date)
+            #if os(iOS)
+              .datePickerStyle(.wheel)
+            #else
+              .datePickerStyle(.graphical)
+            #endif
+            .labelsHidden()
+            .environment(\.locale, Locale(identifier: "zh_CN"))
+            .environment(\.calendar, PlanningDate.calendar)
+            .environment(\.timeZone, PlanningDate.calendar.timeZone)
+            .accessibilityLabel("查看日期")
+            .padding()
+            .navigationTitle("查看日期")
+            .toolbar {
+              ToolbarItem(placement: .confirmationAction) {
+                StudyButton("完成") { showingAccessibleDatePicker = false }
+              }
+            }
+        }
+        .presentationDetents([.medium, .large])
+      }
       .sheet(isPresented: $showEventEditor) {
         if let detail {
           OneOffEventEditor(source: detail.markdown) { events in
@@ -1166,7 +1203,7 @@ private struct MobileTimetableView: View {
       #endif
       .toolbar {
         ToolbarItem(placement: .primaryAction) {
-          Button("单次活动", systemImage: "calendar.badge.plus") { showEventEditor = true }
+          StudyButton("单次活动", systemImage: "calendar.badge.plus") { showEventEditor = true }
             .disabled(detail == nil || session.state != .online)
         }
         ToolbarItem(placement: .primaryAction) {
@@ -1190,6 +1227,41 @@ private struct MobileTimetableView: View {
     .onChange(of: session.documentDetails["timetable"]?.revision) { _, _ in
       guard let value = session.documentDetails["timetable"] else { return }
       accept(value, selectCurrentWeek: detail?.revision != value.revision)
+    }
+  }
+
+  private var viewingDatePicker: some View {
+    Group {
+      if dynamicTypeSize.isAccessibilitySize {
+        Button {
+          showingAccessibleDatePicker = true
+        } label: {
+          Text(viewingDate.formatted(Date.FormatStyle(date: .long, time: .omitted,
+                locale: Locale(identifier: "zh_CN"), calendar: PlanningDate.calendar,
+                timeZone: PlanningDate.calendar.timeZone)))
+            .studyTypography(.body)
+            .fixedSize(horizontal: false, vertical: true)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        }
+        .buttonStyle(.bordered)
+        .accessibilityLabel("查看日期")
+        .accessibilityValue(viewingDate.formatted(.dateTime.year().month().day()))
+      } else {
+        DatePicker("查看日期", selection: $viewingDate, displayedComponents: .date)
+          .datePickerStyle(.compact)
+          .labelsHidden()
+          .tint(MobileTheme.brand)
+          .environment(\.locale, Locale(identifier: "zh_CN"))
+          .environment(\.calendar, PlanningDate.calendar)
+          .environment(\.timeZone, PlanningDate.calendar.timeZone)
+          .accessibilityLabel("查看日期")
+      }
+    }
+    .onChange(of: viewingDate) { _, date in
+      availableWeekRange = nil
+      selectedDayID = PlanningDate.key(date)
+      agendaDayID = selectedDayID
     }
   }
 
@@ -1408,6 +1480,7 @@ private struct MobileTimetableView: View {
 }
 
 private struct MobileTimetableWeekNavigator: View {
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   let label: String
   let range: ClosedRange<Int>
   let selectedWeek: Int
@@ -1415,70 +1488,61 @@ private struct MobileTimetableWeekNavigator: View {
   let onSelect: (Int) -> Void
 
   var body: some View {
-    VStack(spacing: 4) {
-      ZStack {
-        Menu {
-          ForEach(Array(range), id: \.self) { week in
-            Button {
-              onSelect(week)
-            } label: {
-              if week == selectedWeek {
-                Label("第\(week)周", systemImage: "checkmark")
-              } else {
-                Text("第\(week)周")
-              }
-            }
-          }
-        } label: {
-          HStack(spacing: 5) {
-            Text(label)
-              .font(.headline)
-              .lineLimit(1)
-            Image(systemName: "chevron.up.chevron.down")
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(.secondary)
-              .accessibilityHidden(true)
-          }
-          .frame(maxWidth: .infinity, minHeight: 44)
-          .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 52)
-        .accessibilityLabel("教学周")
-        .accessibilityValue(label)
-        .accessibilityHint("选择要查看的教学周")
-
-        HStack(spacing: 0) {
-          navigationButton(symbol: "chevron.left", label: "上一教学周") {
-            onSelect(selectedWeek - 1)
-          }
-          .disabled(selectedWeek <= range.lowerBound)
-
-          Spacer(minLength: 0)
-
-          navigationButton(symbol: "chevron.right", label: "下一教学周") {
-            onSelect(selectedWeek + 1)
-          }
-          .disabled(selectedWeek >= range.upperBound)
+    VStack(spacing: 8) {
+      if dynamicTypeSize.isAccessibilitySize {
+        weekPicker
+        navigationControls
+      } else {
+        HStack(spacing: 8) {
+          previousButton
+          weekPicker
+          nextButton
         }
       }
-      .frame(maxWidth: .infinity, minHeight: 44)
-
       Text(dateRange)
-        .font(.caption)
+        .studyTypography(.footnote)
         .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, alignment: .center)
+        .multilineTextAlignment(.center)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity)
     }
   }
 
-  private func navigationButton(symbol: String, label: String, action: @escaping () -> Void)
-    -> some View
-  {
+  private var weekPicker: some View {
+    Menu {
+      Picker("教学周", selection: Binding(get: { selectedWeek }, set: { onSelect($0) })) {
+        ForEach(Array(range), id: \.self) { week in Text("第\(week)周").tag(week) }
+      }
+    } label: {
+      HStack(spacing: 5) {
+        Text(label).studyTypography(.headline).fixedSize(horizontal: false, vertical: true)
+        Image(systemName: "chevron.up.chevron.down")
+          .studyTypography(.caption, weight: .semibold).foregroundStyle(.secondary).accessibilityHidden(true)
+      }
+      .frame(maxWidth: .infinity, minHeight: 44)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("教学周")
+    .accessibilityValue(label)
+    .accessibilityHint("选择要查看的教学周")
+  }
+
+  private var navigationControls: some View {
+    HStack { previousButton; Spacer(); nextButton }
+  }
+  private var previousButton: some View {
+    navigationButton(symbol: "chevron.left", label: "上一教学周") { onSelect(selectedWeek - 1) }
+      .disabled(selectedWeek <= range.lowerBound)
+  }
+  private var nextButton: some View {
+    navigationButton(symbol: "chevron.right", label: "下一教学周") { onSelect(selectedWeek + 1) }
+      .disabled(selectedWeek >= range.upperBound)
+  }
+  private func navigationButton(symbol: String, label: String, action: @escaping () -> Void) -> some View {
     Button(action: action) {
-      Image(systemName: symbol)
-        .font(.body.weight(.semibold))
-        .frame(width: 44, height: 44)
-        .contentShape(Circle())
+      Image(systemName: symbol).studyTypography(.body, weight: .semibold)
+        .frame(minWidth: 44, minHeight: 44).contentShape(Circle())
     }
     .buttonStyle(.plain)
     .foregroundStyle(MobileTheme.brand)
@@ -1520,16 +1584,16 @@ private struct MobileTimetableDateStrip: View {
     } label: {
       VStack(spacing: 3) {
         Text(day.weekdayLabel)
-          .font(.caption2.weight(.semibold))
+          .studyTypography(.caption2, weight: .semibold)
           .lineLimit(1)
         Text(dayNumber(for: day))
-          .font(.system(.title3, design: .rounded, weight: .bold))
+          .studyTypography(.title3, weight: .bold)
           .lineLimit(1)
       }
-      .frame(
-        width: dynamicTypeSize.isAccessibilitySize ? 70 : 52,
-        height: dynamicTypeSize.isAccessibilitySize ? 76 : 58
-      )
+      .fixedSize(horizontal: true, vertical: true)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 8)
+      .frame(minWidth: dynamicTypeSize.isAccessibilitySize ? 70 : 52, minHeight: 58)
       .foregroundStyle(isSelected ? Color.white : (isToday ? MobileTheme.brand : Color.primary))
       .background(
         isSelected ? MobileTheme.brand : Color.secondary.opacity(0.08),
@@ -1646,11 +1710,11 @@ private struct MobileTimetableDayAgendaView: View {
       }
 
       if entries.isEmpty {
-        Label(
+        StudyLabel(
           holidays.isEmpty ? "当天无课程安排" : "当天为假期",
           systemImage: holidays.isEmpty ? "calendar" : "calendar.badge.checkmark"
         )
-        .font(.subheadline)
+        .studyTypography(.subheadline)
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
       } else {
@@ -1674,12 +1738,12 @@ private struct MobileUnframedConnectionPrompt: View {
         .symbolRenderingMode(.hierarchical)
         .accessibilityHidden(true)
       Text("连接 学业服务")
-        .font(.system(.title2, design: .rounded, weight: .bold))
+        .studyTypography(.title2, weight: .bold)
       Text("首次使用填写学业服务 HTTPS 地址，并输入管理员提供的一次性配对码。")
-        .font(.body)
+        .studyTypography(.body)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
-      Button("开始连接", action: startConnection)
+      StudyButton("开始连接", action: startConnection)
         .buttonStyle(.borderedProminent)
     }
     .multilineTextAlignment(.center)
@@ -1690,20 +1754,24 @@ private struct MobileUnframedConnectionPrompt: View {
 private struct MobileQuickAction: View {
   let title: String
   let symbol: String
+  var isWide = false
   let action: () -> Void
 
   var body: some View {
-    Button(action: action) {
-      VStack(spacing: 6) {
+    let layout = isWide ? AnyLayout(HStackLayout(spacing: 10)) : AnyLayout(VStackLayout(spacing: 6))
+    return Button(action: action) {
+      layout {
         Image(systemName: symbol)
-          .font(.headline)
+          .studyTypography(.headline)
         Text(title)
-          .font(.caption.weight(.medium))
-          .lineLimit(2)
+          .studyTypography(isWide ? .body : .subheadline, weight: .medium)
+          .fixedSize(horizontal: false, vertical: true)
           .multilineTextAlignment(.center)
       }
       .foregroundStyle(MobileTheme.brand)
-      .frame(maxWidth: .infinity, minHeight: 60)
+      .frame(maxWidth: .infinity, minHeight: 44, alignment: isWide ? .leading : .center)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 10)
       .background(
         MobileTheme.brand.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
@@ -1718,39 +1786,37 @@ private struct MobileChatView: View {
   @State private var readingOlder = false
   @State private var replacement: String?
   @State private var showJumpToLatest = false
+  @State private var latestScrollRequest = 0
+  #if os(iOS)
+    @State private var scrollPosition = ScrollPosition(edge: .bottom)
+  #endif
+  @State private var scrollIntent = MobileChatScrollIntent()
   @FocusState private var isComposerFocused: Bool
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     NavigationStack {
       VStack(spacing: 0) {
-        HStack {
+        if session.state != .online {
           MobileStatusBanner(session: session)
-          Spacer()
-          Menu {
-            Button("本周总结") { proposeDraft("本周总结：请基于我实际保存的记录和交付物，帮我总结本周。") }
-            Button("排下周") { proposeDraft("排下周：请先询问我可投入的时间、固定安排和本周遗留交付物。") }
-          } label: {
-            Image(systemName: "bolt.circle")
-              .frame(width: 44, height: 44)
-              .contentShape(Rectangle())
-          }
-          .accessibilityLabel("快捷报告")
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, MobileTheme.pageInset)
+            .padding(.vertical, 4)
         }
-        .padding(.horizontal, MobileTheme.pageInset)
-        .padding(.vertical, 8)
         if let message = session.conversationRefreshError ?? session.chatUnavailableMessage ?? session.lastChatIssue {
-          HStack(spacing: 10) {
+          VStack(alignment: .leading, spacing: 8) {
             MobileInlineNotice(
               text: message, symbol: "bubble.left.and.exclamationmark", tint: .orange)
+            HStack(spacing: 10) {
             if session.conversationRefreshError != nil || session.chatUnavailableMessage != nil {
-              Button(session.conversationRefreshError != nil ? "重试" : "重新检查") { Task { await session.refreshConversation() } }
+              StudyButton(session.conversationRefreshError != nil ? "重试" : "重新检查") { Task { await refreshLatest() } }
                 .disabled(session.refreshingConversation)
             }
             if let failed = session.lastFailedChatText {
-              Button("恢复到输入框") { proposeDraft(failed) }
+              StudyButton("恢复到输入框") { proposeDraft(failed) }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+            }
             }
           }
           .padding(.horizontal, MobileTheme.pageInset)
@@ -1773,6 +1839,7 @@ private struct MobileChatView: View {
                     ForEach(MobileChatTurn.group(session.chatMessages)) { turn in
                       MobileChatTurnView(
                         turn: turn,
+                        contentWidth: max(1, container.size.width - 2 * MobileTheme.pageInset),
                         proposals: session.canViewProposals
                           ? session.proposals.filter { $0.turnID == turn.id } : [],
                         session: session
@@ -1803,15 +1870,22 @@ private struct MobileChatView: View {
                       )
                     #endif
                 }
+                .frame(width: max(1, container.size.width - 2 * MobileTheme.pageInset), alignment: .leading)
                 .padding(.horizontal, MobileTheme.pageInset)
-                .padding(.vertical, 18)
+                .padding(.vertical, 14)
               }
               .background(MobileTheme.groupedBackground)
-              .refreshable { await session.refreshConversation() }
+              .refreshable { await refreshLatest() }
               #if os(iOS)
                 .scrollDismissesKeyboard(.interactively)
+                .scrollPosition($scrollPosition)
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
-                .onScrollPhaseChange { _, phase in
+                .defaultScrollAnchor(userScrolling || readingOlder ? nil : .bottom, for: .sizeChanges)
+                .onScrollPhaseChange { previous, phase in
+                  // Only a real drag establishes a new user navigation intent.
+                  // Deceleration and programmatic edge positioning must not
+                  // invalidate the refresh that requested that positioning.
+                  if phase == .interacting && previous != .interacting { scrollIntent.noteNavigation() }
                   userScrolling = phase == .interacting || phase == .decelerating || phase == .tracking
                 }
                 .onScrollGeometryChange(for: CGFloat.self) { geometry in
@@ -1819,33 +1893,40 @@ private struct MobileChatView: View {
                 } action: { _, distance in
                   guard userScrolling || readingOlder else { return }
                   readingOlder = distance > (readingOlder ? 48 : 120)
-                  if !readingOlder { showJumpToLatest = false }
+                  showJumpToLatest = readingOlder
                 }
               #else
                 .coordinateSpace(name: "mobile-chat-scroll")
                 .onPreferenceChange(MobileChatBottomPreference.self) { bottomY in
+                  let wasReadingOlder = readingOlder
                   readingOlder = bottomY > container.size.height + 72
+                  if readingOlder && !wasReadingOlder { scrollIntent.noteNavigation() }
                   if !readingOlder { showJumpToLatest = false }
                 }
               #endif
               .simultaneousGesture(TapGesture().onEnded { isComposerFocused = false })
-              .onChange(of: [session.chatMessages.last?.id ?? "", session.chatMessages.last?.text ?? "", String(session.chatMessages.count)]) { _, _ in
+              .onChange(of: session.chatRevision) { _, _ in
                 if readingOlder { showJumpToLatest = true }
-                else { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                #if !os(iOS)
+                  if !readingOlder { latestScrollRequest &+= 1 }
+                #endif
               }
-              .task {
-                proxy.scrollTo("chat-bottom", anchor: .bottom)
-                await session.refreshConversation()
-              }
+              #if !os(iOS)
+                .task(id: latestScrollRequest) {
+                  await Task.yield()
+                  guard !Task.isCancelled, !readingOlder else { return }
+                  proxy.scrollTo("chat-bottom", anchor: .bottom)
+                }
+              #endif
+              .task { await refreshLatest(explicit: false) }
               if showJumpToLatest {
                 Button {
                   withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
-                    proxy.scrollTo("chat-bottom", anchor: .bottom)
+                    requestLatest()
                   }
-                  showJumpToLatest = false
                 } label: {
                   Image(systemName: "arrow.down")
-                    .font(.headline.weight(.semibold))
+                    .studyTypography(.headline, weight: .semibold)
                     .frame(width: 44, height: 44)
                     .background(.regularMaterial, in: Circle())
                 }
@@ -1860,6 +1941,7 @@ private struct MobileChatView: View {
         HStack(alignment: .bottom, spacing: 10) {
           TextField("输入学业问题或今日事实", text: $session.inputDraft, axis: .vertical)
             .lineLimit(1...5)
+            .studyChatTypography()
             .focused($isComposerFocused)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
@@ -1872,6 +1954,7 @@ private struct MobileChatView: View {
               if session.isChatBusy {
                 await session.interruptChat()
               } else {
+                requestLatest()
                 await session.sendDraft()
               }
             }
@@ -1881,29 +1964,38 @@ private struct MobileChatView: View {
               .frame(width: 44, height: 44)
           }
           .disabled(
-            (!session.isChatAvailable && !session.isChatBusy)
+            session.retryingChat || (!session.isChatAvailable && !session.isChatBusy)
               || (!session.isChatBusy
                 && session.inputDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
           )
           .accessibilityLabel(session.isChatBusy ? "停止对话" : "发送")
         }
         .padding(.horizontal, MobileTheme.pageInset)
-        .padding(.vertical, 12)
-        .safeAreaPadding(.bottom, 4)
+        .padding(.vertical, 8)
         .background(.bar)
       }
       .navigationTitle("学业对话")
       .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Menu {
+            StudyLabel(session.state == .online ? "已连接学业服务" : "学业服务未连接", systemImage: session.state == .online ? "checkmark.circle" : "wifi.slash")
+            StudyButton("本周总结") { proposeDraft("本周总结：请基于我实际保存的记录和交付物，帮我总结本周。") }
+            StudyButton("排下周") { proposeDraft("排下周：请先询问我可投入的时间、固定安排和本周遗留交付物。") }
+          } label: {
+            Image(systemName: "bolt.circle")
+          }
+          .accessibilityLabel("对话快捷操作与连接状态")
+        }
         ToolbarItem(placement: .primaryAction) {
-          Button { Task { await session.refreshConversation() } } label: {
+          Button { Task { await refreshLatest() } } label: {
             if session.refreshingConversation { ProgressView().controlSize(.small) }
-            else { Label("刷新", systemImage: "arrow.clockwise") }
+            else { StudyLabel("刷新", systemImage: "arrow.clockwise") }
           }.accessibilityLabel("刷新").disabled(session.refreshingConversation)
         }
       }
       .alert("替换输入框中的草稿？", isPresented: Binding(get: { replacement != nil }, set: { if !$0 { replacement = nil } })) {
-        Button("替换") { if let replacement { session.inputDraft = replacement }; replacement = nil; isComposerFocused = true }
-        Button("保留当前草稿", role: .cancel) { replacement = nil }
+        StudyButton("替换") { if let replacement { session.inputDraft = replacement }; replacement = nil; isComposerFocused = true }
+        StudyButton("保留当前草稿", role: .cancel) { replacement = nil }
       }
       .onChange(of: session.repositoryGeneration) { _, _ in replacement = nil; readingOlder = false; showJumpToLatest = false }
       #if os(iOS)
@@ -1911,13 +2003,37 @@ private struct MobileChatView: View {
         .toolbar {
           ToolbarItemGroup(placement: .keyboard) {
             Spacer()
-            Button("完成") { isComposerFocused = false }
+            StudyButton("完成") { isComposerFocused = false }
           }
         }
       #endif
       .onDisappear { isComposerFocused = false }
     }
   }
+  private func requestLatest() {
+    scrollIntent.noteNavigation()
+    readingOlder = false
+    userScrolling = false
+    showJumpToLatest = false
+    #if os(iOS)
+      scrollPosition.scrollTo(edge: .bottom)
+    #else
+      latestScrollRequest &+= 1
+    #endif
+  }
+
+  private func refreshLatest(explicit: Bool = true) async {
+    // Explicit refresh means "show latest" immediately; the edge binding
+    // then follows the authoritative result unless the user starts a new drag.
+    if explicit { requestLatest() }
+    let startedAt = scrollIntent.version
+    await session.refreshConversation()
+    guard !Task.isCancelled,
+      scrollIntent.shouldNavigateAfterRefresh(startedAt: startedAt, explicit: explicit,
+        succeeded: session.conversationRefreshError == nil && session.isChatAvailable) else { return }
+    requestLatest()
+  }
+
   private func proposeDraft(_ value: String) {
     if !session.inputDraft.isEmpty && session.inputDraft != value { replacement = value }
     else { session.inputDraft = value; isComposerFocused = true }
@@ -1948,14 +2064,14 @@ private struct MobileProposalPanel: View {
             }
           }
         }
-        Button("Face ID 确认并应用") {
+        StudyButton("Face ID 确认并应用") {
           Task { await session.applyProposals(ids: Array(selectedIDs)) }
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.large)
         .disabled(selectedIDs.isEmpty || !session.canApplyProposals)
         Text("确认前不会写入正式仓库。")
-          .font(.caption)
+          .studyTypography(.caption)
           .foregroundStyle(.secondary)
       }
     }
@@ -1981,25 +2097,23 @@ private struct MobileProposalRow: View {
       .accessibilityLabel(
         isSelected ? "取消选择 \(proposal.relativePath)" : "选择 \(proposal.relativePath)")
       DisclosureGroup(proposal.relativePath) {
-        Text(proposal.reason).font(.footnote).foregroundStyle(.secondary)
-        Text(proposal.proposedContent)
-          .font(.caption.monospaced())
-          .textSelection(.enabled)
-          .frame(maxWidth: .infinity, alignment: .leading)
+        Text(proposal.reason).studyTypography(.footnote).foregroundStyle(.secondary)
+        StudyProposalDiffView(original: proposal.originalContent, proposed: proposal.proposedContent)
       }
     }
   }
 }
 
-private struct MobileChatMessage: View {
+private struct MobileChatMessage: View, Equatable {
   let message: ChatMessageDTO
+  let contentWidth: CGFloat
 
   var body: some View {
     if message.role == "user" {
       HStack {
         Spacer(minLength: 54)
         Text(message.text)
-          .font(.subheadline)
+          .studyChatTypography()
           .multilineTextAlignment(.leading)
           .fixedSize(horizontal: false, vertical: true)
           .textSelection(.enabled)
@@ -2010,10 +2124,21 @@ private struct MobileChatMessage: View {
       }
       .frame(maxWidth: .infinity, alignment: .trailing)
     } else {
-      HStack(alignment: .top, spacing: 10) {
-        MobileBrandMark(size: 26)
-          .padding(.top, 4)
-        MobileMarkdownView(text: message.text)
+      VStack(alignment: .leading, spacing: 8) {
+        MobileBrandMark(size: 22)
+        Group {
+          if message.status == "inProgress" {
+            // No Markdown parser or per-token animation while the server is
+            // appending. The final event immediately restores rich formatting.
+            Text(message.text)
+              .studyChatTypography()
+              .textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          } else {
+            MobileMarkdownView(text: message.text, availableWidth: contentWidth)
+          }
+        }
+        .transaction { $0.animation = nil }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -2032,10 +2157,10 @@ private struct MobileChatActivityIndicator: View {
           ProgressView()
             .controlSize(.small)
           Text(progress.title)
-            .font(.subheadline.weight(.medium))
+            .studyTypography(.subheadline, weight: .medium)
         }
         Text(progress.detail)
-          .font(.footnote)
+          .studyTypography(.footnote)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -2057,6 +2182,7 @@ private struct MobileChatActivityIndicator: View {
 /// every character into its own line or overlaps the next message.
 private struct MobileMarkdownView: View {
   let text: String
+  let availableWidth: CGFloat
   @ScaledMetric(relativeTo: .body) private var minimumTableColumnWidth: CGFloat = 144
 
   private var blocks: [StudyRocketMarkdownBlock] {
@@ -2071,29 +2197,80 @@ private struct MobileMarkdownView: View {
         case .prose(let value):
           markdown(value)
         case .table(let value, let columns):
-          VStack(alignment: .leading, spacing: 6) {
-            Text("左右滑动查看完整表格")
-              .font(.caption2)
-              .foregroundStyle(.secondary)
-              .accessibilityHint("横向滚动可查看表格的全部列")
-            ScrollView(.horizontal, showsIndicators: true) {
-              markdown(value)
-                .frame(minWidth: CGFloat(columns) * minimumTableColumnWidth, alignment: .leading)
+          let sizing = MobileTableSizing(columns: columns, availableWidth: availableWidth,
+                                         preferredColumnWidth: minimumTableColumnWidth)
+          if sizing.scrollsHorizontally {
+            VStack(alignment: .leading, spacing: 6) {
+              Text("左右滑动查看完整表格")
+                .studyTypography(.caption)
+                .foregroundStyle(.secondary)
+              ScrollView(.horizontal, showsIndicators: true) {
+                markdown(value, tableCellWidth: sizing.cellWidth)
+                  .frame(width: sizing.width, alignment: .leading)
+              }
+              .scrollIndicators(.visible)
             }
-            .scrollIndicators(.visible)
+          } else {
+            markdown(value, tableCellWidth: sizing.cellWidth)
+              .frame(maxWidth: .infinity, alignment: .leading)
           }
         }
       }
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  private func markdown(_ value: String) -> some View {
+  private func markdownHeading(_ configuration: BlockConfiguration, size: CGFloat) -> some View {
+    let source = configuration.content.renderMarkdown()
+    return Group {
+      if MobileMarkdownLeaf.requiresImageRenderer(source) {
+        configuration.label
+      } else {
+        MobileMarkdownLeaf(source: source, size: size, heading: true)
+      }
+    }
+    .accessibilityAddTraits(.isHeader)
+    .markdownMargin(top: .em(1), bottom: .em(0.5))
+  }
+
+  private func markdown(_ value: String, tableCellWidth: CGFloat? = nil) -> some View {
     Markdown(value)
       .markdownTheme(.basic)
+      .markdownBlockStyle(\.paragraph) { configuration in
+        let source = configuration.content.renderMarkdown()
+        Group {
+          if MobileMarkdownLeaf.requiresImageRenderer(source) {
+            configuration.label
+          } else {
+            MobileMarkdownLeaf(source: source)
+          }
+        }
+        .markdownMargin(top: .zero, bottom: .em(1))
+      }
+      .markdownBlockStyle(\.heading1) { markdownHeading($0, size: 24) }
+      .markdownBlockStyle(\.heading2) { markdownHeading($0, size: 21) }
+      .markdownBlockStyle(\.heading3) { markdownHeading($0, size: 19) }
+      .markdownBlockStyle(\.heading4) { markdownHeading($0, size: 17) }
+      .markdownBlockStyle(\.heading5) { markdownHeading($0, size: 17) }
+      .markdownBlockStyle(\.heading6) { markdownHeading($0, size: 17) }
+      .markdownBlockStyle(\.tableCell) { configuration in
+        let source = configuration.content.renderMarkdown()
+        Group {
+          if MobileMarkdownLeaf.requiresImageRenderer(source) {
+            configuration.label
+          } else {
+            MobileMarkdownLeaf(source: source, bold: configuration.row == 0)
+          }
+        }
+        .frame(width: tableCellWidth, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, 8).padding(.vertical, 6)
+      }
       .markdownTextStyle {
-        FontSize(15)
+        FontSize(17)
         ForegroundColor(.primary)
       }
+      .studyChatTypography()
       .textSelection(.enabled)
       .frame(maxWidth: .infinity, alignment: .leading)
   }
@@ -2109,7 +2286,12 @@ private struct MobileChatTurn: Identifiable {
     var ordered: [String] = []
     var buckets: [String: [ChatMessageDTO]] = [:]
     for message in messages {
-      let key = message.turnID ?? message.id
+      // Cloud turn IDs are the persisted client operation IDs. Keep the
+      // optimistic user row in that same group when history acknowledges it.
+      let pendingPrefix = "mobile-pending-"
+      let localID = message.id.hasPrefix(pendingPrefix)
+        ? String(message.id.dropFirst(pendingPrefix.count)) : message.id
+      let key = message.turnID ?? localID
       if buckets[key] == nil { ordered.append(key) }
       buckets[key, default: []].append(message)
     }
@@ -2133,14 +2315,28 @@ private struct MobileChatTurn: Identifiable {
 
 private struct MobileChatTurnView: View {
   let turn: MobileChatTurn
+  let contentWidth: CGFloat
   let proposals: [ProposalDTO]
   @ObservedObject var session: MobileSession
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      if let user = turn.user { MobileChatMessage(message: user) }
+      if let user = turn.user {
+        VStack(alignment: .trailing, spacing: 8) {
+          MobileChatMessage(message: user, contentWidth: contentWidth).equatable()
+          if session.isFailedChatMessage(user) {
+            StudyButton(session.retryingChat ? "正在核对远端状态…" : "重试这条消息") {
+              Task { await session.retryFailedChat() }
+            }
+            .buttonStyle(.bordered)
+            .disabled(session.retryingChat)
+            .accessibilityHint("先核对原消息结果，确认失败后才重新发送")
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+      }
       ForEach(turn.finalAnswers) { answer in
-        MobileChatMessage(message: answer)
+        MobileChatMessage(message: answer, contentWidth: contentWidth).equatable()
       }
       if !turn.process.isEmpty {
         MobileProcessDisclosure(messages: turn.process)
@@ -2163,11 +2359,11 @@ private struct MobileProcessDisclosure: View {
       Button {
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) { isExpanded.toggle() }
       } label: {
-        Label(
+        StudyLabel(
           isExpanded ? "收起过程（\(messages.count)）" : "查看过程（\(messages.count)）",
           systemImage: isExpanded ? "chevron.down" : "chevron.right"
         )
-        .font(.footnote)
+        .studyTypography(.footnote)
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .contentShape(Rectangle())
@@ -2177,7 +2373,7 @@ private struct MobileProcessDisclosure: View {
       if isExpanded {
         ForEach(messages) { message in
           Text(message.text)
-            .font(.footnote)
+            .studyChatTypography(size: 15)
             .foregroundStyle(.secondary)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2191,6 +2387,7 @@ private struct MobileProcessDisclosure: View {
 }
 
 private struct MobilePlanView: View {
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   @ObservedObject var session: MobileSession
   let onNavigate: (Int) -> Void
   @State private var completedDeliveriesExpanded = false
@@ -2201,18 +2398,44 @@ private struct MobilePlanView: View {
   @State private var linkageTimetable = ""
   @State private var linkagePlan: WeeklyPlanSnapshot?
   @State private var linkageRevision: String?
+  @State private var showOrganizationDraftChoice = false
+  private let organizationPrompt = "请读取当前周计划、课表和我的偏好，帮我整理独立任务、交付物及其关联。同一时段的独立事项分别保留；条件缓冲和截止提醒关联原任务，活动进入课表。保留已有任务身份、完成状态与历史，不按相似文字自动完成或合并任务。任务联动尚未启用时请生成可预览的启用草案；已启用时整理现有关联。先说明具体变化，不确定的关联向我确认，然后通过正式草案入口提交，由我确认后保存。"
+
+  private func prepareOrganizationDraft() {
+    session.inputDraft = organizationPrompt
+    onNavigate(1)
+  }
 
   var body: some View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: 18) {
           planHeader
-          Button(session.snapshot?.week.linkage == nil ? "启用任务联动" : "任务关联、改期与已完成") {
-            Task {
-              linkageTimetable = await session.document(for: "timetable")?.markdown ?? ""
-              linkagePlan = session.snapshot?.week; linkageRevision = session.snapshot?.revision
-              showLinkageEditor = true
+          HStack {
+            StudyButton("让 AI 整理", systemImage: "sparkles") {
+              if session.inputDraft.isEmpty || session.inputDraft == organizationPrompt {
+                prepareOrganizationDraft()
+              } else {
+                showOrganizationDraftChoice = true
+              }
             }
+            .buttonStyle(.bordered)
+            .accessibilityHint("打开学业对话输入草稿，确认发送后才开始整理")
+            Spacer()
+            Menu {
+              StudyButton(session.snapshot?.week.linkage == nil ? "手动配置任务联动" : "手动管理关联、改期与已完成") {
+                Task {
+                  linkageTimetable = await session.document(for: "timetable")?.markdown ?? ""
+                  linkagePlan = session.snapshot?.week
+                  linkageRevision = session.snapshot?.revision
+                  showLinkageEditor = true
+                }
+              }
+              .disabled(session.snapshot == nil)
+            } label: {
+              Image(systemName: "ellipsis.circle").frame(width: 44, height: 44)
+            }
+            .accessibilityLabel("周计划更多操作")
           }
           MobileSnapshotFreshness(session: session)
           if let week = session.snapshot?.week, !week.days.isEmpty {
@@ -2251,6 +2474,14 @@ private struct MobilePlanView: View {
             }
           }
         }
+      }
+      .confirmationDialog("输入框已有草稿", isPresented: $showOrganizationDraftChoice, titleVisibility: .visible) {
+        StudyButton("把整理请求追加到草稿") {
+          session.inputDraft += "\n\n" + organizationPrompt
+          onNavigate(1)
+        }
+        StudyButton("保留当前草稿并打开对话") { onNavigate(1) }
+        StudyButton("取消", role: .cancel) {}
       }
       .navigationTitle("周计划")
       .onChange(of: session.repositoryGeneration) { _, _ in expandedEmptyDates.removeAll() }
@@ -2300,11 +2531,9 @@ private struct MobilePlanView: View {
 
   private var planHeaderText: some View {
     VStack(alignment: .leading, spacing: 4) {
-      Text("周计划")
-        .font(.system(.title2, design: .rounded, weight: .bold))
-      Text(session.snapshot?.home.dateLabel ?? "等待 学业服务")
-        .font(.subheadline)
-        .foregroundStyle(.secondary)
+      Text(session.snapshot?.home.dateLabel ?? "等待学业服务")
+        .studyTypography(.headline)
+        .fixedSize(horizontal: false, vertical: true)
     }
   }
 
@@ -2347,7 +2576,7 @@ private struct MobilePlanView: View {
             VStack(alignment: .leading, spacing: 12) {
               if completedDeliveries.isEmpty {
                 Text("暂无已完成交付物")
-                  .font(.subheadline)
+                  .studyTypography(.subheadline)
                   .foregroundStyle(.secondary)
                   .frame(minHeight: 44, alignment: .leading)
               } else {
@@ -2359,10 +2588,10 @@ private struct MobilePlanView: View {
             .padding(.top, 8)
           } label: {
             HStack {
-              Text("已完成").font(.subheadline.weight(.semibold))
+              Text("已完成").studyTypography(.subheadline, weight: .semibold)
               Spacer()
               Text("\(completedDeliveries.count)")
-                .font(.caption.monospacedDigit())
+                .studyTypography(.caption).monospacedDigit()
                 .foregroundStyle(.secondary)
             }
             .frame(minHeight: 44)
@@ -2389,11 +2618,11 @@ private struct MobilePlanView: View {
         .padding(.top, 12)
       } label: {
         HStack {
-          Label("更远日期", systemImage: "calendar.badge.clock")
-            .font(.subheadline.weight(.semibold))
+          StudyLabel("更远日期", systemImage: "calendar.badge.clock")
+            .studyTypography(.subheadline, weight: .semibold)
           Spacer()
           Text("\(rows.count)")
-            .font(.caption.monospacedDigit())
+            .studyTypography(.caption).monospacedDigit()
             .foregroundStyle(.secondary)
         }
         .frame(minHeight: 44)
@@ -2419,16 +2648,18 @@ private struct MobilePlanView: View {
   private func dayHeading(_ day: DaySnapshot, empty: Bool) -> some View {
     let parts = day.dateLabel.components(separatedBy: " · ")
     let label = parts.count == 2 ? parts.reversed().joined(separator: " · ") : day.dateLabel
-    let header = HStack(spacing: 8) {
-      Text(label).font(.system(.headline, design: .rounded))
+    let header = (dynamicTypeSize.isAccessibilitySize
+      ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+      : AnyLayout(HStackLayout(spacing: 8))) {
+      Text(label).studyTypography(.headline)
       if day.id == Self.todayIDFormatter.string(from: .now) {
-        Text("今天").font(.caption.weight(.semibold)).foregroundStyle(MobileTheme.brand)
+        Text("今天").studyTypography(.caption, weight: .semibold).foregroundStyle(MobileTheme.brand)
       }
       Spacer()
       if empty {
-        Text("暂无安排").font(.subheadline).foregroundStyle(.secondary)
+        Text("暂无安排").studyTypography(.subheadline).foregroundStyle(.secondary)
         Image(systemName: expandedEmptyDates.contains(day.id) ? "chevron.down" : "chevron.right")
-          .font(.caption).foregroundStyle(.secondary)
+          .studyTypography(.caption).foregroundStyle(.secondary)
       }
     }
     if empty {
@@ -2446,8 +2677,8 @@ private struct MobilePlanView: View {
     let tasks = PeriodTaskParser.tasks(from: day.unassigned)
     if !tasks.isEmpty {
       VStack(alignment: .leading, spacing: 8) {
-        Label("待分时", systemImage: "tray.full")
-          .font(.caption.weight(.semibold))
+        StudyLabel("待分时", systemImage: "tray.full")
+          .studyTypography(.caption, weight: .semibold)
           .foregroundStyle(.secondary)
         ForEach(Array(tasks.enumerated()), id: \.element.id) { index, task in
           Button {
@@ -2458,12 +2689,12 @@ private struct MobilePlanView: View {
                 .foregroundStyle(MobileTheme.brand)
                 .frame(width: 20, height: 20)
               Text(task.text)
-                .font(.subheadline)
+                .studyTypography(.subheadline)
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
               Spacer(minLength: 0)
               Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
+                .studyTypography(.caption, weight: .semibold)
                 .foregroundStyle(.tertiary)
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -2489,7 +2720,7 @@ private struct MobilePlanView: View {
         if !row.unassigned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
           Label {
             Text(PeriodTaskParser.displayText(from: row.unassigned))
-              .font(.subheadline)
+              .studyTypography(.subheadline)
               .fixedSize(horizontal: false, vertical: true)
           } icon: {
             Image(systemName: "tray.full")
@@ -2508,13 +2739,13 @@ private struct MobilePlanView: View {
     dayID: String?
   ) -> some View {
     VStack(alignment: .leading, spacing: 4) {
-      Label(slot.title, systemImage: slotSymbol(for: index))
-        .font(.caption.weight(.semibold))
+      StudyLabel(slot.title, systemImage: slotSymbol(for: index))
+        .studyTypography(.caption, weight: .semibold)
         .foregroundStyle(.secondary)
         .frame(minHeight: 28, alignment: .leading)
       if slot.tasks.isEmpty {
         Text("未安排")
-          .font(.subheadline)
+          .studyTypography(.subheadline)
           .foregroundStyle(.secondary)
           .padding(.leading, 30)
           .frame(minHeight: 44, alignment: .leading)
@@ -2533,13 +2764,13 @@ private struct MobilePlanView: View {
               .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
               Text(task.text)
-                .font(.subheadline)
+                .studyTypography(.subheadline)
                 .foregroundStyle(completed ? .secondary : .primary)
                 .strikethrough(completed)
                 .fixedSize(horizontal: false, vertical: true)
               if isPending {
                 Text("待同步")
-                  .font(.caption2.weight(.semibold))
+                  .studyTypography(.caption2, weight: .semibold)
                   .foregroundStyle(.orange)
               }
             }
@@ -2585,17 +2816,17 @@ private struct MobilePlanView: View {
       VStack(alignment: .leading, spacing: 4) {
         if let dateLabel = delivery.dateLabel, !dateLabel.isEmpty {
           Text(dateLabel)
-            .font(.caption.weight(.semibold))
+            .studyTypography(.caption, weight: .semibold)
             .foregroundStyle(.secondary)
         }
         Text(delivery.text)
-          .font(.subheadline)
+          .studyTypography(.subheadline)
           .strikethrough(completed)
           .foregroundStyle(completed ? .secondary : .primary)
           .fixedSize(horizontal: false, vertical: true)
         if pending {
           Text("待同步")
-            .font(.caption2.weight(.semibold))
+            .studyTypography(.caption2, weight: .semibold)
             .foregroundStyle(.orange)
         }
       }
@@ -2674,8 +2905,8 @@ private struct MobilePendingTaskAssignmentSheet: View {
             }
           }
           if let targetPeriod, !targetPeriod.tasks.isEmpty {
-            Label("该时段已有 \(targetPeriod.tasks.count) 项安排", systemImage: "exclamationmark.triangle")
-              .font(.footnote)
+            StudyLabel("该时段已有 \(targetPeriod.tasks.count) 项安排", systemImage: "exclamationmark.triangle")
+              .studyTypography(.footnote)
               .foregroundStyle(.orange)
           }
         }
@@ -2686,10 +2917,10 @@ private struct MobilePendingTaskAssignmentSheet: View {
       #endif
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
-          Button("取消") { dismiss() }
+          StudyButton("取消") { dismiss() }
         }
         ToolbarItem(placement: .confirmationAction) {
-          Button("安排") {
+          StudyButton("安排") {
             Task {
               await session.assignUnassignedTask(
                 sourceDayID: assignment.sourceDayID,
@@ -2716,50 +2947,105 @@ private struct MobileDailyView: View {
   @State private var text = ""
   @State private var notice = ""
   @State private var lastFact: QuickFact?
+  @State private var confirmingDiscard = false
+  @ScaledMetric(relativeTo: .body) private var editorHeight: CGFloat = 100
   @FocusState private var focus: Bool
 
   var body: some View {
     NavigationStack {
       List {
         Section("写下今天做过的一件事") {
-          TextField("例如：完成高数第一章例题", text: $text).focused($focus).onSubmit(save)
-          Button("保存", action: save).disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
-          if !notice.isEmpty { Text(notice).foregroundStyle(.secondary) }
+          TextEditor(text: $text)
+            .studyTypography(.body)
+            .frame(height: editorHeight)
+            .scrollContentBackground(.hidden)
+            .focused($focus)
+            .overlay(alignment: .topLeading) {
+              if text.isEmpty {
+                Text("例如：完成高数第一章例题")
+                  .studyTypography(.body).foregroundStyle(.secondary)
+                  .padding(.top, 8).padding(.leading, 5)
+                  .allowsHitTesting(false).accessibilityHidden(true)
+              }
+            }
+            .accessibilityLabel("今天做过的一件事")
+            .padding(.vertical, 6)
+          MobilePrimaryButton(title: "保存", symbol: "square.and.arrow.down", action: save)
+            .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+          if !notice.isEmpty {
+            MobileInlineNotice(text: notice, symbol: "exclamationmark.circle", tint: .orange)
+          }
           if let fact = lastFact {
-            Text((session.pendingFacts.contains(fact) ? "已存本机草稿：" : "已保存：") + fact.text)
+            let pending = session.pendingFacts.contains(fact)
+            StudyLabel((pending ? "已存本机草稿：" : "已保存：") + fact.text,
+                  systemImage: pending ? "clock" : "checkmark.circle")
+              .studyTypography(.subheadline)
+              .foregroundStyle(pending ? Color.secondary : MobileTheme.completion)
+              .fixedSize(horizontal: false, vertical: true)
           }
         }
         if !session.pendingFacts.isEmpty {
           Section("本机草稿 · 待同步") {
-            ForEach(session.pendingFacts) { fact in Text(verbatim: fact.text) }
-            if let error = session.factSyncError { Text(error).font(.caption).foregroundStyle(.secondary) }
-            Button("重新同步") { Task { await session.refresh() } }
+            ForEach(session.pendingFacts) { fact in factRow(fact) }
+            if let error = session.factSyncError {
+              MobileInlineNotice(text: error, symbol: "arrow.triangle.2.circlepath", tint: .orange)
+            }
+            StudyButton("重新同步") { Task { await session.refresh() } }
           }
         }
         Section("近期记录") {
           let facts = session.snapshot?.recentFacts ?? []
-          if facts.isEmpty { Text("还没有已保存的记录。").foregroundStyle(.secondary) }
-          ForEach(facts) { fact in
-            VStack(alignment: .leading) { Text(fact.date).font(.caption).foregroundStyle(.secondary); Text(verbatim: fact.text) }
+          if facts.isEmpty {
+            StudyLabel("还没有已保存的记录", systemImage: "text.badge.plus")
+              .studyTypography(.subheadline).foregroundStyle(.secondary)
+              .frame(minHeight: 44, alignment: .leading)
           }
+          ForEach(facts) { fact in factRow(fact) }
         }
         if let old = session.pendingDailyDraft {
           Section("旧版五项草稿 · 尚未提交") {
             Text(verbatim: [old.date, old.deliverables, old.studyTime, old.sleep, old.exercise, old.firstTask].joined(separator: "\n")).textSelection(.enabled)
-            Text("可复制原文追加为新记录，或在“更多”处理旧草稿。").font(.caption)
+            Text("可复制原文追加为新记录，或在“更多”处理旧草稿。").studyTypography(.caption)
           }
         }
         if let old = session.snapshot?.legacyJournal, !old.isEmpty {
           DisclosureGroup("以往的五项记录") { Text(verbatim: old).textSelection(.enabled) }
         }
       }
-      .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
-      .navigationTitle("记一件事").onAppear { focus = true }
+      .toolbar { ToolbarItem(placement: .cancellationAction) {
+        StudyButton("关闭") {
+          if text.isEmpty { dismiss() } else { confirmingDiscard = true }
+        }
+      } }
+      .interactiveDismissDisabled(!text.isEmpty)
+      .confirmationDialog("放弃尚未保存的文字？", isPresented: $confirmingDiscard, titleVisibility: .visible) {
+        StudyButton("放弃并关闭", role: .destructive) { dismiss() }
+        StudyButton("继续填写", role: .cancel) {}
+      }
+      .navigationTitle("记一件事")
+      #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        .listStyle(.insetGrouped)
+        .scrollDismissesKeyboard(.interactively)
+      #endif
+      .onAppear { focus = true }
       .onReceive(NotificationCenter.default.publisher(for: .focusStudyFact)) { _ in focus = true }
       .onChange(of: session.repositoryGeneration) { _, _ in lastFact = nil; text = ""; notice = "" }
       .refreshable { await session.refresh() }
     }
   }
+  private func factRow(_ fact: QuickFact) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(fact.date).studyTypography(.footnote).foregroundStyle(.secondary)
+      Text(verbatim: fact.text)
+        .studyTypography(.body)
+        .fixedSize(horizontal: false, vertical: true)
+        .textSelection(.enabled)
+    }
+    .padding(.vertical, 4)
+    .accessibilityElement(children: .combine)
+  }
+
   private func save() {
     do {
       let fact = QuickFact(text: text)
@@ -2827,15 +3113,16 @@ private struct MobileConnectionSummary: View {
   var body: some View {
     HStack(alignment: .top, spacing: 12) {
       Image(systemName: presentation.symbol)
-        .font(.title3)
+        .studyTypography(.title3)
         .foregroundStyle(presentation.tint)
         .frame(width: 28, height: 28)
         .accessibilityHidden(true)
       VStack(alignment: .leading, spacing: 3) {
         Text(presentation.title)
-          .font(.body.weight(.semibold))
+          .studyTypography(.body, weight: .semibold)
+          .fixedSize(horizontal: false, vertical: true)
         Text(presentation.detail)
-          .font(.footnote)
+          .studyTypography(.footnote)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -2859,14 +3146,9 @@ private struct MobileConnectionStatusRow: View {
         .foregroundStyle(tint)
         .frame(width: 20)
         .accessibilityHidden(true)
-      Text(title)
-      Spacer(minLength: 8)
-      Text(value)
-        .font(.subheadline.weight(.medium))
-        .foregroundStyle(tint)
-        .multilineTextAlignment(.trailing)
+      MobileAdaptiveValue(title: title, value: value, tint: tint)
     }
-    .frame(minHeight: 36)
+    .frame(minHeight: 44)
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(title)，\(value)")
   }
@@ -2884,93 +3166,12 @@ private struct MobileMoreView: View {
   var body: some View {
     NavigationStack {
       List {
-        Section { Button("记一件事", systemImage: "square.and.pencil", action: openFact) }
-        #if os(iOS)
-          Section("提醒") {
-            Toggle("记一件事 · 北京时间 21:30", isOn: Binding(get: { reminders.dailyEnabled }, set: { reminders.setDailyEnabled($0) }))
-            Toggle("每周与每月复盘", isOn: Binding(get: { reminders.enabled }, set: { reminders.setEnabled($0) }))
-            LabeledContent("通知权限", value: reminders.authorization == .denied ? "未允许" : reminders.authorization == .notDetermined ? "未请求" : "已允许")
-            if let next = reminders.nextDaily {
-              LabeledContent("下一次轻提醒", value: next.formatted(.dateTime.locale(Locale(identifier: "zh_CN")).month().day().hour().minute()))
-            }
-            if reminders.authorization == .notDetermined || reminders.authorization == .denied {
-              Button(reminders.authorization == .denied ? "打开系统通知设置" : "允许手机通知") { Task { await reminders.requestPermission() } }
-            }
-            Text("当天已记录就跳过晚间提醒；点击提醒直接记一件事。").font(.footnote).foregroundStyle(.secondary)
-          }
-        #endif
-        Section("学业服务 连接") {
-          MobileConnectionSummary(session: session)
-          if let endpoint = session.savedEndpoint {
-            LabeledContent("当前服务") {
-              Text(endpoint)
-                .font(.caption.monospaced())
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-            }
-            Button(session.state == .online ? "刷新数据" : "重新连接", systemImage: "arrow.clockwise") {
-              Task { await session.refresh() }
-            }
-            .disabled(session.state == .connecting)
-            NavigationLink {
-              MobileConnectionDetailView(session: session)
-            } label: {
-              Label("连接详情", systemImage: "info.circle")
-            }
-            NavigationLink {
-              MobilePairingView(session: session)
-            } label: {
-              Label("更换 学业服务", systemImage: "arrow.triangle.2.circlepath")
-            }
-          } else {
-            NavigationLink {
-              MobilePairingView(session: session)
-            } label: {
-              Label("连接 学业服务", systemImage: "link.badge.plus")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(MobileTheme.brand)
-                .frame(minHeight: 44)
-            }
-          }
-        }
-        if !session.preservedQueues.isEmpty {
-          Section("旧服务待审核草稿") {
-            Text("旧计划、勾选和记录已独立保留。核对原仓库后再在当前计划逐项处理；不会自动重放。")
-              .font(.footnote).foregroundStyle(.secondary)
-            ForEach(session.preservedQueues) { archive in
-              NavigationLink(archive.createdAt.formatted(date: .abbreviated, time: .shortened)) {
-                MobileQueueMigrationReview(session: session, archive: archive)
-              }
-            }
-          }
-        }
-        if session.isCloudService {
-          Section("学业历史") {
-            NavigationLink("云文件版本历史") { MobileCloudVersionsView(session: session).id(session.repositoryGeneration) }
-            NavigationLink("完整文字历史（只读）") {
-              List {
-                ForEach(session.archivedHistory) { message in
-                  VStack(alignment: .leading, spacing: 6) {
-                    Text("\(message.role) · \(message.date.formatted())").font(.caption).foregroundStyle(.secondary)
-                    Text(message.text).textSelection(.enabled)
-                  }
-                }
-                if session.archivedHistoryLoading { ProgressView() }
-                else if !session.archivedHistoryLoaded || session.archivedHistoryCursor != nil {
-                  Button("加载更多") { Task { await session.loadArchivedHistory() } }
-                }
-                if let error = session.archivedHistoryError { Text(error).foregroundStyle(.secondary) }
-              }.navigationTitle("完整文字历史")
-                .task { if !session.archivedHistoryLoaded { await session.loadArchivedHistory() } }
-            }
-          }
-        }
+        Section { StudyButton("记一件事", systemImage: "square.and.pencil", action: openFact) }
         Section("计划") {
           NavigationLink {
             MobileBufferRulesView(session: session)
           } label: {
-            Label("缓冲与降级", systemImage: "shield")
+            StudyLabel("缓冲与降级", systemImage: "shield")
               .frame(minHeight: 44)
           }
         }
@@ -2986,7 +3187,7 @@ private struct MobileMoreView: View {
                     Image(systemName: "doc.text")
                       .foregroundStyle(MobileTheme.rail)
                     Text(summary.title)
-                      .font(.body.weight(.medium))
+                      .studyTypography(.body, weight: .medium)
                     Spacer(minLength: 0)
                   }
                   .frame(minHeight: 44)
@@ -2995,14 +3196,89 @@ private struct MobileMoreView: View {
             }
           }
         }
+        #if os(iOS)
+          Section("提醒") {
+            Toggle("记一件事 · 北京时间 21:30", isOn: Binding(get: { reminders.dailyEnabled }, set: { reminders.setDailyEnabled($0) }))
+            Toggle("每周与每月复盘", isOn: Binding(get: { reminders.enabled }, set: { reminders.setEnabled($0) }))
+            LabeledContent("通知权限", value: reminders.authorization == .denied ? "未允许" : reminders.authorization == .notDetermined ? "未请求" : "已允许")
+            if let next = reminders.nextDaily {
+              LabeledContent("下一次轻提醒", value: next.formatted(.dateTime.locale(Locale(identifier: "zh_CN")).month().day().hour().minute()))
+            }
+            if reminders.authorization == .notDetermined || reminders.authorization == .denied {
+              StudyButton(reminders.authorization == .denied ? "打开系统通知设置" : "允许手机通知") { Task { await reminders.requestPermission() } }
+            }
+            Text("当天已记录就跳过晚间提醒；点击提醒直接记一件事。").studyTypography(.footnote).foregroundStyle(.secondary)
+          }
+        #endif
+        Section("学业服务 连接") {
+          MobileConnectionSummary(session: session)
+          if let endpoint = session.savedEndpoint {
+            MobileAdaptiveValue(title: "当前服务", value: endpoint, monospaced: true)
+            StudyButton(session.state == .online ? "刷新数据" : "重新连接", systemImage: "arrow.clockwise") {
+              Task { await session.refresh() }
+            }
+            .disabled(session.state == .connecting)
+            NavigationLink {
+              MobileConnectionDetailView(session: session)
+            } label: {
+              StudyLabel("连接详情", systemImage: "info.circle")
+            }
+            NavigationLink {
+              MobilePairingView(session: session)
+            } label: {
+              StudyLabel("更换 学业服务", systemImage: "arrow.triangle.2.circlepath")
+            }
+          } else {
+            NavigationLink {
+              MobilePairingView(session: session)
+            } label: {
+              StudyLabel("连接 学业服务", systemImage: "link.badge.plus")
+                .studyTypography(.body, weight: .semibold)
+                .foregroundStyle(MobileTheme.brand)
+                .frame(minHeight: 44)
+            }
+          }
+        }
+        if !session.preservedQueues.isEmpty {
+          Section("旧服务待审核草稿") {
+            Text("旧计划、勾选和记录已独立保留。核对原仓库后再在当前计划逐项处理；不会自动重放。")
+              .studyTypography(.footnote).foregroundStyle(.secondary)
+            ForEach(session.preservedQueues) { archive in
+              NavigationLink(archive.createdAt.formatted(date: .abbreviated, time: .shortened)) {
+                MobileQueueMigrationReview(session: session, archive: archive)
+              }
+            }
+          }
+        }
+        if session.isCloudService {
+          Section("学业历史") {
+            NavigationLink("云文件版本历史") { MobileCloudVersionsView(session: session).id(session.repositoryGeneration) }
+            NavigationLink("完整文字历史（只读）") {
+              List {
+                ForEach(session.archivedHistory) { message in
+                  VStack(alignment: .leading, spacing: 6) {
+                    Text("\(message.role) · \(message.date.formatted())").studyTypography(.caption).foregroundStyle(.secondary)
+                    Text(message.text).textSelection(.enabled)
+                  }
+                }
+                if session.archivedHistoryLoading { ProgressView() }
+                else if !session.archivedHistoryLoaded || session.archivedHistoryCursor != nil {
+                  StudyButton("加载更多") { Task { await session.loadArchivedHistory() } }
+                }
+                if let error = session.archivedHistoryError { Text(error).foregroundStyle(.secondary) }
+              }.navigationTitle("完整文字历史")
+                .task { if !session.archivedHistoryLoaded { await session.loadArchivedHistory() } }
+            }
+          }
+        }
         if session.hasPendingDrafts {
           Section("本机待提交草稿") {
             Text("交付物与时段勾选会在连接恢复后按顺序补交；周计划正文和日结仍由你确认后提交。")
-              .font(.footnote)
+              .studyTypography(.footnote)
               .foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
             if session.legacyPendingToggleCount > 0 {
-              Button("审核旧版勾选操作", systemImage: "checklist.checked") {
+              StudyButton("审核旧版勾选操作", systemImage: "checklist.checked") {
                 session.presentLegacyPendingReview()
               }
             }
@@ -3020,23 +3296,23 @@ private struct MobileMoreView: View {
                 .foregroundStyle(session.isReplayingPendingToggles ? MobileTheme.rail : .orange)
               }
               if session.pendingToggleSyncIssue != nil {
-                Button("重新加载并重试", systemImage: "arrow.clockwise") {
+                StudyButton("重新加载并重试", systemImage: "arrow.clockwise") {
                   Task { await session.retryPendingToggles() }
                 }
                 .disabled(session.isReplayingPendingToggles)
               }
             }
-            Button("放弃本机草稿", role: .destructive) {
+            StudyButton("放弃本机草稿", role: .destructive) {
               showDiscardDraftsConfirmation = true
             }
           }
         }
         Section("隐私与缓存") {
           Text("手机保存只读缓存和待提交草稿。云模式的正式 Markdown、完整文字历史和版本记录保存在云服务；PDF 继续单独备份。")
-            .font(.footnote)
+            .studyTypography(.footnote)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
-          Button("清除本机缓存", role: .destructive) {
+          StudyButton("清除本机缓存", role: .destructive) {
             showClearCacheConfirmation = true
           }
         }
@@ -3045,16 +3321,16 @@ private struct MobileMoreView: View {
       .confirmationDialog(
         "放弃所有本机待提交草稿？", isPresented: $showDiscardDraftsConfirmation, titleVisibility: .visible
       ) {
-        Button("放弃草稿", role: .destructive) { session.discardPendingDrafts() }
-        Button("取消", role: .cancel) {}
+        StudyButton("放弃草稿", role: .destructive) { session.discardPendingDrafts() }
+        StudyButton("取消", role: .cancel) {}
       } message: {
         Text("尚未写入正式仓库的周计划、日结、交付物和时段完成修改将被删除。")
       }
       .confirmationDialog(
         "清除本机缓存？", isPresented: $showClearCacheConfirmation, titleVisibility: .visible
       ) {
-        Button("清除缓存", role: .destructive) { session.clearLocalCache() }
-        Button("取消", role: .cancel) {}
+        StudyButton("清除缓存", role: .destructive) { session.clearLocalCache() }
+        StudyButton("取消", role: .cancel) {}
       } message: {
         Text("将删除快照、资料缓存、对话输入和旧版待提交修改。“记一件事”的待同步记录、服务地址和配对身份保留。")
       }
@@ -3103,7 +3379,7 @@ private struct MobileBufferRulesView: View {
               NavigationLink {
                 MobilePairingView(session: session)
               } label: {
-                Label("连接 学业服务", systemImage: "link.badge.plus")
+                StudyLabel("连接 学业服务", systemImage: "link.badge.plus")
                   .frame(minHeight: 44)
               }
             }
@@ -3146,17 +3422,17 @@ private struct MobileBufferRulesView: View {
   private func bufferRule(_ rule: BufferRuleSnapshot, number: Int) -> some View {
     HStack(alignment: .top, spacing: 10) {
       Text("\(number)")
-        .font(.caption.monospacedDigit().weight(.semibold))
+        .studyTypography(.caption, weight: .semibold).monospacedDigit()
         .foregroundStyle(categoryTint(rule.category))
         .frame(width: 20, height: 20)
         .background(categoryTint(rule.category).opacity(0.12), in: Circle())
         .accessibilityHidden(true)
       VStack(alignment: .leading, spacing: 4) {
         Text(categoryTitle(rule.category))
-          .font(.caption.weight(.semibold))
+          .studyTypography(.caption, weight: .semibold)
           .foregroundStyle(categoryTint(rule.category))
         Text(rule.text)
-          .font(.subheadline)
+          .studyTypography(.subheadline)
           .fixedSize(horizontal: false, vertical: true)
       }
     }
@@ -3219,7 +3495,7 @@ private struct MobileConnectionDetailView: View {
         MobileConnectionSummary(session: session)
         if let issue = session.lastConnectionIssue, session.state != .online {
           Text(issue)
-            .font(.footnote)
+            .studyTypography(.footnote)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -3244,12 +3520,7 @@ private struct MobileConnectionDetailView: View {
         )
       }
       Section("学业服务") {
-        LabeledContent("连接地址") {
-          Text(session.savedEndpoint ?? "尚未设置")
-            .font(.caption.monospaced())
-            .multilineTextAlignment(.trailing)
-            .textSelection(.enabled)
-        }
+        MobileAdaptiveValue(title: "连接地址", value: session.savedEndpoint ?? "尚未设置", monospaced: true)
         if let health = session.health {
           LabeledContent("服务版本", value: health.hostVersion)
           LabeledContent("API 版本", value: "v\(health.apiVersion)")
@@ -3259,27 +3530,17 @@ private struct MobileConnectionDetailView: View {
         Section {
           DisclosureGroup("技术信息") {
             if let threadID = health.activeThreadID {
-              LabeledContent("固定学业任务") {
-                Text(threadID)
-                  .font(.caption2.monospaced())
-                  .multilineTextAlignment(.trailing)
-                  .textSelection(.enabled)
-              }
+              MobileAdaptiveValue(title: "固定学业任务", value: threadID, monospaced: true)
             }
             if let repositoryID = health.repositoryID {
-              LabeledContent("仓库 ID") {
-                Text(repositoryID)
-                  .font(.caption2.monospaced())
-                  .multilineTextAlignment(.trailing)
-                  .textSelection(.enabled)
-              }
+              MobileAdaptiveValue(title: "仓库 ID", value: repositoryID, monospaced: true)
             }
           }
         }
       }
       Section("操作") {
         if session.savedEndpoint != nil {
-          Button("刷新数据", systemImage: "arrow.clockwise") {
+          StudyButton("刷新数据", systemImage: "arrow.clockwise") {
             Task { await session.refresh() }
           }
         }
@@ -3319,12 +3580,13 @@ private struct MobilePairingView: View {
             ? "填写云服务 HTTPS 地址和一次性配对码。"
             : "切换前会持久备份旧仓库的待提交草稿，保留在“旧服务待审核草稿”；不会自动写入新仓库。"
         )
-        .font(.footnote)
+        .studyTypography(.footnote)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
       }
       Section("配对信息") {
         TextField("学业服务 HTTPS 地址", text: $endpoint)
+          .accessibilityLabel("服务地址")
           .focused($focusedField, equals: .endpoint)
           #if os(iOS)
             .textInputAutocapitalization(.never)
@@ -3334,6 +3596,7 @@ private struct MobilePairingView: View {
           .autocorrectionDisabled()
           .onSubmit { focusedField = .code }
         TextField("一次性配对码", text: $pairingCode)
+          .accessibilityLabel("配对码")
           .focused($focusedField, equals: .code)
           #if os(iOS)
             .textInputAutocapitalization(.never)
@@ -3344,6 +3607,7 @@ private struct MobilePairingView: View {
           .autocorrectionDisabled()
           .onSubmit { focusedField = .deviceName }
         TextField("设备名称", text: $deviceName)
+          .accessibilityLabel("设备名称")
           .focused($focusedField, equals: .deviceName)
           #if os(iOS)
             .submitLabel(.done)
@@ -3364,7 +3628,7 @@ private struct MobilePairingView: View {
         }
         if let pairingMessage {
           Text(pairingMessage)
-            .font(.footnote)
+            .studyTypography(.footnote)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -3374,8 +3638,8 @@ private struct MobilePairingView: View {
     .confirmationDialog(
       "更换 学业服务？", isPresented: $showDraftsConfirmation, titleVisibility: .visible
     ) {
-      Button("继续更换", role: .destructive) { pair() }
-      Button("取消", role: .cancel) {}
+      StudyButton("继续更换", role: .destructive) { pair() }
+      StudyButton("取消", role: .cancel) {}
     } message: {
       Text("本机待提交草稿属于当前仓库。切换前会保留完整副本供逐项审核，不会自动提交到新仓库。")
     }
@@ -3385,7 +3649,7 @@ private struct MobilePairingView: View {
       .toolbar {
         ToolbarItemGroup(placement: .keyboard) {
           Spacer()
-          Button("完成") { focusedField = nil }
+          StudyButton("完成") { focusedField = nil }
         }
       }
     #endif
@@ -3436,43 +3700,73 @@ private struct MobileDocumentDetailView: View {
   @ObservedObject var session: MobileSession
   let documentKey: String
   let title: String
-  @State private var detail: DocumentDetail?
-  @State private var isLoading = true
+  @State private var isLoading = false
+  @State private var showsSource = false
+
+  private var detail: DocumentDetail? { session.documentDetails[documentKey] }
 
   var body: some View {
+    GeometryReader { container in
     ScrollView {
-      Group {
+      VStack(alignment: .leading, spacing: 16) {
         if let detail {
-          MobileMarkdownView(text: detail.markdown)
-            .textSelection(.enabled)
+          VStack(alignment: .leading, spacing: 6) {
+            StudyLabel("本机可读副本", systemImage: "doc.text")
+              .studyTypography(.subheadline, weight: .medium)
+            Text("获取于 \(detail.fetchedAt.formatted(date: .abbreviated, time: .shortened))")
+              .studyTypography(.footnote).foregroundStyle(.secondary)
+            Text(session.state == .online
+                 ? "刷新会从学业服务读取内容；更新成功后自动显示。"
+                 : "当前离线，显示上次获取的内容。")
+              .studyTypography(.footnote).foregroundStyle(.secondary)
+          }
+          .fixedSize(horizontal: false, vertical: true)
+          if showsSource {
+            Text(verbatim: detail.markdown)
+              .studyTypography(.callout).textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          } else {
+            MobileMarkdownView(text: detail.markdown, availableWidth: max(1, container.size.width - 2 * MobileTheme.pageInset)).textSelection(.enabled)
+          }
         } else if isLoading {
           ProgressView("正在读取资料")
             .frame(maxWidth: .infinity, minHeight: 220)
         } else {
           MobileEmptyState(
             title: "暂时无法读取",
-            message: "连接 学业服务 后重试；如果之前打开过此资料，也会优先显示本机缓存。",
+            message: "连接学业服务后重试；之前打开过的资料可从本机副本读取。",
             symbol: "doc.text.magnifyingglass",
-            actionTitle: "刷新数据",
+            actionTitle: "重新读取",
             action: { Task { await load() } }
           )
-          .frame(minHeight: 360)
         }
       }
       .padding(MobileTheme.pageInset)
     }
     .background(MobileTheme.groupedBackground)
     .navigationTitle(title)
+    .toolbar {
+      ToolbarItemGroup(placement: .primaryAction) {
+        StudyButton(showsSource ? "阅读正文" : "查看原文", systemImage: showsSource ? "doc.richtext" : "chevron.left.forwardslash.chevron.right") {
+          showsSource.toggle()
+        }.disabled(detail == nil)
+        StudyButton("刷新资料", systemImage: "arrow.clockwise") { Task { await load() } }
+          .disabled(isLoading)
+      }
+    }
     #if os(iOS)
       .navigationBarTitleDisplayMode(.inline)
     #endif
-    .task { await load() }
+    .refreshable { await load() }
+    .task(id: session.repositoryGeneration) { await load() }
+    }
   }
 
   private func load() async {
+    guard !isLoading else { return }
     isLoading = true
-    detail = await session.document(for: documentKey)
-    isLoading = false
+    defer { isLoading = false }
+    _ = await session.document(for: documentKey)
   }
 }
 
@@ -3494,11 +3788,11 @@ private struct MobileCloudVersionsView: View {
   var body: some View {
     List {
       Text("查看已确认保存后的云版本。历史只读，恢复内容须重新编辑并通过版本校验保存。")
-        .font(.footnote).foregroundStyle(.secondary)
+        .studyTypography(.footnote).foregroundStyle(.secondary)
       ForEach(versions) { version in
         DisclosureGroup(version.date.formatted()) {
           ForEach(version.paths, id: \.self) { path in
-            Button(path) { Task {
+            StudyButton(path) { Task {
               do { selectedText = try await session.cloudVersion(id: version.id, path: path).content; showingText = true }
               catch { self.error = error.localizedDescription }
             } }
@@ -3506,14 +3800,14 @@ private struct MobileCloudVersionsView: View {
         }
       }
       if loading { ProgressView() }
-      else if !loaded || cursor != nil { Button("加载更多版本") { Task { await load() } } }
-      if !error.isEmpty { Text(error).font(.caption) }
+      else if !loaded || cursor != nil { StudyButton("加载更多版本") { Task { await load() } } }
+      if !error.isEmpty { Text(error).studyTypography(.caption) }
     }.navigationTitle("云版本历史")
       .task { if !loaded { await load() } }
       .sheet(isPresented: $showingText) { NavigationStack {
         ScrollView { Text(selectedText).textSelection(.enabled).padding() }
           .navigationTitle("历史版本（只读）")
-          .toolbar { Button("关闭") { showingText = false } }
+          .toolbar { StudyButton("关闭") { showingText = false } }
       } }
   }
   private func load() async {
@@ -3534,30 +3828,30 @@ private struct MobileQueueMigrationReview: View {
     List {
       Section("原服务与仓库") {
         Text(archive.endpoint?.absoluteString ?? "地址待核实").textSelection(.enabled)
-        Text(archive.repositoryID ?? "身份待核实").font(.caption.monospaced()).textSelection(.enabled)
-        Text("每项单独确认。原始归档始终保留；没有可靠基线的整份草稿只供对照。").font(.footnote).foregroundStyle(.secondary)
+        Text(archive.repositoryID ?? "身份待核实").studyTypography(.caption).textSelection(.enabled)
+        Text("每项单独确认。原始归档始终保留；没有可靠基线的整份草稿只供对照。").studyTypography(.footnote).foregroundStyle(.secondary)
       }
       if let issue { Section { Text(issue).foregroundStyle(.orange) } }
       ForEach(session.queueMigrationItems(archive)) { item in
         Section(item.title) {
-          DisclosureGroup("原始内容与目标") { Text(item.original).font(.callout).textSelection(.enabled) }
-          DisclosureGroup("当前云内容") { Text(item.current).font(.callout).textSelection(.enabled) }
-          Text(item.reason).font(.footnote).foregroundStyle(.secondary)
+          DisclosureGroup("原始内容与目标") { Text(item.original).studyTypography(.callout).textSelection(.enabled) }
+          DisclosureGroup("当前云内容") { Text(item.current).studyTypography(.callout).textSelection(.enabled) }
+          Text(item.reason).studyTypography(.footnote).foregroundStyle(.secondary)
           if item.canSubmit {
-            Button("审核并处理这一项") { selected = item }.disabled(submitting)
+            StudyButton("审核并处理这一项") { selected = item }.disabled(submitting)
           }
         }
       }
       Section {
         DisclosureGroup("完整原始归档（只读）") {
-          Text(session.preservedQueueText(archive)).font(.caption.monospaced()).textSelection(.enabled)
+          Text(session.preservedQueueText(archive)).studyTypography(.callout).textSelection(.enabled)
         }
       }
     }
     .navigationTitle("旧队列逐项审核")
     .confirmationDialog("确认迁移这一项到当前云仓库？", isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } }), titleVisibility: .visible) {
       if let item = selected {
-        Button("确认提交这一项") {
+        StudyButton("确认提交这一项") {
           submitting = true; issue = nil; selected = nil
           Task { @MainActor in
             defer { submitting = false }
@@ -3566,7 +3860,7 @@ private struct MobileQueueMigrationReview: View {
           }
         }
       }
-      Button("取消", role: .cancel) { selected = nil }
+      StudyButton("取消", role: .cancel) { selected = nil }
     } message: { Text(selected?.original ?? "") }
   }
 }
@@ -3576,21 +3870,51 @@ private struct MobilePendingPlanComparison: View {
   @ObservedObject var session: MobileSession
   @State private var confirming = false
   @State private var submitting = false
+  private func readable<T: Encodable>(_ value: T) -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    guard let data = try? encoder.encode(value), let text = String(data: data, encoding: .utf8) else {
+      return "无法显示此内容，请查看原始草稿。"
+    }
+    return text
+  }
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 16) {
         Text("请对照原稿与云内容。提交始终使用原始基线，发生冲突会保留草稿；不会把旧稿套用新版本。")
-        Text(session.pendingPlanComparison).font(.callout.monospaced()).textSelection(.enabled)
+        if let draft = session.pendingWeekDraft {
+          Text("周计划").studyTypography(.headline)
+          if let current = session.snapshot?.week {
+            StudyProposalDiffView(original: readable(draft), proposed: readable(current),
+                                  originalTitle: "本机草稿", proposedTitle: "当前服务版本")
+          } else {
+            Text(readable(draft)).studyTypography(.callout).textSelection(.enabled)
+            Text("当前服务版本尚未读取，暂时无法比较。").studyTypography(.footnote).foregroundStyle(.secondary)
+          }
+        }
+        if let draft = session.pendingDailyDraft {
+          Text("旧版日结").studyTypography(.headline)
+          if let current = session.snapshot?.daily {
+            StudyProposalDiffView(original: readable(draft), proposed: readable(current),
+                                  originalTitle: "本机草稿", proposedTitle: "当前服务版本")
+          } else {
+            Text(readable(draft)).studyTypography(.callout).textSelection(.enabled)
+            Text("当前服务版本尚未读取，暂时无法比较。").studyTypography(.footnote).foregroundStyle(.secondary)
+          }
+        }
+        DisclosureGroup("原始草稿与基线校验说明") {
+          Text(session.pendingPlanComparison).studyTypography(.callout).textSelection(.enabled)
+        }
         if let issue = session.pendingToggleSyncIssue { Text(issue).foregroundStyle(.orange) }
-        Button("确认按原基线提交") { confirming = true }.disabled(submitting || session.state != .online)
+        StudyButton("确认按原基线提交") { confirming = true }.disabled(submitting || session.state != .online)
       }.padding()
     }.navigationTitle("草稿内容对照")
     .confirmationDialog("按原始基线提交以上草稿？", isPresented: $confirming, titleVisibility: .visible) {
-      Button("确认提交") {
+      StudyButton("确认提交") {
         submitting = true
         Task { @MainActor in await session.commitPendingDrafts(); submitting = false }
       }
-      Button("取消", role: .cancel) {}
+      StudyButton("取消", role: .cancel) {}
     }
   }
 }

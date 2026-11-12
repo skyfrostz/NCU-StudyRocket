@@ -3,6 +3,17 @@ import StudyRocketShared
 import SQLiteNIO
 
 extension CloudStore {
+    /// A source-bound, read-only seed for the assistant. This never activates
+    /// linkage or writes the weekly plan; the normal proposal path still owns it.
+    func taskLinkagePreview() throws -> (hash: String, json: String) {
+        try ensureReady()
+        let file = try file("工作台/下周计划.md")
+        let week = snapshot().week
+        let graph = (week.linkage ?? TaskLinkage(activationDate: PlanningDate.key(.now))).reconciled(with: week)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return (file.hash, String(decoding: try encoder.encode(graph), as: UTF8.self))
+    }
     func proposals() throws -> ProposalListResponse {
         try ensureReady()
         return ProposalListResponse(proposals:try db.run("SELECT body FROM proposals ORDER BY rowid").map { try decode(ProposalDTO.self,Data($0.column("body")!.string!.utf8)) })
@@ -12,6 +23,12 @@ extension CloudStore {
         _ = try Self.safeURL(path,root:root,write:true)
         let original = (try? file(path)) ?? CloudFileContent(path:path,hash:"absent",content:"")
         guard original.hash == baseHash else { throw CloudError(409,"conflict","读取后文件已变化，请重新读取再生成草案。") }
+        if path == "工作台/下周计划.md", try TaskLinkageMarkdown.read(original.content) == nil,
+           let graph = try TaskLinkageMarkdown.read(content) {
+            let seed = TaskLinkage(activationDate: PlanningDate.key(.now)).reconciled(with: snapshot().week)
+            guard graph.activationDate == seed.activationDate else { throw TaskLinkageError.changed }
+            try PlanningProposalValidation.preserveHistory(from: seed, in: graph)
+        }
         var next = try PlanningProposalValidation.prepare(path:path,original:original.content,proposed:content)
         var paired: ProposalDTO?
         if path == "工作台/下周计划.md", let timetable = try? file(StudyRocketTimetableParser.sourceFile) {
@@ -46,6 +63,7 @@ extension CloudStore {
             for proposal in selected {
                 let current = try? file(proposal.relativePath)
                 guard (current?.hash ?? "absent") == proposal.baseHash else { throw CloudError(409,"conflict","草案文件基线已变化。") }
+                try PlanningProposalValidation.validateManagedBoundaries(path: proposal.relativePath, original: current?.content ?? "", proposed: proposal.proposedContent)
                 if proposal.kind == "skill" {try Self.validateSkillContent(path:proposal.relativePath,original:proposal.originalContent,proposed:proposal.proposedContent)}
                 let target = try Self.safeURL(proposal.relativePath,root:staging,write:proposal.kind != "skill")
                 try FileManager.default.createDirectory(at:target.deletingLastPathComponent(),withIntermediateDirectories:true)

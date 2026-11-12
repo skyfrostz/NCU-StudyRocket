@@ -725,14 +725,15 @@ public enum WeeklyPlanTaskNormalizer {
     /// Normalizes the structured weekly table before a proposal is shown, so
     /// the approved diff and the eventual file write remain identical.
     public static func normalizedMarkdown(_ source: String) -> String {
-        var lines = source.components(separatedBy: .newlines)
-        let starts = lines.indices.filter { isMarker(lines[$0], "studyrocket:weekly:start") }
-        let ends = lines.indices.filter { isMarker(lines[$0], "studyrocket:weekly:end") }
+        var lines = PlanningMarkdownLines.parse(source)
+        let starts = lines.indices.filter { isMarker(lines[$0].text, "studyrocket:weekly:start") }
+        let ends = lines.indices.filter { isMarker(lines[$0].text, "studyrocket:weekly:end") }
         guard starts.count == 1, ends.count == 1,
               let start = starts.first, let end = ends.first, start < end else { return source }
 
         for index in (start + 1)..<end {
-            guard var cells = splitTableRow(lines[index]), cells.count >= 6 else { continue }
+            guard var cells = splitTableRow(lines[index].text), cells.count >= 6 else { continue }
+            let originalCells = cells
             let first = cells[0].trimmingCharacters(in: .whitespacesAndNewlines)
             guard !first.contains("日期"),
                   !first.allSatisfy({ $0 == "-" || $0 == ":" || $0 == " " }) else { continue }
@@ -749,9 +750,9 @@ public enum WeeklyPlanTaskNormalizer {
             let layout = normalized(periods: periods, unassigned: decodeCell(cells[4]))
             for offset in 0..<3 { cells[offset + 1] = encodeCell(layout.periods[offset].text) }
             cells[4] = encodeCell(layout.unassigned)
-            lines[index] = renderTableRow(cells)
+            if cells != originalCells { lines[index].text = renderTableRow(cells) }
         }
-        return lines.joined(separator: "\n")
+        return PlanningMarkdownLines.joined(lines)
     }
 
     private static func isMarker(_ line: String, _ marker: String) -> Bool {

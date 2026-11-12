@@ -1,0 +1,37 @@
+{
+  "suites": [
+    {
+      "suite": "cloud_acceptance.py",
+      "expectedTests": 27,
+      "testsRun": 27,
+      "exitCode": 0,
+      "seconds": 34.12,
+      "result": "PASS"
+    },
+    {
+      "suite": "independent_tasks_acceptance.py",
+      "expectedTests": 5,
+      "testsRun": 5,
+      "exitCode": 0,
+      "seconds": 3.039,
+      "result": "PASS"
+    },
+    {
+      "suite": "task_linkage_agent_acceptance.py",
+      "expectedTests": 7,
+      "testsRun": 7,
+      "exitCode": 0,
+      "seconds": 9.375,
+      "result": "PASS"
+    },
+    {
+      "suite": "proposal_safety_acceptance.py",
+      "expectedTests": 4,
+      "testsRun": 4,
+      "exitCode": 0,
+      "seconds": 2.23,
+      "result": "PASS"
+    }
+  ],
+  "result": "PASS"
+}

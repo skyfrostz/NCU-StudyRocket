@@ -36,7 +36,7 @@ public struct TaskLinkageEditor: View {
                                 }.buttonStyle(.borderless)
                                 TextField("任务", text: Binding(get: { draft.tasks.first(where: { $0.id == task.id })?.text ?? task.text }, set: { value in perform { try draft.rename(task.id, text: value) } })).strikethrough(task.isCompleted)
                             }
-                            Text("原安排：\(task.originDate)").font(.caption).foregroundStyle(.secondary)
+                            Text("原安排：\(task.originDate)").studyTypography(.caption).foregroundStyle(.secondary)
                             Picker("类别", selection: Binding(get: { task.category }, set: { category in perform { try draft.classify(task.id, as: category) } })) {
                                 ForEach(PlanningCategory.allCases, id: \.self) { Text($0.title).tag($0) }
                             }
@@ -44,7 +44,7 @@ public struct TaskLinkageEditor: View {
                                 Text("独立任务").tag("")
                                 ForEach(draft.deliveries.filter { !$0.cancelled }) { Text($0.text).tag($0.id) }
                             }
-                            if let due = task.dueAt { Text("截止：" + due.prefix(16).replacingOccurrences(of: "T", with: " ")).font(.caption) }
+                            if let due = task.dueAt { Text("截止：" + due.prefix(16).replacingOccurrences(of: "T", with: " ")).studyTypography(.caption) }
                             Picker("提醒／缓冲关联", selection: Binding(get: { task.reminderForTaskID ?? "" }, set: { value in perform { try draft.setReminder(task.id, for: value.isEmpty ? nil : value) } })) {
                                 Text("独立工作项").tag("")
                                 ForEach(draft.tasks.filter { $0.id != task.id && !$0.cancelled && $0.reminderForTaskID == nil }) { related in
@@ -52,16 +52,16 @@ public struct TaskLinkageEditor: View {
                                 }
                             }
                             if task.deliveryID == nil, let candidate = draft.deliveries.first(where: { !$0.cancelled && DeliveryPeriodMatcher.matches(deliveryText: $0.text, periodText: task.text) }) {
-                                Button("建议关联到：" + candidate.text) { perform { try draft.link(task.id, to: candidate.id) } }
+                                StudyButton("建议关联到：" + candidate.text) { perform { try draft.link(task.id, to: candidate.id) } }
                             }
                             if !task.isCompleted {
-                                Button("安排到某日") { selectedTask = task.id }
+                                StudyButton("安排到某日") { selectedTask = task.id }
                             }
-                            Menu("其他操作") {
+                            StudyMenu("其他操作") {
                                 ForEach(draft.assignments.filter { $0.active && $0.taskID == task.id }) { a in
-                                    Button("移除 \(a.date) 的安排") { perform { try draft.removeAssignment(a.id) } }
+                                    StudyButton("移除 \(a.date) 的安排") { perform { try draft.removeAssignment(a.id) } }
                                 }
-                                Button("取消任务", role: .destructive) { perform { try draft.cancel(task.id) } }
+                                StudyButton("取消任务", role: .destructive) { perform { try draft.cancel(task.id) } }
                             }
                         }.padding(.vertical, 4)
                     }
@@ -73,7 +73,7 @@ public struct TaskLinkageEditor: View {
                             else if draft.pendingChildren(of: delivery.id).isEmpty { perform { try draft.setDelivery(delivery.id, completed: true) } }
                             else { bulk = delivery }
                         } label: {
-                            Label(delivery.text, systemImage: draft.isCompleted(delivery) ? "checkmark.circle.fill" : "circle")
+                            StudyLabel(delivery.text, systemImage: draft.isCompleted(delivery) ? "checkmark.circle.fill" : "circle")
                         }
                     }
                 }
@@ -81,7 +81,7 @@ public struct TaskLinkageEditor: View {
                     ForEach(draft.assignments.filter { a in !a.active || draft.tasks.first(where: { $0.id == a.taskID })?.completedAt.map { $0 > a.date } == true }) { a in
                         if let task = draft.tasks.first(where: { $0.id == a.taskID }) {
                             Text("\(a.date) · \(task.text) · \(task.completedAt.map { "后来完成于 " + $0 } ?? (task.cancelled ? "已取消" : "已移除或改期"))")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .studyTypography(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -93,9 +93,9 @@ public struct TaskLinkageEditor: View {
             }
             .navigationTitle(plan.linkage == nil ? "启用任务联动" : "任务关联与改期")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { StudyButton("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("确认并保存") {
+                    StudyButton("确认并保存") {
                         do {
                             let prepared = try PlanningChangeRouter.route(plan: draft.projected(plan), timetable: timetableSource)
                             if prepared.events != nil { routed = prepared }
@@ -107,7 +107,7 @@ public struct TaskLinkageEditor: View {
             }
             .sheet(isPresented: Binding(get: { routed != nil }, set: { if !$0 { routed = nil } })) {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("活动进入当天课表").font(.title2)
+                    Text("活动进入当天课表").studyTypography(.title2)
                     Text("确认后同时保存任务关联和单次活动。活动从今日任务移到下列日期。")
                     ScrollView {
                         if let prepared = routed {
@@ -116,19 +116,19 @@ public struct TaskLinkageEditor: View {
                             }
                             DisclosureGroup("任务关联保存后") {
                                 Text((try? TaskLinkageMarkdown.write(prepared.plan.linkage ?? draft, in: "")) ?? "")
-                                    .font(.caption.monospaced()).textSelection(.enabled)
+                                    .studyTypography(.caption).textSelection(.enabled)
                             }
                             DisclosureGroup("课表保存后") {
                                 Text((try? OneOffSchedule.write(prepared.events ?? [], in: timetableSource)) ?? "")
-                                    .font(.caption.monospaced()).textSelection(.enabled)
+                                    .studyTypography(.caption).textSelection(.enabled)
                             }
                         }
                     }
                     if let message { Text(message).foregroundStyle(.orange) }
                     HStack {
-                        Button("返回修改") { routed = nil }
+                        StudyButton("返回修改") { routed = nil }
                         Spacer()
-                        Button("确认并成组保存") { if let prepared = routed { submit(prepared) } }.disabled(isSaving)
+                        StudyButton("确认并成组保存") { if let prepared = routed { submit(prepared) } }.disabled(isSaving)
                     }
                 }.padding().frame(minWidth: 320, minHeight: 420)
             }
@@ -141,9 +141,9 @@ public struct TaskLinkageEditor: View {
                         }
                     }.navigationTitle("安排到某日")
                     .toolbar {
-                        ToolbarItem(placement: .cancellationAction) { Button("取消") { selectedTask = nil } }
+                        ToolbarItem(placement: .cancellationAction) { StudyButton("取消") { selectedTask = nil } }
                         ToolbarItem(placement: .confirmationAction) {
-                            Button("确定") {
+                            StudyButton("确定") {
                                 if let id = selectedTask { perform { try draft.reschedule(id, date: PlanningDate.key(date), periodID: period) } }
                                 selectedTask = nil
                             }
@@ -153,12 +153,12 @@ public struct TaskLinkageEditor: View {
             }
             .confirmationDialog("将一并完成这些子任务", isPresented: Binding(get: { bulk != nil }, set: { if !$0 { bulk = nil } }), titleVisibility: .visible) {
                 if let delivery = bulk {
-                    Button("确认全部完成") {
+                    StudyButton("确认全部完成") {
                         perform { try draft.setDelivery(delivery.id, completed: true, confirmedTaskIDs: draft.pendingChildren(of: delivery.id).map(\.id)) }
                         bulk = nil
                     }
                 }
-                Button("取消", role: .cancel) { bulk = nil }
+                StudyButton("取消", role: .cancel) { bulk = nil }
             } message: {
                 Text(bulk.map { draft.pendingChildren(of: $0.id).map(\.text).joined(separator: "\n") } ?? "")
             }

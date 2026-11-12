@@ -1,0 +1,93 @@
+{
+  "result": "PASS",
+  "binarySHA256": "732d4d3fa4cd686027b710c9356c1c2a6ff34b16106f5be8113b14579beba551",
+  "serverRelease": "/opt/studyrocket/cloud/releases/20261112-ui-shutdown-lock-final",
+  "localArtifact": "/tmp/studyrocket-cloud-ui-shutdown-lock-final-20261112",
+  "manifestFiles": 75,
+  "sourceFiles": 33,
+  "sourceMismatch": 0,
+  "strictSandboxTests": 47,
+  "suites": [
+    {
+      "suite": "cloud_acceptance.py",
+      "expectedTests": 27,
+      "testsRun": 27,
+      "exitCode": 0,
+      "seconds": 11.996,
+      "result": "PASS"
+    },
+    {
+      "suite": "independent_tasks_acceptance.py",
+      "expectedTests": 5,
+      "testsRun": 5,
+      "exitCode": 0,
+      "seconds": 2.926,
+      "result": "PASS"
+    },
+    {
+      "suite": "task_linkage_agent_acceptance.py",
+      "expectedTests": 7,
+      "testsRun": 7,
+      "exitCode": 0,
+      "seconds": 9.356,
+      "result": "PASS"
+    },
+    {
+      "suite": "proposal_safety_acceptance.py",
+      "expectedTests": 4,
+      "testsRun": 4,
+      "exitCode": 0,
+      "seconds": 2.323,
+      "result": "PASS"
+    },
+    {
+      "suite": "graceful_shutdown_acceptance.py",
+      "expectedTests": 4,
+      "testsRun": 4,
+      "exitCode": 0,
+      "seconds": 1.771,
+      "result": "PASS"
+    }
+  ],
+  "liveScenario": "independent-tasks",
+  "liveTerminal": {
+    "status": "completed",
+    "issueCode": null,
+    "seconds": 6.049
+  },
+  "independentTasks": {
+    "weekTaskCount": 2,
+    "homeTaskCount": 2,
+    "titlesMatched": true,
+    "distinctTaskIDs": true,
+    "noCheckboxPrefixes": true,
+    "bothInitiallyIncomplete": true,
+    "homeWeekTasksMatched": true,
+    "canonicalTaskSeparatorObserved": true
+  },
+  "confirmation": {
+    "applyStatus": 200,
+    "replayStatus": 200,
+    "replayReceiptMatched": true,
+    "exactAppliedBytes": true,
+    "unrelatedMarkdownUnchanged": true,
+    "proposalConsumed": true
+  },
+  "liveResources": {
+    "requests": 13,
+    "medianMilliseconds": 11.79,
+    "maximumRSSBytes": 46006272,
+    "maximumHWMBytes": 46006272,
+    "minimumAvailableBytes": 724103168
+  },
+  "temporaryUnitsStopped": true,
+  "productionReleaseUnchanged": true,
+  "productionPIDUnchanged": true,
+  "liveCloudStopSeconds": 0.025,
+  "earlierAttempts": [
+    "876 candidate rejected: strict sandbox facts write blocked by home lock file; repaired in 732d",
+    "First 732d live harness failed before API/provider use because runuser inherited unreadable cwd; preserved and cleaned, then fresh-base live pass"
+  ],
+  "realMarkdownModified": false,
+  "productionDeployed": false
+}

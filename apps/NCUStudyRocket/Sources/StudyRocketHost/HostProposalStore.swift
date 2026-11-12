@@ -39,6 +39,14 @@ final class HostProposalStore: @unchecked Sendable {
         var routedTimetable: (String, String)?
         do {
             if path == "工作台/下周计划.md", tool == "propose_changes" {
+                if try TaskLinkageMarkdown.read(original) == nil, let graph = try TaskLinkageMarkdown.read(content) {
+                    let now = Date()
+                    let week = AcademicSnapshotBuilder(root: root).build(now: now).week
+                    guard hash(try String(contentsOf: url, encoding: .utf8)) == hash(original) else { throw TaskLinkageError.changed }
+                    let seed = TaskLinkage(activationDate: PlanningDate.key(now)).reconciled(with: week, now: now)
+                    guard graph.activationDate == seed.activationDate else { throw TaskLinkageError.changed }
+                    try PlanningProposalValidation.preserveHistory(from: seed, in: graph)
+                }
                 let timetableURL = root.appendingPathComponent(StudyRocketTimetableParser.sourceFile)
                 if !isSymlink(timetableURL), let timetable = try? String(contentsOf: timetableURL, encoding: .utf8) {
                     let routed = try PlanningChangeRouter.route(week: content, original: original, timetable: timetable)
@@ -100,6 +108,11 @@ final class HostProposalStore: @unchecked Sendable {
             let resolvedURL = url.resolvingSymlinksInPath()
             guard resolvedURL.path.hasPrefix(resolvedRoot.path + "/"), !isSymlink(url), let currentData = try? Data(contentsOf: url), let current = String(data: currentData, encoding: .utf8), hash(current) == proposal.baseHash else {
                 throw HostWriteError(code: "conflict", message: "草案涉及的 \(proposal.relativePath) 已被外部修改。")
+            }
+            do {
+                try PlanningProposalValidation.validateManagedBoundaries(path: proposal.relativePath, original: current, proposed: proposal.proposedContent)
+            } catch let error as PlanningProposalValidation.BoundaryError {
+                throw HostWriteError(code: "invalid_planning_boundaries", message: error.localizedDescription)
             }
             originals.append((proposal, currentData))
         }

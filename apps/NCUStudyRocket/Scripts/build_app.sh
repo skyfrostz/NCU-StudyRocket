@@ -32,6 +32,10 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 mkdir -p "$APP/Contents/PlugIns"
 cp "$ROOT/Sources/NCUStudyRocket/Resources/SeasonalVerses.tsv" "$ROOT/Licenses/chinese-poetry.txt" "$APP/Contents/Resources/"
+SHARED_RESOURCES="$BIN_DIR/NCUStudyRocketShared_StudyRocketShared.bundle"
+if [[ -d "$SHARED_RESOURCES" ]]; then
+  cp -R "$SHARED_RESOURCES" "$APP/Contents/Resources/"
+fi
 cp "$BIN_DIR/NCUStudyRocket" "$APP/Contents/MacOS/NCUStudyRocket"
 EXPECTED_SDK="$(xcrun --sdk macosx --show-sdk-version)"
 LINKED_SDK="$(xcrun vtool -show-build "$APP/Contents/MacOS/NCUStudyRocket" | awk '$1=="sdk"{print $2; exit}')"

@@ -77,6 +77,50 @@ struct ChatScrollRequest: Identifiable, Equatable {
     let force: Bool
 }
 
+/// Coalesces display work only; the stream accumulator retains every token.
+/// Terminal events flush synchronously, while connection changes discard the
+/// old generation's pending display updates.
+@MainActor
+final class ChatStreamDisplayCoalescer {
+    struct Update {
+        let turnID: String
+        let itemID: String
+        let text: String
+        let phase: ChatMessagePhase
+    }
+    private var pending: [String: Update] = [:]
+    private var order: [String] = []
+    private var task: Task<Void, Never>?
+    private let publish: (Update) -> Void
+
+    init(publish: @escaping (Update) -> Void) { self.publish = publish }
+
+    func enqueue(_ update: Update) {
+        let key = update.turnID + "\u{1f}" + update.itemID
+        if pending[key] == nil { order.append(key) }
+        pending[key] = update
+        guard task == nil else { return }
+        task = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(50)) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            self?.flush()
+        }
+    }
+
+    func flush() {
+        task?.cancel(); task = nil
+        let updates = order.compactMap { pending[$0] }
+        pending.removeAll(); order.removeAll()
+        updates.forEach(publish)
+    }
+
+    func cancel() {
+        task?.cancel(); task = nil
+        pending.removeAll(); order.removeAll()
+    }
+}
+
 @MainActor
 final class ChatTranscriptState: ObservableObject {
     @Published var turns: [ChatTurnPresentation] = []
@@ -533,7 +577,7 @@ final class CodexAppServerClient: NSObject {
     你是 StudyRocket 学业助理：既是完成课程、计划、复盘、科研、竞赛和保研工作的协作伙伴与导师，也是在学习、成长、生活适应或个人困扰中可以倾诉的可信赖同行者。根据用户当下目的切换语气，不把每次交流都变成效率优化或计划任务。先读 AGENTS.md、PROFILE.md 和相关工作台 Markdown；遵守仓库规则，未知信息标记【待核实】，不编造 GPA、排名、名额、日期或推免比例。学校政策必须基于仓库官方文件，时效信息需要联网核实并给官方来源。
     \(PlanningProposalValidation.instructions)
     你运行在只读任务中，绝不直接编辑、创建、删除或提交文件。用户要求更新计划、交付物、复盘或档案时，读取当前内容后调用 `studyrocket.propose_changes`，每个目标文件调用一次并传入完整候选正文和理由；应用会在用户确认后写入。只有周复盘有稳定证据时才调用 `studyrocket.propose_skill_update`。绝不调用旧的无命名空间工具名 `studyrocket_propose_changes` 或 `studyrocket_propose_skill_update`。若当前工具目录在 functions.exec 中提供 tools.studyrocket__propose_changes 或 tools.studyrocket__propose_skill_update，请使用其实际声明；这仍通过 StudyRocket 的草案处理器，不能用 shell 或直接写文件代替。
-    课程答疑采用“解释 -> 例子 -> 自测 -> 归档”。计划必须是可勾选交付物，保留缓冲并给撞车降级方案。编辑工作台/下周计划.md 时，同一时段的多个事项用 <br> 分隔且不要在时段单元格内写 Markdown 复选框；带明确开始时间的事项必须归入上午（12:00 前）、中午（12:00-17:59）或晚上（18:00 起），只有无法判断时段的事项才能放入待分配。只记录用户明确提供的事实，不把推测写进行为账。执行日结、周复盘、月复盘或规划前，读取工作台/助理偏好与习惯.md。只有周复盘中同类事实连续至少 3 次时，才可提出 Skill 修改草案；不得把个人事实写进 Skill。
+    课程答疑采用“解释 -> 例子 -> 自测 -> 归档”。计划必须是可勾选交付物，保留缓冲并给撞车降级方案。只记录用户明确提供的事实，不把推测写进行为账。执行日结、周复盘、月复盘或规划前，读取工作台/助理偏好与习惯.md。只有周复盘中同类事实连续至少 3 次时，才可提出 Skill 修改草案；不得把个人事实写进 Skill。
     沟通分情境处理。课程答疑、工作执行和保研咨询时，保持直接、清晰、证据扎实和可执行。用户谈压力、挫败、疲惫、犹豫、关系、生活困扰，或只是想聊聊时，进入陪伴模式：先用自然语言准确回应用户说了什么和难处，不预设、不评判、不急于正能量化；不要把承接限制为 1-2 句，也不要立刻下结论、列待办、给降级方案或把话题拉回学习。允许用户选择继续倾诉、一起梳理，或转为具体行动；每次最多提出一个温和的开放问题，给建议前先确认用户是否希望听建议。混合情境先完成陪伴，再共同确认是否需要行动方案。如果用户报告了完成的交付物，先具体指出已完成的事实及其意义，再继续安排。普通事实问答不要机械加安慰语。可以温暖、真诚且有人情味，但禁止空泛鼓励、模板化正能量、过度共情、心理诊断、淡化痛苦、依赖性表达或结果保证；不声称能取代现实中的朋友、家人、咨询师或医疗服务。若用户出现自伤、自杀、伤害他人、无法保证安全等即时风险，优先平静地确认当下安全，并明确鼓励其立即联系身边可信赖的人、当地紧急服务或急诊支持；不要用成绩、计划或一般建议转移风险。情绪只用于当前回应，不写入每日账、复盘、习惯画像或其他 Markdown。
     \(continuity)
     """
@@ -585,12 +629,15 @@ final class StudyChatStore: ObservableObject {
     private var hostTurnTask: Task<Void, Never>?
     private var hostReconnectFailures = 0
     private var hostActiveTurnID: String?
-    private var pendingPrompt: String?
+    private var hostTerminalTurnIDs = Set<String>()
     private var pendingUnknownMessages: [String: [ChatMessage]] = [:]
     private var pendingSubmissionID: String?
     private var scrollPolicy = ChatScrollPolicy()
     private var streamFollowTask: Task<Void, Never>?
     private var pendingStreamFollowTarget: String?
+    private lazy var hostDisplay = ChatStreamDisplayCoalescer { [weak self] update in
+        self?.replaceStreaming(turnID: update.turnID, itemID: update.itemID, text: update.text, phase: update.phase)
+    }
     private var connectionGeneration = 0
 #if DEBUG
     private var stressFixtureTask: Task<Void, Never>?
@@ -663,6 +710,7 @@ final class StudyChatStore: ObservableObject {
 
     private func publishHistory(_ history: [ChatMessage]) {
         let presented = Self.present(history)
+        if usingHost { hostTerminalTurnIDs.formUnion(presented.filter { $0.status != .inProgress }.map(\.id)) }
         if transcript.turns.isEmpty {
             transcript.replaceHistory(presented)
         } else {
@@ -830,6 +878,7 @@ final class StudyChatStore: ObservableObject {
         hostTurnTask = nil
         usingHost = false
         hostActiveTurnID = nil
+        hostTerminalTurnIDs.removeAll()
 #if DEBUG
         stressFixtureTask?.cancel()
         stressFixtureTask = nil
@@ -843,7 +892,7 @@ final class StudyChatStore: ObservableObject {
             transcript.clearForNewRepository()
             scrollPolicy = ChatScrollPolicy()
         }
-        hostStreamText.reset()
+        resetHostStream()
         hostProposalIDs.removeAll()
         hostSkillProposalIDs.removeAll()
         pendingSubmissionID = nil
@@ -881,17 +930,21 @@ final class StudyChatStore: ObservableObject {
                 let health = try await hostClient.health(for: root)
                 guard generation == connectionGeneration, !Task.isCancelled else { return }
                 let history = try await hostClient.history()
-                if DesktopCloudBinding.isManaged(root), draft.isEmpty { draft = await hostClient.pendingCloudDraft() ?? "" }
+                if DesktopCloudBinding.isManaged(root), draft.isEmpty {
+                    let recoveredDraft = await hostClient.pendingCloudDraft()
+                    guard generation == connectionGeneration, !Task.isCancelled else { return }
+                    if draft.isEmpty { draft = recoveredDraft ?? "" }
+                }
                 guard generation == connectionGeneration, let activeThreadID = health.activeThreadID else { throw StudyChatError.protocolError("StudyRocket Host 没有返回学业任务 ID。") }
                 usingHost = true
                 hostReconnectFailures = 0
                 threadID = activeThreadID
+                rememberHostTerminals(history)
                 publishHistory(Self.messages(from: history))
                 startHostEvents(generation: generation)
                 await refreshHostProposals()
                 guard generation == connectionGeneration else { return }
                 setState(.connected)
-                if let pendingPrompt { draft = pendingPrompt; self.pendingPrompt = nil }
                 return
             } catch {
                 guard generation == connectionGeneration, !Task.isCancelled else { return }
@@ -924,7 +977,6 @@ final class StudyChatStore: ObservableObject {
                 if let legacy { UserDefaults.standard.set(legacy, forKey: legacyThreadKey(for: root)) }
             }
             setState(.connected)
-            if let pendingPrompt { draft = pendingPrompt; self.pendingPrompt = nil }
         } catch {
             guard generation == connectionGeneration else { return }
             client.disconnect(); setState(.failed); errorMessage = error.localizedDescription
@@ -937,7 +989,7 @@ final class StudyChatStore: ObservableObject {
         connectionGeneration &+= 1
         hostEventsTask?.cancel(); hostEventsTask = nil
         hostTurnTask?.cancel(); hostTurnTask = nil
-        hostStreamText.reset()
+        resetHostStream()
         usingHost = false
         hostActiveTurnID = nil
         client.disconnect(); await connectInternal(to: root, forceCreate: false)
@@ -961,7 +1013,15 @@ final class StudyChatStore: ObservableObject {
     }
 
     var canCreateNewTask: Bool { root.map { !DesktopCloudBinding.isManaged($0) } == true && connectionState == .failed }
-    func prepare(prompt: String) { pendingPrompt = prompt; draft = prompt }
+    /// Shortcuts prepare text for review; they never send it or discard an unsent draft.
+    func prepare(prompt: String, replacingDraft: Bool = false) {
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if replacingDraft || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            draft = prompt
+        } else if draft != prompt && !draft.hasSuffix("\n\n" + prompt) {
+            draft += "\n\n" + prompt
+        }
+    }
 
     func toggleProcess(for turnID: String) {
         if transcript.expandedProcessTurnIDs.contains(turnID) { transcript.expandedProcessTurnIDs.remove(turnID) }
@@ -1028,7 +1088,7 @@ final class StudyChatStore: ObservableObject {
         }
         draft = ""; errorMessage = nil; isBusy = true; setState(.thinking); pendingUnknownMessages.removeAll()
         if usingHost {
-            hostStreamText.reset()
+            resetHostStream()
             hostActiveTurnID = nil
             sendThroughHost(text)
             return
@@ -1048,6 +1108,7 @@ final class StudyChatStore: ObservableObject {
 
     func retryLast() { guard let lastSubmitted else { return }; draft = lastSubmitted; send(appendUser: true) }
     func stop() {
+        hostDisplay.flush()
         if usingHost {
             Task { try? await hostClient.interrupt() }
         } else {
@@ -1058,8 +1119,8 @@ final class StudyChatStore: ObservableObject {
     func disconnect() {
         connectionGeneration &+= 1
         hostEventsTask?.cancel(); hostEventsTask = nil
-        hostStreamText.reset()
-        hostTurnTask?.cancel(); hostTurnTask = nil; hostStreamText.reset(); usingHost = false
+        resetHostStream()
+        hostTurnTask?.cancel(); hostTurnTask = nil; usingHost = false
         hostActiveTurnID = nil
         streamFollowTask?.cancel(); streamFollowTask = nil; pendingStreamFollowTarget = nil
         scrollPolicy = ChatScrollPolicy()
@@ -1223,7 +1284,7 @@ final class StudyChatStore: ObservableObject {
         }
     }
 
-    private func consumeHostEvent(_ event: HostEventEnvelope) {
+    func consumeHostEvent(_ event: HostEventEnvelope) {
         guard usingHost else { return }
         if event.kind == "heartbeat" { return }
         if event.snapshot != nil, let root, DesktopCloudBinding.isManaged(root) {
@@ -1234,6 +1295,7 @@ final class StudyChatStore: ObservableObject {
             }
         }
         if event.kind == "chat.failed", isBusy {
+            hostDisplay.flush()
             isBusy = false
             markLatestTurn(.failed, errorMessage: "学业服务对话失败，请重试。")
             setState(.failed)
@@ -1241,12 +1303,17 @@ final class StudyChatStore: ObservableObject {
             return
         }
         if event.kind == "chat.interrupted", isBusy {
+            hostDisplay.flush()
             isBusy = false
             markLatestTurn(.interrupted)
             setState(.stopped)
             return
         }
         guard let chatEvent = event.chat else { return }
+        // A new SSE subscription may replay older turns. Authoritative history
+        // already contains their final state; replay must not reactivate them
+        // or turn a healthy connection into an old model failure.
+        if let turnID = chatEvent.turnID, hostTerminalTurnIDs.contains(turnID) { return }
         switch chatEvent.kind {
         case "delta":
             guard let turnID = chatEvent.turnID, let itemID = chatEvent.itemID, let delta = chatEvent.text else { return }
@@ -1254,9 +1321,12 @@ final class StudyChatStore: ObservableObject {
             let key = "\(turnID)-\(itemID)"
             guard !hostStreamText.completedItemIDs.contains(key) else { return }
             if pendingSubmissionID != nil { assignPendingSubmission(to: turnID, startedAt: .now) }
-            replaceStreaming(turnID: turnID, itemID: itemID, text: accumulatedHostText(turnID: turnID, itemID: itemID, delta: delta), phase: ChatMessagePhase(rawValue: chatEvent.phase ?? "") ?? .unknown)
+            hostDisplay.enqueue(.init(turnID: turnID, itemID: itemID,
+                text: accumulatedHostText(turnID: turnID, itemID: itemID, delta: delta),
+                phase: ChatMessagePhase(rawValue: chatEvent.phase ?? "") ?? .unknown))
         case "item_completed":
             guard let turnID = chatEvent.turnID, let itemID = chatEvent.itemID, let text = chatEvent.text else { return }
+            hostDisplay.flush()
             hostActiveTurnID = turnID
             let phase = ChatMessagePhase(rawValue: chatEvent.phase ?? "") ?? .unknown
             guard hostStreamText.complete(itemID: "\(turnID)-\(itemID)", text: text) != nil else { return }
@@ -1267,6 +1337,7 @@ final class StudyChatStore: ObservableObject {
             }
         case "status":
             guard let status = chatEvent.status else { return }
+            if status != "inProgress" { hostDisplay.flush() }
             switch status {
             case "inProgress":
                 if let turnID = chatEvent.turnID {
@@ -1292,11 +1363,13 @@ final class StudyChatStore: ObservableObject {
                     hostActiveTurnID = turnID
                     if pendingSubmissionID != nil { assignPendingSubmission(to: turnID, startedAt: .now) }
                     completeTurn(ChatTurnResult(turnID: turnID, status: .failed, errorMessage: chatEvent.text, completedAt: .now))
+                    hostTerminalTurnIDs.insert(turnID)
                 } else {
                     markLatestTurn(.failed, errorMessage: chatEvent.text)
                 }
                 isBusy = false
-                setState(.failed)
+                hostActiveTurnID = nil
+                setState(.connected)
                 errorMessage = chatEvent.text ?? "学业服务对话失败，请重试。"
             default:
                 break
@@ -1307,6 +1380,16 @@ final class StudyChatStore: ObservableObject {
     }
 
     private var hostStreamText = ChatStreamAccumulator()
+
+    private func rememberHostTerminals(_ response: ChatHistoryResponse) {
+        hostTerminalTurnIDs.formUnion((response.terminalTurns ?? [])
+            .filter { ["completed", "failed", "interrupted"].contains($0.status) }.map(\.turnID))
+    }
+
+    private func resetHostStream() {
+        hostDisplay.cancel()
+        hostStreamText.reset()
+    }
 
     private func accumulatedHostText(turnID: String, itemID: String, delta: String) -> String {
         let key = "\(turnID)-\(itemID)"
@@ -1320,6 +1403,8 @@ final class StudyChatStore: ObservableObject {
             let response = try await hostClient.history()
             guard usingHost, generation == connectionGeneration, !Task.isCancelled else { return }
             let messages = Self.messages(from: response)
+            hostDisplay.flush()
+            rememberHostTerminals(response)
             publishHistory(messages)
             if finalState == .inProgress,
                (isBusy || pendingSubmissionID != nil || hostActiveTurnID != nil) {
@@ -1344,7 +1429,14 @@ final class StudyChatStore: ObservableObject {
             case .completed: setState(.connected)
             case .interrupted: setState(.stopped)
             case .failed: setState(.failed)
-            case .inProgress: break
+            case .inProgress:
+                // A successful history request verifies the service is reachable.
+                // Existing turn errors remain in their rows; only connection
+                // recovery clears a stale transport banner.
+                if !isBusy {
+                    if connectionState == .failed || connectionState == .reconnecting { errorMessage = nil }
+                    setState(.connected)
+                }
             }
             await refreshHostProposals()
         } catch {
@@ -1524,6 +1616,15 @@ final class StudyChatStore: ObservableObject {
             guard tool == StudyRocketDynamicToolContract.proposalTool else { throw StudyChatError.protocolError("不支持的工具。") }
             guard repository.isAllowedStudyPath(path) else { throw MarkdownError.outsideWorkspace }
             let original = try repository.read(path)
+            if path == "工作台/下周计划.md", try TaskLinkageMarkdown.read(original) == nil,
+               let graph = try TaskLinkageMarkdown.read(content) {
+                let now = Date()
+                let week = AcademicSnapshotBuilder(root: root).build(now: now).week
+                guard repository.hash(try repository.read(path)) == repository.hash(original) else { throw MarkdownError.conflict }
+                let seed = TaskLinkage(activationDate: PlanningDate.key(now)).reconciled(with: week, now: now)
+                guard graph.activationDate == seed.activationDate else { throw TaskLinkageError.changed }
+                try PlanningProposalValidation.preserveHistory(from: seed, in: graph)
+            }
             var prepared = try PlanningProposalValidation.prepare(path: path, original: original, proposed: content)
             if path == "工作台/下周计划.md", let timetable = try? repository.read(StudyRocketTimetableParser.sourceFile) {
                 let routed = try PlanningChangeRouter.route(week: prepared, original: original, timetable: timetable)
@@ -1571,7 +1672,10 @@ extension MarkdownRepository {
 
     func saveBatch(_ changes: [Change]) async throws {
         if DesktopCloudBinding.isManaged(root) {
-            for change in changes { guard isAllowedStudyPath(change.relative) else { throw MarkdownError.outsideWorkspace } }
+            for change in changes {
+                guard isAllowedStudyPath(change.relative) else { throw MarkdownError.outsideWorkspace }
+                try PlanningProposalValidation.validateManagedBoundaries(path: change.relative, original: (try? read(change.relative)) ?? "", proposed: change.content)
+            }
             try await DesktopCloudWorkspace.shared.commit(root: root, files: changes.map {
                 CloudFileChange(path: $0.relative, baseHash: (try? read($0.relative)) != nil ? $0.loadedHash : nil, content: $0.content)
             })
@@ -1589,6 +1693,7 @@ extension MarkdownRepository {
             let current = (try? Data(contentsOf: target)) ?? Data()
             let currentText = String(data: current, encoding: .utf8) ?? ""
             guard hash(currentText) == change.loadedHash else { throw MarkdownError.conflict }
+            try PlanningProposalValidation.validateManagedBoundaries(path: change.relative, original: currentText, proposed: change.content)
             originals.append((target, current))
         }
         var written: [LocalSaveHistory.Change] = []

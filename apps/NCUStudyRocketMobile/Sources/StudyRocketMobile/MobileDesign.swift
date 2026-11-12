@@ -409,14 +409,14 @@ struct MobileSectionHeading: View {
             .fixedSize(horizontal: true, vertical: false)
           Spacer(minLength: 8)
           Text(detail)
-            .font(.caption)
+            .studyTypography(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: true, vertical: false)
         }
         VStack(alignment: .leading, spacing: 4) {
           headingLabel
           Text(detail)
-            .font(.caption)
+            .studyTypography(.caption)
             .foregroundStyle(.secondary)
         }
       }
@@ -433,7 +433,7 @@ struct MobileSectionHeading: View {
           .accessibilityHidden(true)
       }
       Text(title)
-        .font(.system(.headline, design: .rounded, weight: .semibold))
+        .studyTypography(.headline, weight: .semibold)
         .fixedSize(horizontal: false, vertical: true)
     }
   }
@@ -443,8 +443,8 @@ struct MobileConnectionPill: View {
   let state: MobileConnectionState
 
   var body: some View {
-    Label(state.title, systemImage: state == .online ? "checkmark.circle.fill" : "circle.dotted")
-      .font(.caption.weight(.medium))
+    StudyLabel(state.title, systemImage: state == .online ? "checkmark.circle.fill" : "circle.dotted")
+      .studyTypography(.caption, weight: .medium)
       .foregroundStyle(MobileTheme.statusColor(state))
       .padding(.horizontal, 9)
       .padding(.vertical, 6)
@@ -469,7 +469,6 @@ struct MobilePrimaryButton: View {
             .accessibilityHidden(true)
         }
         Text(title)
-          .lineLimit(2)
           .multilineTextAlignment(.center)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -498,19 +497,19 @@ struct MobileTodayChecklist: View {
     VStack(spacing: 8) {
       ForEach(periods) { period in
         VStack(alignment: .leading, spacing: 4) {
-          Label(period.title, systemImage: periodSymbol(period.id))
-            .font(.caption.weight(.semibold))
+          StudyLabel(period.title, systemImage: periodSymbol(period.id))
+            .studyTypography(.caption, weight: .semibold)
             .foregroundStyle(.secondary)
             .frame(minHeight: 28, alignment: .leading)
           if period.tasks.isEmpty {
             HStack(alignment: .top, spacing: 10) {
               Image(systemName: "circle")
                 .foregroundStyle(Color.secondary)
-                .font(.body)
+                .studyTypography(.body)
                 .frame(width: 22, height: 22)
                 .accessibilityHidden(true)
               Text("未安排")
-                .font(.subheadline)
+                .studyTypography(.subheadline)
                 .foregroundStyle(.secondary)
                 .frame(minHeight: 44, alignment: .leading)
               Spacer(minLength: 0)
@@ -529,7 +528,7 @@ struct MobileTodayChecklist: View {
                 HStack(alignment: .top, spacing: 10) {
                   Image(systemName: isCompleted ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(isCompleted ? MobileTheme.completion : MobileTheme.rail)
-                    .font(.body)
+                    .studyTypography(.body)
                     .frame(width: 22, height: 22)
                     .accessibilityHidden(true)
                   VStack(alignment: .leading, spacing: 3) {
@@ -540,7 +539,7 @@ struct MobileTodayChecklist: View {
                     )
                     if pending, let label = pendingLabel(period, task) {
                       Text(label)
-                        .font(.caption2.weight(.semibold))
+                        .studyTypography(.caption2, weight: .semibold)
                         .foregroundStyle(label == "正在同步" ? MobileTheme.rail : Color.orange)
                     }
                   }
@@ -567,8 +566,8 @@ struct MobileTodayChecklist: View {
             }
           }
           if hasLegacyPending(period) {
-            Label("此时段有旧版待确认操作", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
-              .font(.caption2.weight(.semibold))
+            StudyLabel("此时段有旧版待确认操作", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
+              .studyTypography(.caption2, weight: .semibold)
               .foregroundStyle(.orange)
               .padding(.leading, 20)
           }
@@ -652,7 +651,7 @@ struct MobileDeliveryOverview: View {
               ? "Mac 已完成 \(authoritativeCompleted) / \(total) 项"
               : "已完成 \(completed) / \(total) 项"
         )
-        .font(.subheadline.weight(.semibold))
+        .studyTypography(.subheadline, weight: .semibold)
         .foregroundStyle(total == 0 ? .secondary : .primary)
         Spacer(minLength: 8)
         if total > 0 {
@@ -664,7 +663,7 @@ struct MobileDeliveryOverview: View {
       switch chapterBody {
       case .empty:
         Text("本周暂无交付物")
-          .font(.subheadline.weight(.medium))
+          .studyTypography(.subheadline, weight: .medium)
           .foregroundStyle(.secondary)
           .frame(minHeight: 44, alignment: .leading)
           .transition(.opacity)
@@ -690,7 +689,7 @@ struct MobileDeliveryOverview: View {
             tint: pendingStatus.tint
           )
           if let actionTitle = pendingStatus.actionTitle, let onPendingAction {
-            Button(actionTitle, action: onPendingAction)
+            StudyButton(actionTitle, action: onPendingAction)
               .buttonStyle(.bordered)
               .controlSize(.regular)
           }
@@ -728,12 +727,12 @@ struct MobileDeliveryOverview: View {
                   HStack(spacing: 6) {
                     if let dateLabel = delivery.dateLabel {
                       Text(dateLabel)
-                        .font(.caption.weight(.medium))
+                        .studyTypography(.caption, weight: .medium)
                         .foregroundStyle(overdue ? Color.orange : Color.secondary)
                     }
                     if overdue {
                       Text("已逾期")
-                        .font(.caption2.weight(.semibold))
+                        .studyTypography(.caption2, weight: .semibold)
                         .foregroundStyle(.orange)
                     }
                   }
@@ -744,11 +743,11 @@ struct MobileDeliveryOverview: View {
                   )
                   if nodeState == .awaitingConfirmation {
                     Text("等待 Mac 确认")
-                      .font(.caption2.weight(.semibold))
+                      .studyTypography(.caption2, weight: .semibold)
                       .foregroundStyle(MobileTheme.rail)
                   } else if nodeState == .queuedOffline {
                     Text(queueLabel)
-                      .font(.caption2.weight(.semibold))
+                      .studyTypography(.caption2, weight: .semibold)
                       .foregroundStyle(queueLabel == "正在同步" ? MobileTheme.rail : Color.orange)
                   }
                 }
@@ -948,7 +947,7 @@ private struct MobileDeliverySyncPlaceholder: View {
         .frame(width: 58, height: 58)
         .accessibilityHidden(true)
       Text(text)
-        .font(.subheadline.weight(.semibold))
+        .studyTypography(.subheadline, weight: .semibold)
         .foregroundStyle(tint)
     }
     .frame(maxWidth: .infinity, minHeight: 112, alignment: .center)
@@ -1092,7 +1091,7 @@ private struct MobileDeliveryChapterSeal: View {
       .accessibilityHidden(true)
 
       Text(MobileDeliveryChapterPresentation.completionTitle)
-        .font(.system(.headline, design: .rounded, weight: .bold))
+        .studyTypography(.headline, weight: .bold)
         .foregroundStyle(MobileTheme.completion)
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -1123,7 +1122,7 @@ enum MobileAccessibility {
 private struct MobileInterruptibleStrikeText: View {
   let text: String
   let isStruck: Bool
-  var font: Font = .body
+  var font: Font.TextStyle = .body
   var inactiveColor: Color = .primary
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var progress: CGFloat = 0
@@ -1133,11 +1132,11 @@ private struct MobileInterruptibleStrikeText: View {
       if reduceMotion {
         ZStack(alignment: .leading) {
           Text(text)
-            .font(font)
+            .studyTypography(font)
             .foregroundStyle(inactiveColor)
             .opacity(isStruck ? 0 : 1)
           Text(text)
-            .font(font)
+            .studyTypography(font)
             .foregroundStyle(.secondary)
             .strikethrough(true, color: .secondary)
             .opacity(isStruck ? 1 : 0)
@@ -1145,9 +1144,9 @@ private struct MobileInterruptibleStrikeText: View {
         .animation(.easeInOut(duration: 0.2), value: isStruck)
       } else {
         ZStack(alignment: .leading) {
-          Text(text).font(font).foregroundStyle(inactiveColor)
+          Text(text).studyTypography(font).foregroundStyle(inactiveColor)
           Text(text)
-            .font(font)
+            .studyTypography(font)
             .foregroundStyle(.secondary)
             .strikethrough(true, color: .secondary)
             .mask(alignment: .leading) {
@@ -1170,8 +1169,8 @@ struct MobileInlineNotice: View {
   var tint: Color = .secondary
 
   var body: some View {
-    Label(text, systemImage: symbol)
-      .font(.footnote)
+    StudyLabel(text, systemImage: symbol)
+      .studyTypography(.footnote)
       .foregroundStyle(tint)
       .fixedSize(horizontal: false, vertical: true)
       .padding(.horizontal, 12)
@@ -1201,17 +1200,17 @@ struct MobileFactField: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 7) {
       Text(title)
-        .font(.caption.weight(.semibold))
+        .studyTypography(.caption, weight: .semibold)
         .foregroundStyle(.secondary)
       HStack(alignment: .top, spacing: 9) {
         Image(systemName: symbol)
-          .font(.body.weight(.medium))
+          .studyTypography(.body, weight: .medium)
           .foregroundStyle(MobileTheme.rail)
           .frame(width: 22)
           .padding(.top, 3)
           .accessibilityHidden(true)
         TextField(placeholder, text: $text, axis: multiline ? .vertical : .horizontal)
-          .font(.body)
+          .studyTypography(.body)
           .lineLimit(multiline ? 4 : 1)
           .focused(focus, equals: field)
           #if os(iOS)
@@ -1236,32 +1235,51 @@ struct MobileEmptyState: View {
   var action: (() -> Void)?
 
   var body: some View {
-    VStack(spacing: 12) {
-      VStack(spacing: 12) {
-        Image(systemName: symbol)
-          .font(.system(size: 42, weight: .medium))
-          .foregroundStyle(MobileTheme.rail)
-          .symbolRenderingMode(.hierarchical)
-          .accessibilityHidden(true)
-        Text(title)
-          .font(.title3.weight(.semibold))
-          .multilineTextAlignment(.center)
-        Text(message)
-          .font(.subheadline)
-          .foregroundStyle(.secondary)
-          .multilineTextAlignment(.center)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      .accessibilityElement(children: .combine)
+    ContentUnavailableView {
+      StudyLabel(title, systemImage: symbol)
+        .studyTypography(.title3, weight: .semibold)
+    } description: {
+      Text(message)
+        .studyTypography(.subheadline)
+        .fixedSize(horizontal: false, vertical: true)
+    } actions: {
       if let actionTitle, let action {
         MobilePrimaryButton(title: actionTitle, action: action)
-          .padding(.top, 4)
+          .frame(maxWidth: 340)
       }
     }
-    .frame(maxWidth: 320)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-    .padding(.horizontal, MobileTheme.pageInset)
-    .padding(.vertical, 48)
-    .accessibilityElement(children: .contain)
+    .frame(maxWidth: .infinity)
+    .padding(.vertical, 24)
+  }
+}
+
+struct MobileAdaptiveValue: View {
+  let title: String
+  let value: String
+  var monospaced = false
+  var tint: Color = .secondary
+
+  var body: some View {
+    ViewThatFits(in: .horizontal) {
+      HStack(alignment: .firstTextBaseline, spacing: 12) {
+        Text(title).fixedSize(horizontal: true, vertical: false)
+        Spacer(minLength: 8)
+        valueText.fixedSize(horizontal: true, vertical: false)
+      }
+      VStack(alignment: .leading, spacing: 6) {
+        Text(title).studyTypography(.subheadline).foregroundStyle(.secondary)
+        valueText.fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(title)，\(value)")
+  }
+
+  private var valueText: some View {
+    Text(value)
+      .studyTypography(monospaced ? .footnote : .subheadline, weight: .medium)
+      .foregroundStyle(tint)
+      .textSelection(.enabled)
   }
 }

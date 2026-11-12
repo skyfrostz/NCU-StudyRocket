@@ -1,4 +1,5 @@
 import SwiftUI
+import StudyRocketShared
 
 struct SeasonalVerse: Identifiable {
     let id: String
@@ -59,27 +60,27 @@ struct SeasonalHeader: View {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(verbatim: Self.greeting(at: context.date))
-                        .font(.subheadline.weight(.medium))
+                        .studyTypography(.subheadline, weight: .medium)
                         .foregroundStyle(.secondary)
                     if let verse = SeasonalVerse.on(context.date) {
                         Button { showSource.toggle() } label: {
-                            Text(verbatim: verse.punctuatedText).font(.system(size: 24, weight: .semibold))
+                            Text(verbatim: verse.punctuatedText).studyPoetryTypography()
                                 .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
                         }
                         .buttonStyle(.plain).help("查看诗句出处")
                         .accessibilityHint("查看作者与篇名")
                         .popover(isPresented: $showSource) {
                             VStack(alignment: .leading, spacing: 8) {
-                                Text(verse.punctuatedText).font(.headline)
+                                Text(verse.punctuatedText).studyPoetryTypography(size: 17, relativeTo: .headline)
                                 Text("宋 · \(verse.author)《\(verse.work)》").foregroundStyle(.secondary)
                                 Link("阅读原文", destination: verse.source)
                             }.padding(18).frame(maxWidth: 360, alignment: .leading)
                         }
                     }
-                    Text(Self.dateLabel.string(from: context.date)).font(.subheadline).foregroundStyle(.secondary)
+                    Text(Self.dateLabel.string(from: context.date)).studyTypography(.subheadline).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
-                Button("记一件事", systemImage: "square.and.pencil", action: record)
+                StudyButton("记一件事", systemImage: "square.and.pencil", action: record)
             }
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in anchor = .now }

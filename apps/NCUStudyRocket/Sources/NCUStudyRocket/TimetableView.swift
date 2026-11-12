@@ -13,19 +13,20 @@ struct TimetableView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var model = TimetablePageModel()
     @State private var showImporter = false
-    @State private var showEventEditor = false
+    @State private var eventEditor: TimetableEventEditorContext?
     @State private var viewingDate = Date()
     @State private var weekNavigationDirection: TimetableWeekNavigationDirection = .next
 
     var body: some View {
-        PageScaffold {
+        PageScaffold(maxWidth: 1600) {
             VStack(alignment: .leading, spacing: StudyRocketTheme.sectionGap) {
                 PageTitleBar(title: "课表", subtitle: model.subtitle) {
-                    Button("单次活动", systemImage: "calendar.badge.plus") { showEventEditor = true }
+                    StudyButton("单次活动", systemImage: "calendar.badge.plus") { eventEditor = model.eventEditorContext }
+                        .disabled(model.source.isEmpty)
                     Button {
                         showImporter = true
                     } label: {
-                        Label("导入课表", systemImage: "square.and.arrow.down")
+                        StudyLabel("导入课表", systemImage: "square.and.arrow.down")
                     }
                     .buttonStyle(.borderedProminent)
                     .accessibilityHint("选择 Excel、CSV 或 StudyRocket 课表 Markdown")
@@ -39,9 +40,16 @@ struct TimetableView: View {
                     )
                 }
 
-                DatePicker("查看日期", selection: $viewingDate, displayedComponents: .date)
-                    .environment(\.timeZone, PlanningDate.calendar.timeZone)
-                    .onChange(of: viewingDate) { _, value in model.selectDate(value) }
+                HStack(spacing: 12) {
+                    StudyRocketCalendarPicker("查看日期", selection: $viewingDate)
+                        .fixedSize()
+                        .environment(\.timeZone, PlanningDate.calendar.timeZone)
+                        .environment(\.locale, Locale(identifier: "zh_CN"))
+                        .onChange(of: PlanningDate.key(viewingDate)) { _, _ in model.selectDate(viewingDate) }
+                    StudyButton("今天") { viewingDate = .now; model.selectDate(viewingDate) }
+                        .buttonStyle(.bordered)
+                    Spacer(minLength: 0)
+                }
                 if let range = model.weekRange {
                     TimetableWeekNavigator(
                         snapshot: model.selectedSnapshot,
@@ -60,15 +68,17 @@ struct TimetableView: View {
                 }
 
                 if let message = model.errorMessage {
-                    Label(message, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
+                    StudyLabel(message, systemImage: "exclamationmark.triangle.fill")
+                        .studyTypography(.caption)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
-        .sheet(isPresented: $showEventEditor) {
-            OneOffEventEditor(source: model.source) { events in try await model.saveEvents(events, workspace: workspace) }
+        .sheet(item: $eventEditor) { context in
+            OneOffEventEditor(source: context.source) { events in
+                try await model.saveEvents(events, context: context, workspace: workspace)
+            }
                 .frame(minWidth: 580, minHeight: 560)
         }
         .fileImporter(
@@ -95,6 +105,13 @@ struct TimetableView: View {
     }
 }
 
+private struct TimetableEventEditorContext: Identifiable {
+    let id = UUID()
+    let root: URL
+    let source: String
+    let baseHash: String
+}
+
 @MainActor
 private final class TimetablePageModel: ObservableObject {
     struct PendingImport: Identifiable, Equatable {
@@ -114,10 +131,15 @@ private final class TimetablePageModel: ObservableObject {
     @Published private(set) var errorMessage: String?
 
     private var root: URL?
-    private(set) var source = ""
+    @Published private(set) var source = ""
     private var loadedHash = ""
     private var document: TimetableDocument?
     private var selectedWeek = 1
+
+    var eventEditorContext: TimetableEventEditorContext? {
+        guard let root, !source.isEmpty else { return nil }
+        return TimetableEventEditorContext(root: root, source: source, baseHash: loadedHash)
+    }
 
     var subtitle: String {
         guard let document else { return "尚未导入课表" }
@@ -125,10 +147,15 @@ private final class TimetablePageModel: ObservableObject {
     }
 
     func load(from root: URL) {
-        self.root = root
         let repository = MarkdownRepository(root: root)
-        source = (try? repository.read(StudyRocketTimetableParser.sourceFile)) ?? ""
-        loadedHash = repository.hash(source)
+        let nextSource = (try? repository.read(StudyRocketTimetableParser.sourceFile)) ?? ""
+        let nextHash = repository.hash(nextSource)
+        // A calendar popover can reactivate the app. Unchanged data must not
+        // rebuild the timetable or reset the date the user is inspecting.
+        guard self.root != root || loadedHash != nextHash else { return }
+        self.root = root
+        source = nextSource
+        loadedHash = nextHash
         document = try? StudyRocketTimetableParser.document(from: source)
         weekRange = StudyRocketTimetableParser.teachingWeekRange(from: source)
         currentSnapshot = StudyRocketTimetableParser.snapshot(from: source)
@@ -159,11 +186,16 @@ private final class TimetablePageModel: ObservableObject {
         selectedSnapshot = StudyRocketTimetableParser.snapshot(from: source, teachingWeek: week)
     }
 
-    func saveEvents(_ events: [OneOffEvent], workspace: WorkspaceStore) async throws {
+    func saveEvents(_ events: [OneOffEvent], context: TimetableEventEditorContext, workspace: WorkspaceStore) async throws {
         do {
-            let repository = MarkdownRepository(root: workspace.rootURL)
-            let updated = try OneOffSchedule.write(events, in: source)
-            try await repository.save(updated, relative: StudyRocketTimetableParser.sourceFile, loadedHash: loadedHash)
+            guard workspace.rootURL.standardizedFileURL == context.root.standardizedFileURL else {
+                throw PlanningChangeRouter.RoutingError("仓库已切换，请重新打开活动编辑器。")
+            }
+            let repository = MarkdownRepository(root: context.root)
+            let document = try OneOffEventEditorDocument(source: context.source)
+            guard document.hasChanges(events) else { return }
+            let updated = try document.preview(events)
+            try await repository.save(updated, relative: StudyRocketTimetableParser.sourceFile, loadedHash: context.baseHash)
             load(from: workspace.rootURL)
             workspace.notifyWorkspaceChanged()
             NotificationCenter.default.post(name: .studyRocketTimetableChanged, object: nil)
@@ -277,11 +309,11 @@ private struct TimetableImportPreviewCard: View {
         StudySurface {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Label("导入预览", systemImage: "doc.badge.arrow.up")
-                        .font(.headline)
+                    StudyLabel("导入预览", systemImage: "doc.badge.arrow.up")
+                        .studyTypography(.headline)
                     Spacer(minLength: 12)
                     Text(pending.preview.format.title)
-                        .font(.caption)
+                        .studyTypography(.caption)
                         .foregroundStyle(.secondary)
                 }
                 LabeledContent("文件", value: pending.preview.fileName)
@@ -290,15 +322,15 @@ private struct TimetableImportPreviewCard: View {
                 LabeledContent("范围", value: "\(pending.mergedDocument.firstImportedDate) 至 \(pending.mergedDocument.lastImportedDate)")
                 LabeledContent("课程记录", value: "新增 \(pending.addedCount) 条，更新 \(pending.updatedCount) 条")
                 ForEach(pending.preview.warnings, id: \.self) { warning in
-                    Label(warning, systemImage: "exclamationmark.circle")
-                        .font(.caption)
+                    StudyLabel(warning, systemImage: "exclamationmark.circle")
+                        .studyTypography(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 HStack(spacing: 10) {
-                    Button("保存课表", systemImage: "square.and.arrow.down") { save() }
+                    StudyButton("保存课表", systemImage: "square.and.arrow.down") { save() }
                         .buttonStyle(.borderedProminent)
-                    Button("放弃导入", role: .cancel) { discard() }
+                    StudyButton("放弃导入", role: .cancel) { discard() }
                         .buttonStyle(.bordered)
                 }
             }
@@ -321,7 +353,7 @@ private struct TimetableWeekNavigator: View {
                             select(week, week < currentWeek ? .previous : .next)
                         } label: {
                             if week == currentWeek {
-                                Label("第\(week)周", systemImage: "checkmark")
+                                StudyLabel("第\(week)周", systemImage: "checkmark")
                             } else {
                                 Text("第\(week)周")
                             }
@@ -330,9 +362,9 @@ private struct TimetableWeekNavigator: View {
                 } label: {
                     HStack(spacing: 5) {
                         Text(snapshot.weekLabel ?? "第\(currentWeek)周")
-                            .font(.headline)
+                            .studyTypography(.headline)
                         Image(systemName: "chevron.up.chevron.down")
-                            .font(.caption.weight(.semibold))
+                            .studyTypography(.caption, weight: .semibold)
                             .foregroundStyle(.secondary)
                             .accessibilityHidden(true)
                     }
@@ -363,7 +395,7 @@ private struct TimetableWeekNavigator: View {
                 }
             }
             Text("\(snapshot.classLabel) · \(dateRange) · 第\(range.lowerBound)-\(range.upperBound)周")
-                .font(.caption)
+                .studyTypography(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -405,16 +437,16 @@ private struct TimetableWeekTransitionContainer: View {
 }
 
 private struct TimetableWeekCanvas: View {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let snapshot: TimetableSnapshot
 
     var body: some View {
         StudySurface {
-            if dynamicTypeSize.isAccessibilitySize {
-                TimetableWeekAgenda(snapshot: snapshot)
-            } else {
+            ScrollView(.horizontal) {
                 TimetableWeekOverview(snapshot: snapshot)
+                    .containerRelativeFrame(.horizontal) { width, _ in max(980, width) }
             }
+            .frame(maxWidth: .infinity)
+            .clipped()
         }
     }
 }
@@ -495,7 +527,7 @@ private struct TimetableTimelineHeaderRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             Text("时间")
-                .font(.caption.weight(.medium))
+                .studyTypography(.caption, weight: .medium)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .padding(.trailing, 8)
@@ -534,14 +566,14 @@ private struct TimetableTimelineDayHeader: View {
     var body: some View {
         VStack(spacing: 2) {
             Text(day.weekdayLabel)
-                .font(.caption.weight(.medium))
+                .studyTypography(.caption, weight: .medium)
                 .foregroundStyle(isReferenceDate ? Color.accentColor : .secondary)
             Text(day.timetableShortDate)
-                .font(.subheadline.weight(isReferenceDate ? .semibold : .medium))
+                .studyTypography(.subheadline, weight: isReferenceDate ? .semibold : .medium)
                 .lineLimit(1)
             if isReferenceDate {
                 Text("今天")
-                    .font(.caption2.weight(.semibold))
+                    .studyTypography(.caption2, weight: .semibold)
                     .foregroundStyle(Color.accentColor)
             } else {
                 Color.clear.frame(height: 11)
@@ -572,7 +604,7 @@ private struct TimetableAllDayLane: View {
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             Text("全天")
-                .font(.caption2.weight(.medium))
+                .studyTypography(.caption2, weight: .medium)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .padding(.trailing, 8)
@@ -644,11 +676,11 @@ private struct TimetableAllDayEntryButton: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: entry.timetableSymbol)
-                    .font(.caption2.weight(.semibold))
+                    .studyTypography(.caption2, weight: .semibold)
                     .foregroundStyle(entry.timetableTint)
                     .accessibilityHidden(true)
                 Text(displayTitle.primary)
-                    .font(.caption2.weight(entry.kind == .course ? .semibold : .medium))
+                    .studyTypography(.caption2, weight: entry.kind == .course ? .semibold : .medium)
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
@@ -684,7 +716,7 @@ private struct TimetableTimeRuler: View {
             ZStack(alignment: .topTrailing) {
                 ForEach(metrics.hourTicks, id: \.self) { minute in
                     Text(TimetableTimelineMetrics.clockLabel(for: minute))
-                        .font(.caption2.monospacedDigit())
+                        .studyTypography(.caption2).monospacedDigit()
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .padding(.trailing, 8)
@@ -741,7 +773,7 @@ private struct TimetableDayTimeline: View {
             ZStack(alignment: .topLeading) {
                 if placements.isEmpty, !hasAllDayEntry {
                     Text("无课程")
-                        .font(.caption2)
+                        .studyTypography(.caption2)
                         .foregroundStyle(.tertiary)
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.top, 10)
@@ -876,32 +908,32 @@ private struct TimetableTimelineEntryButton: View {
                     .fill(entry.timetableTint)
                     .frame(width: 2)
                 Text(displayTitle.primary)
-                    .font(.caption2.weight(.semibold))
+                    .studyTypography(.caption2, weight: .semibold)
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
         case .compact:
             VStack(alignment: .leading, spacing: 1) {
                 Text(entry.timetableCompactTimeText)
-                    .font(.caption2.monospacedDigit().weight(.semibold))
+                    .studyTypography(.caption2, weight: .semibold).monospacedDigit()
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Text(displayTitle.primary)
-                    .font(.caption2.weight(entry.kind == .course ? .semibold : .medium))
+                    .studyTypography(.caption2, weight: entry.kind == .course ? .semibold : .medium)
                     .lineLimit(2)
             }
         case .standard:
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.timetableCompactTimeText)
-                    .font(.caption2.monospacedDigit().weight(.semibold))
+                    .studyTypography(.caption2, weight: .semibold).monospacedDigit()
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Text(displayTitle.primary)
-                    .font(.caption.weight(entry.kind == .course ? .semibold : .medium))
+                    .studyTypography(.caption, weight: entry.kind == .course ? .semibold : .medium)
                     .lineLimit(2)
                 if let secondary = displayTitle.secondary {
                     Text(secondary)
-                        .font(.caption2)
+                        .studyTypography(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -910,27 +942,27 @@ private struct TimetableTimelineEntryButton: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 3) {
                     Image(systemName: entry.timetableSymbol)
-                        .font(.caption2.weight(.semibold))
+                        .studyTypography(.caption2, weight: .semibold)
                         .foregroundStyle(entry.timetableTint)
                         .accessibilityHidden(true)
                     Text(entry.timetableCompactTimeText)
-                        .font(.caption2.monospacedDigit().weight(.semibold))
+                        .studyTypography(.caption2, weight: .semibold).monospacedDigit()
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 0)
                 }
                 Text(displayTitle.primary)
-                    .font(.caption.weight(entry.kind == .course ? .semibold : .medium))
+                    .studyTypography(.caption, weight: entry.kind == .course ? .semibold : .medium)
                     .lineLimit(2)
                 if let secondary = displayTitle.secondary {
                     Text(secondary)
-                        .font(.caption2)
+                        .studyTypography(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 if !entry.timetableMetadata.isEmpty {
                     Text(entry.timetableMetadata)
-                        .font(.caption2)
+                        .studyTypography(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
@@ -1236,7 +1268,7 @@ private struct TimetableWeekDayColumn: View {
 
             if timedEntries.isEmpty, allDayEntries.isEmpty {
                 Text("无课程")
-                    .font(.caption)
+                    .studyTypography(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 56, alignment: .topLeading)
             } else {
@@ -1256,14 +1288,14 @@ private struct TimetableWeekDayHeader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(day.weekdayLabel)
-                .font(.caption.weight(.medium))
+                .studyTypography(.caption, weight: .medium)
                 .foregroundStyle(isReferenceDate ? Color.accentColor : .secondary)
             Text(day.timetableShortDate)
-                .font(.subheadline.weight(isReferenceDate ? .semibold : .medium))
+                .studyTypography(.subheadline, weight: isReferenceDate ? .semibold : .medium)
                 .lineLimit(1)
             if isReferenceDate {
                 Text("今天")
-                    .font(.caption2.weight(.semibold))
+                    .studyTypography(.caption2, weight: .semibold)
                     .foregroundStyle(Color.accentColor)
             }
         }
@@ -1288,31 +1320,31 @@ private struct TimetableWeekEntryButton: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 4) {
                     Image(systemName: symbol)
-                        .font(.caption2.weight(.semibold))
+                        .studyTypography(.caption2, weight: .semibold)
                         .foregroundStyle(tint)
                         .accessibilityHidden(true)
                     Text(isAllDay ? "全天" : timeText)
-                        .font(.caption2.monospacedDigit().weight(.semibold))
+                        .studyTypography(.caption2, weight: .semibold).monospacedDigit()
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 0)
                 }
 
                 Text(displayTitle.primary)
-                    .font(.caption.weight(entry.kind == .course ? .semibold : .medium))
+                    .studyTypography(.caption, weight: entry.kind == .course ? .semibold : .medium)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if let secondary = displayTitle.secondary {
                     Text(secondary)
-                        .font(.caption2)
+                        .studyTypography(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if !metadata.isEmpty {
                     Text(metadata)
-                        .font(.caption2)
+                        .studyTypography(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -1403,16 +1435,16 @@ private struct TimetableEntryDetailPopover: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: symbol)
-                    .font(.title3)
+                    .studyTypography(.title3)
                     .foregroundStyle(tint)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(displayTitle.primary)
-                        .font(.headline)
+                        .studyTypography(.headline)
                         .fixedSize(horizontal: false, vertical: true)
                     if let secondary = displayTitle.secondary {
                         Text(secondary)
-                            .font(.subheadline)
+                            .studyTypography(.subheadline)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -1497,16 +1529,16 @@ private struct TimetableEntryDetailLine: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: symbol)
-                .font(.caption)
+                .studyTypography(.caption)
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
                 .accessibilityHidden(true)
             Text(title)
-                .font(.caption)
+                .studyTypography(.caption)
                 .foregroundStyle(.secondary)
                 .frame(width: 32, alignment: .leading)
             Text(value)
-                .font(.subheadline)
+                .studyTypography(.subheadline)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -1520,7 +1552,7 @@ private struct TimetableWeekAgenda: View {
             ForEach(snapshot.days) { day in
                 VStack(alignment: .leading, spacing: 8) {
                     Text(day.dateLabel)
-                        .font(.subheadline.weight(.semibold))
+                        .studyTypography(.subheadline, weight: .semibold)
                     TimetableDayContent(day: day)
                 }
                 .padding(.vertical, 10)
@@ -1540,14 +1572,14 @@ private struct TimetableDayContent: View {
         let entries = day.entries.filter { $0.kind != .holiday }
         VStack(alignment: .leading, spacing: 0) {
             ForEach(holidays) { holiday in
-                Label(holiday.title, systemImage: "sun.max.fill")
-                    .font(.subheadline)
+                StudyLabel(holiday.title, systemImage: "sun.max.fill")
+                    .studyTypography(.subheadline)
                     .foregroundStyle(.orange)
                     .padding(.vertical, 8)
             }
             if entries.isEmpty {
                 Text(holidays.isEmpty ? "无课程安排" : "假期")
-                    .font(.subheadline)
+                    .studyTypography(.subheadline)
                     .foregroundStyle(.secondary)
                     .frame(minHeight: 44, alignment: .leading)
             } else {
@@ -1571,38 +1603,38 @@ private struct TimetableDetailRow: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 Text(timeText)
-                    .font(.caption.weight(.semibold))
+                    .studyTypography(.caption, weight: .semibold)
                     .foregroundStyle(.secondary)
                 Text(displayTitle.primary)
-                    .font(.subheadline.weight(entry.kind == .course ? .medium : .regular))
+                    .studyTypography(.subheadline, weight: entry.kind == .course ? .medium : .regular)
                     .fixedSize(horizontal: false, vertical: true)
                 if let secondary = displayTitle.secondary {
                     Text(secondary)
-                        .font(.caption)
+                        .studyTypography(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let location = entry.location, !location.isEmpty {
-                    Label(location, systemImage: "mappin.and.ellipse")
-                        .font(.caption)
+                    StudyLabel(location, systemImage: "mappin.and.ellipse")
+                        .studyTypography(.caption)
                         .foregroundStyle(.secondary)
                 } else if entry.kind == .course {
-                    Label("地点待确认", systemImage: "mappin.and.ellipse")
-                        .font(.caption)
+                    StudyLabel("地点待确认", systemImage: "mappin.and.ellipse")
+                        .studyTypography(.caption)
                         .foregroundStyle(.secondary)
                 }
                 if let instructor = entry.instructor, !instructor.isEmpty {
-                    Label(instructor, systemImage: "person")
-                        .font(.caption)
+                    StudyLabel(instructor, systemImage: "person")
+                        .studyTypography(.caption)
                         .foregroundStyle(.secondary)
                 } else if entry.kind == .course {
-                    Label("教师待确认", systemImage: "person")
-                        .font(.caption)
+                    StudyLabel("教师待确认", systemImage: "person")
+                        .studyTypography(.caption)
                         .foregroundStyle(.secondary)
                 }
                 if let note = entry.note, !note.isEmpty {
-                    Label(note, systemImage: "text.alignleft")
-                        .font(.caption)
+                    StudyLabel(note, systemImage: "text.alignleft")
+                        .studyTypography(.caption)
                         .foregroundStyle(.tertiary)
                 }
             }
@@ -1653,8 +1685,8 @@ private struct TimetableUnavailableState: View {
 
     var body: some View {
         StudySurface {
-            Label(message, systemImage: symbol)
-                .font(.body)
+            StudyLabel(message, systemImage: symbol)
+                .studyTypography(.body)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)

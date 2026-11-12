@@ -617,6 +617,7 @@ final class MarkdownDocumentModel: ObservableObject {
     @Published private(set) var loadedHash = ""
     @Published var mode: MarkdownMode = .preview
     @Published var errorMessage: String?
+    @Published private(set) var isSaving = false
 
     private var root: URL
     init(root: URL) { self.root = root }
@@ -633,7 +634,10 @@ final class MarkdownDocumentModel: ObservableObject {
     }
     func discardAndLoad(_ relative: String) { load(relative) }
     func save() async -> Bool {
+        guard !isSaving else { return false }
         guard let relative else { return true }
+        isSaving = true
+        defer { isSaving = false }
         let submitted = text, expectedRoot = root, expectedHash = loadedHash
         do {
             let repo = MarkdownRepository(root: expectedRoot)
