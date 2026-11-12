@@ -132,7 +132,7 @@ extension CloudStore {
         }
         activeRun = nil; interrupted.remove(id)
         if !text.isEmpty { _ = try appendEvent(HostEventEnvelope(kind:"chat",chat:ChatStreamEvent(kind:"item_completed",turnID:id,itemID:id + "/assistant",text:text,phase:"final_answer",status:status))) }
-        _ = try appendEvent(HostEventEnvelope(kind:"chat",chat:ChatStreamEvent(kind:"status",turnID:id,status:status,issueCode:issue,completedAt:.now)))
+        _ = try appendEvent(HostEventEnvelope(kind:"chat",chat:ChatStreamEvent(kind:"status",turnID:id,text:terminal.message,status:status,issueCode:issue,completedAt:terminal.completedAt)))
     }
 }
 

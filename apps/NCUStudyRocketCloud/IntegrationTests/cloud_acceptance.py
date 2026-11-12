@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -114,6 +115,7 @@ class Fixture:
         self.process = None
         self.model_fixture = None
         self.upstream = None
+        self.context_tokens = None
         self.log = open(self.base / 'server.log', 'ab')
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0)); self.port = sock.getsockname()[1]
@@ -130,6 +132,9 @@ class Fixture:
         env = os.environ.copy()
         for key in ('DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'STUDYROCKET_CLOUD_FAILPOINT'):
             env.pop(key, None)
+        env.pop('STUDYROCKET_MODEL_CONTEXT_TOKENS', None)
+        if self.context_tokens is not None:
+            env['STUDYROCKET_MODEL_CONTEXT_TOKENS'] = str(self.context_tokens)
         args = [self.binary, 'serve', '--repository', str(self.repo), '--state', str(self.state),
                 '--host', '127.0.0.1', '--port', str(self.port)]
         if failpoint:
@@ -233,6 +238,16 @@ class Acceptance(unittest.TestCase):
         self.f = Fixture(self.binary)
         self.addCleanup(self.f.close)
         self.f.start(); self.f.pair()
+
+    def assert_terminal_sse_matches_history(self, terminal):
+        with sqlite3.connect(self.f.state / 'cloud.sqlite') as db:
+            events = [(seq, json.loads(body)) for seq, body in db.execute('SELECT seq,body FROM events ORDER BY seq')]
+        seq, _ = next((seq, event) for seq, event in reversed(events)
+                      if event.get('chat', {}).get('turnID') == terminal['turnID'] and event['chat']['kind'] == 'status')
+        emitted = self.f.events(after=seq - 1, count=1)[0]['data']['chat']
+        self.assertEqual(emitted['status'], terminal['status'])
+        self.assertEqual(emitted.get('issueCode'), terminal.get('issueCode'))
+        self.assertEqual(emitted.get('text'), terminal.get('message'))
 
     def test_authentication_boundaries(self):
         for path in ('/v1/snapshot', '/v1/chat/history', '/v1/proposals', '/v1/files/manifest', '/v1/events'):
@@ -444,6 +459,7 @@ class Acceptance(unittest.TestCase):
         terminal, _ = self._terminal(operation)
         self.assertEqual(terminal['status'], 'failed')
         self.assertEqual(terminal['issueCode'], 'tool_budget')
+        self.assert_terminal_sse_matches_history(terminal)
         self.f.stop(kill=True); self.f.start()
         self.assertEqual(self._terminal(operation)[0], terminal)
 
@@ -480,16 +496,19 @@ class Acceptance(unittest.TestCase):
         terminal, history = self._terminal(operation, timeout=3)
         self.assertLess(time.monotonic() - start, 3)
         self.assertEqual(terminal['status'], 'interrupted')
+        self.assert_terminal_sse_matches_history(terminal)
         self.assertFalse(any(m['text'] == 'Must not complete after cancellation' for m in history['messages']))
         self.f.stop(kill=True); self.f.start()
         self.assertEqual(self._terminal(operation)[0], terminal)
 
     def test_agent_context_budget_has_explicit_failure(self):
+        self.f.context_tokens = 65_536
         self.f.write('笔记/large.md', 'synthetic text ' * 1800)
         operation = self._start_model_run([self._tool_response('read_file', {'path': '笔记/large.md'}, f'large-{i}') for i in range(8)])
         terminal, _ = self._terminal(operation)
         self.assertEqual(terminal['status'], 'failed')
         self.assertEqual(terminal['issueCode'], 'context_budget')
+        self.assert_terminal_sse_matches_history(terminal)
 
     def test_chat_request_id_replay_cannot_duplicate_turn(self):
         text = 'Synthetic idempotent chat'

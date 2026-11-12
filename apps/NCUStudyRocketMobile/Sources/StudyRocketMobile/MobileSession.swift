@@ -580,7 +580,7 @@ public final class MobileSession: ObservableObject {
                 await replayPendingToggles()
             }
         } catch {
-            guard generation == clientGeneration else { return }
+            guard generation == clientGeneration, !Self.isRequestCancellation(error) else { return }
             let contextualized = MobileEndpointError.contextualized(error)
             lastConnectionIssue = contextualized.localizedDescription
             state = connectionFailureState(for: contextualized)
@@ -629,7 +629,8 @@ public final class MobileSession: ObservableObject {
         chatRevision &+= 1
         do {
             let acceptedHistory = try await client.sendChat(text: text, clientRequestID: requestID)
-            guard generation == clientGeneration else { return }
+            guard generation == clientGeneration,
+                  activeChatRequest?.pendingID == pendingID else { return }
             if inputDraft.trimmingCharacters(in: .whitespacesAndNewlines) == text { inputDraft = "" }
             if let acceptedHistory { mergeHistory(acceptedHistory) }
             if isChatBusy {
@@ -637,7 +638,15 @@ public final class MobileSession: ObservableObject {
                 startChatRecovery(generation: generation)
             }
         } catch {
-            guard generation == clientGeneration else { return }
+            guard generation == clientGeneration,
+                  activeChatRequest?.pendingID == pendingID else { return }
+            if Self.isRequestCancellation(error) {
+                // Cancellation does not tell us whether the server accepted the
+                // send. Keep its original ID and resolve it through history only.
+                chatProgress = .recovering
+                startChatRecovery(generation: generation)
+                return
+            }
             lastFailedChatText = text
             if let index = chatMessages.firstIndex(where: { $0.id == pendingID }) {
                 let pending = chatMessages[index]
@@ -699,7 +708,7 @@ public final class MobileSession: ObservableObject {
                 guard generation == clientGeneration else { return }
                 proposals = pending.proposals
             } catch {
-                guard generation == clientGeneration else { return }
+                guard generation == clientGeneration, !Self.isRequestCancellation(error) else { return }
                 conversationRefreshError = "刷新失败：" + error.localizedDescription
                 recordConnectionFailureIfNeeded(error)
             }
@@ -719,7 +728,8 @@ public final class MobileSession: ObservableObject {
                   endpointGeneration == clientGeneration else { return }
             mergeHistory(history)
         } catch {
-            guard currentStreamGeneration == streamGeneration, endpointGeneration == clientGeneration else { return }
+            guard currentStreamGeneration == streamGeneration, endpointGeneration == clientGeneration,
+                  !Self.isRequestCancellation(error) else { return }
             if let remoteError = error as? StudyRocketRemoteError, remoteError.body.code == "codex_starting" {
                 markChatUnavailable()
             } else {
@@ -2136,10 +2146,17 @@ public final class MobileSession: ObservableObject {
     }
 
     private func recordConnectionFailureIfNeeded(_ error: Error) {
+        guard !Self.isRequestCancellation(error) else { return }
         let contextualized = MobileEndpointError.contextualized(error)
         guard isTransportOrConnectionFailure(contextualized) else { return }
         lastConnectionIssue = contextualized.localizedDescription
         state = connectionFailureState(for: contextualized)
+    }
+
+    private static func isRequestCancellation(_ error: Error) -> Bool {
+        // A terminal SSE event cancels the history recovery task while its URL
+        // request may still be in flight. Neither form is a server turn failure.
+        Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 
     private func connectionFailureState(for error: Error) -> MobileConnectionState {

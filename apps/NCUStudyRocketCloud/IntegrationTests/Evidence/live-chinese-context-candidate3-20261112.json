@@ -1,0 +1,233 @@
+{
+  "result": "PASS",
+  "syntheticOnly": true,
+  "productionAccessed": false,
+  "realDeviceTested": false,
+  "binarySHA256": "0715a5b220521f56948867df9457b5be3a9a87f11041ef25ab6ad43bdbdefe18",
+  "requiredReferenceBytes": 23866,
+  "timetableBytes": 27000,
+  "planBytes": 17000,
+  "api": [
+    {
+      "method": "POST",
+      "path": "/v1/pair",
+      "status": 200,
+      "milliseconds": 9.7
+    },
+    {
+      "method": "POST",
+      "path": "/v1/chat/send",
+      "status": 202,
+      "milliseconds": 18.12
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "milliseconds": 14.74
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "milliseconds": 13.47
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "milliseconds": 13.51
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "milliseconds": 13.92
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "milliseconds": 9.94
+    },
+    {
+      "method": "GET",
+      "path": "/v1/chat/history",
+      "status": 200,
+      "milliseconds": 10.57
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals",
+      "status": 200,
+      "milliseconds": 11.4
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals/challenge",
+      "status": 200,
+      "milliseconds": 12.88
+    },
+    {
+      "method": "GET",
+      "path": "/v1/files/manifest",
+      "status": 200,
+      "milliseconds": 67.47
+    },
+    {
+      "method": "POST",
+      "path": "/v1/proposals/apply",
+      "status": 200,
+      "milliseconds": 242.34
+    },
+    {
+      "method": "POST",
+      "path": "/v1/proposals/apply",
+      "status": 200,
+      "milliseconds": 13.55
+    },
+    {
+      "method": "GET",
+      "path": "/v1/proposals",
+      "status": 200,
+      "milliseconds": 13.65
+    }
+  ],
+  "resources": [
+    {
+      "time": 1794450089.1364446,
+      "VmHWM": 41680896,
+      "VmRSS": 41680896,
+      "MemAvailable": 777912320,
+      "memory.current": 4907008,
+      "memory.peak": 5165056
+    },
+    {
+      "time": 1794450091.1523054,
+      "VmHWM": 43909120,
+      "VmRSS": 43909120,
+      "MemAvailable": 780845056,
+      "memory.current": 5206016,
+      "memory.peak": 5554176
+    },
+    {
+      "time": 1794450093.1668847,
+      "VmHWM": 43909120,
+      "VmRSS": 43909120,
+      "MemAvailable": 785301504,
+      "memory.current": 5541888,
+      "memory.peak": 6008832
+    },
+    {
+      "time": 1794450095.1814318,
+      "VmHWM": 44040192,
+      "VmRSS": 44040192,
+      "MemAvailable": 784535552,
+      "memory.current": 5754880,
+      "memory.peak": 6275072
+    },
+    {
+      "time": 1794450097.196554,
+      "VmHWM": 45088768,
+      "VmRSS": 45088768,
+      "MemAvailable": 783626240,
+      "memory.current": 6217728,
+      "memory.peak": 6672384
+    },
+    {
+      "time": 1794450099.207434,
+      "VmHWM": 45088768,
+      "VmRSS": 45088768,
+      "MemAvailable": 778395648,
+      "memory.current": 7077888,
+      "memory.peak": 7528448
+    },
+    {
+      "time": 1794450099.5937245,
+      "VmHWM": 46137344,
+      "VmRSS": 46137344,
+      "MemAvailable": 777789440,
+      "memory.current": 8323072,
+      "memory.peak": 8589312
+    }
+  ],
+  "terminal": {
+    "status": "completed",
+    "issueCode": null,
+    "seconds": 10.082
+  },
+  "bothFileTailCodesObserved": true,
+  "allMarkdownUnchangedBeforeConfirmation": true,
+  "proposal": {
+    "count": 1,
+    "exactReplacement": true,
+    "baseHashMatched": true,
+    "managementMarkersPreserved": 2,
+    "originalSHA256": "8ee5c54bb7ece0dc826bea9204a0c565f44e64d740cd69e8b23dcd9060a074d7",
+    "proposedSHA256": "d990a923e8f6532ff27c9214d29edf494842fa722cfe10bedd41c084c55119be"
+  },
+  "confirmation": {
+    "applyStatus": 200,
+    "replayStatus": 200,
+    "replayReceiptMatched": true,
+    "exactAppliedBytes": true,
+    "unrelatedMarkdownUnchanged": true,
+    "proposalConsumed": true
+  },
+  "modelStructure": {
+    "requestCount": 5,
+    "responseCount": 5,
+    "maximumInputBytes": 79961,
+    "maximumReasoningCharacters": 468,
+    "allModelsFlash": true,
+    "readFileCalls": 5,
+    "exactEditProposalCalls": 1,
+    "paginatedReadResults": 5,
+    "toolErrors": [],
+    "usage": [
+      {
+        "prompt_tokens": 6448,
+        "completion_tokens": 87,
+        "total_tokens": 6535,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 6448
+      },
+      {
+        "prompt_tokens": 11600,
+        "completion_tokens": 140,
+        "total_tokens": 11740,
+        "prompt_cache_hit_tokens": 640,
+        "prompt_cache_miss_tokens": 10960
+      },
+      {
+        "prompt_tokens": 15465,
+        "completion_tokens": 90,
+        "total_tokens": 15555,
+        "prompt_cache_hit_tokens": 640,
+        "prompt_cache_miss_tokens": 14825
+      },
+      {
+        "prompt_tokens": 16461,
+        "completion_tokens": 384,
+        "total_tokens": 16845,
+        "prompt_cache_hit_tokens": 640,
+        "prompt_cache_miss_tokens": 15821
+      },
+      {
+        "prompt_tokens": 16905,
+        "completion_tokens": 61,
+        "total_tokens": 16966,
+        "prompt_cache_hit_tokens": 640,
+        "prompt_cache_miss_tokens": 16265
+      }
+    ],
+    "transportErrors": 0
+  },
+  "summary": {
+    "requests": 14,
+    "medianMilliseconds": 13.530000000000001,
+    "maximumRSSBytes": 46137344,
+    "maximumHWMBytes": 46137344,
+    "minimumAvailableBytes": 777789440
+  }
+}

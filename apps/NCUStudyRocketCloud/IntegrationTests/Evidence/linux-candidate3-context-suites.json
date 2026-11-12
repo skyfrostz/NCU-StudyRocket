@@ -1,0 +1,91 @@
+{
+  "binarySHA256": "0715a5b220521f56948867df9457b5be3a9a87f11041ef25ab6ad43bdbdefe18",
+  "sourceHashes": {
+    "apps/NCUStudyRocketCloud/Sources/StudyRocketCloud/StudyRocketCloud.swift": "fbac32fff06b79f476ab5d239691288f35bafd71b802f90267bf3ff930f40560",
+    "apps/NCUStudyRocketCloud/Sources/StudyRocketCloud/CloudStorage.swift": "c8857a1e4602073edc6881c5ec0334d4c9a68a113999029c66b192e457bb5b2d",
+    "apps/NCUStudyRocketCloud/Sources/StudyRocketCloud/CloudConversation.swift": "fb2363b02457a461fc4118f51c0b67b309ae257d02862bdd303f3cd8af1253c4",
+    "apps/NCUStudyRocketCloud/Sources/StudyRocketCloud/CloudMemoryAdmission.swift": "2b6b2efa73fef807f1231dd30a3cf2f8d75ad2bc840ab12804feaa15e485ee21",
+    "apps/NCUStudyRocketCloud/Sources/StudyRocketCloud/CloudAdministration.swift": "928ab41c43c41b987d17d0e0fc96673414fe54b6886556b075aaf5193ea9aed7",
+    "apps/NCUStudyRocketCloud/Sources/StudyRocketCloud/CloudSkillProposal.swift": "1c390df10bb22768be7d5e057c3860cc61ba67c86cb142a9f60b8b387bb86a24",
+    "apps/NCUStudyRocketCloud/Sources/StudyRocketCloud/CloudBackupDownload.swift": "a2cb07f50637bca613b229b75c8270f1f7b9ba64a2b474cd3772d4e2242d006c",
+    "apps/NCUStudyRocketCloud/Sources/StudyRocketCloud/CloudAgent.swift": "acaa7ae64146bd3fcc6dc258bdde68ce6f7a5a25b0f3686009f1cae6e26694e5",
+    "apps/NCUStudyRocketCloud/Sources/StudyRocketCloud/CloudIdentity.swift": "163a7ee2b897e17c1bdca10105d5d24c8262025df0582281d4b47be36c37ebf4",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/AcademicSnapshotBuilder.swift": "6630706b7c53afc291c2c484c52a744172672df89a8c1f5905006df6486ef8d5",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/StudyRocketShared.swift": "9f7baf37fda2a4a4b0b7f671bdc1af1bdd20d38eb93c5ea9fb3a7354862490c9",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/TimetableDocumentMerge.swift": "476c0d5cfa912a646307661673a05b8b1eba6f399a86088d398507fc7341de94",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/LocalSaveHistory.swift": "ca20bd0406eeca20ef25f3f629ef1a7cebe21d7da7bb83810ea9c4d0f853774c",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/TaskLinkageEditor.swift": "82117959baf53057d20012c591e798476040d8d45af4f85966b2be5942c32555",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/OneOffEventEditor.swift": "983a5e090ed4525d2e83df8ca8751f74d8d254697bbb1c8a485bd20dab269cf5",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/TaskLinkage.swift": "c10921b29a9d771a061b4f3e069cef0d9374b7ff09647a65d6a0c8d84175b612",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/PlanningChangeRouter.swift": "3ed2182f089c9fba3d5f77c72ac2cbd763c44fb922777c89c0489c379e8695ea",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/OneOffSchedule.swift": "65d7041a245b3475513c4faf97a05c06f43caa2e4ce2da386c8551ba532367ce",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/PlanningProposalValidation.swift": "2f3e3f92a30aea4553766ba636aa0d4f9536d45136030742158b1aba41e7ef34",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/StudyRocketSelfCheckConfiguration.swift": "8c00ac3f9a359fa3c141eb06486281a7d8d15fe8ccbbf8896c29862f69621055",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/TimetableCourseCatalog.swift": "40262146cd1bf8ae4be9400df9ea2cf8d1d5703a11fd08955e2aafb368c85d44",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/WeeklyDeliveryRollover.swift": "ca6f43b6ef24c3df6b716b7354e6eb51b26a682cf9f6b61cc389ec54f5a4e951",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/QuickFact.swift": "3c0cdda31e0fc21fd95f3fa3450d1c5a2277335103e253e5359c5b0a308f06b8",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/AcademicWriteService.swift": "477f996a80b3ffbdc52e7ccb156be80c5a73e650e6ec38c37f097771870d79bd",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/CloudProtocol.swift": "2dc90a6bfb5720f7c11654efa9c675aacd3835b7a7ac0a2caf0ba4b64f1954cf",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/PlanningRepositoryLock.swift": "716f4879e3eb1d85b5715a8b00ad75fba800dfdd54377c2ffa0217ac451126be",
+    "apps/NCUStudyRocketShared/Sources/StudyRocketShared/Timetable.swift": "09af8c685df476eadb3924b3ac549d97047108ae052eac587f35a7935d4d5295"
+  },
+  "suites": {
+    "context_window_acceptance.py": {
+      "logSHA256": "f88e98bcf30ef5990062e23a19c28246ccc929f801ea2c1b9d93713b785cb837",
+      "tail": [
+        "----------------------------------------------------------------------",
+        "Ran 9 tests in 14.689s",
+        "",
+        "OK"
+      ]
+    },
+    "cloud_acceptance.py": {
+      "logSHA256": "ba916d711d19fdf35971f4024478306655ad5f4b72ab0fe29d62b96b2e78210a",
+      "tail": [
+        "----------------------------------------------------------------------",
+        "Ran 27 tests in 32.853s",
+        "",
+        "OK"
+      ]
+    },
+    "history_budget_acceptance.py": {
+      "logSHA256": "0889603925ec595916f92f3a616f8e38faa76c739ab5b4199e71663839fe8855",
+      "tail": [
+        "PASS 3 long-history tool rounds retain current request/profile/reasoning; oversized current request fails explicitly; next small request recovers"
+      ]
+    },
+    "review_regression_acceptance.py": {
+      "logSHA256": "326768559d55b43ba8a7f7db9afbf4441eb6c3d3db69310aa48c8f7a52d175c2",
+      "tail": [
+        "PASS historical daily CAS: stale same base revision rejected 409",
+        "PASS emoji JSON byte limit: partial read cannot grant proposal hash",
+        "PASS all delivered chunks authorize the complete file",
+        "PASS oversized combining Character rejects without read permission"
+      ]
+    },
+    "background_context_acceptance.py": {
+      "logSHA256": "74ced0083f14c96c1213c508890e9b41ee2a10847105523945a3e7dd6e775cd4",
+      "tail": [
+        "PASS full archive chunk coverage, no-tools bootstrap, invisible derived context, persistent hash cache, changed-source invalidation"
+      ]
+    },
+    "skill_update_acceptance.py": {
+      "logSHA256": "6e4c54a51556797d3d7d6bb71293d1aac524be43bfc400e3a191a8b1376338e8",
+      "tail": [
+        "PASS skill rejection two-evidence",
+        "PASS skill rejection yaml-change",
+        "PASS skill rejection script-change",
+        "PASS skill explicit confirmation/durable replay crash"
+      ]
+    },
+    "memory_admission_acceptance.py": {
+      "logSHA256": "82e949cc79abfcec2959fb0c030e50fa507e16d360b5b0e6e41c8172ab0ea556",
+      "tail": [
+        "PASS available=349MiB current=100MiB denied=True: replay/read/confirmation remain available",
+        "PASS available=1000MiB current=280MiB denied=True: replay/read/confirmation remain available",
+        "PASS available=350MiB current=279MiB denied=False: replay/read/confirmation remain available"
+      ]
+    }
+  },
+  "limits": "Synthetic isolated Linux functional checks; separate live report measures resource use"
+}

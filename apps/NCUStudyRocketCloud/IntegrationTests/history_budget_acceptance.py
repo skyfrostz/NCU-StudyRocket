@@ -4,6 +4,8 @@ import argparse,json,time,uuid
 from pathlib import Path
 import cloud_acceptance as qa
 p=argparse.ArgumentParser();p.add_argument('--binary',required=True);a=p.parse_args();f=qa.Fixture(a.binary)
+# Exercise a deliberately lowered deployment window, not the model default.
+f.context_tokens=66_432 # 48,000 input after fixed output and protocol reserves.
 PROFILE='SYNTHETIC_REQUIRED_PROFILE\n'+'P'*24000
 reasoning='SYNTHETIC_CURRENT_REASONING_'*20
 

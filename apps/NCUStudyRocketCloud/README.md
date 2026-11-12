@@ -20,14 +20,28 @@ StudyRocketCloud pair-code --state /data/state
 Supply `DEEPSEEK_API_KEY` only through the service environment. The provider URL is
 fixed to DeepSeek's official API. Requests use `deepseek-flash`, thinking enabled,
 high reasoning, max 16,384 output tokens, and at most 12 tool rounds / 8 calls per
-round. Serialized input (including tool schemas) is conservatively limited to
-48,000 UTF-8 bytes, reserving 16K output within a 64K context policy; this is not
-measured model tokenization. Full PROFILE, AGENTS and preferences enter each run.
-The personal archive is read in full on its first use, then at most two 24KB
-chunks are summarized by the same provider into source/hash/stage-bound session
+round. The context window defaults to the official `deepseek-flash`
+`context_window` of 1,048,576 tokens (input plus output), verified through the
+provider's model metadata on 2026-11-12. Output remains capped at 16,384 tokens,
+with another 2,048 tokens reserved for protocol overhead. The optional
+`STUDYROCKET_MODEL_CONTEXT_TOKENS` environment variable can lower the window to
+19,456–1,048,576 tokens; invalid or larger values stop startup. This configuration
+is a capacity bound, not a claim that a full-window workload has been load-tested.
+Full PROFILE, AGENTS and preferences enter each run exactly once per source hash.
+The system context includes the server's current Asia/Shanghai date/time and
+the absolute Monday–Sunday range, so relative requests such as “this Saturday”
+cannot take their current date from imported history. This text participates in
+the same input budget as all other system instructions.
+The personal archive is read in full on its first use. Sources up to 48KB retain
+their existing 24KB chunks; larger sources are divided into at most two balanced
+UTF-8-safe chunks. Each complete bootstrap request must fit the configured input
+budget. These chunks are summarized by the same provider into source/hash/stage-bound session
 context. These calls count against the 12-round limit. Derived context is cached
 by source hash in SQLite, is never an academic fact or visible chat message, and
-relevant original sections remain readable in chunks. Budget exhaustion produces
+relevant original sections remain readable in chunks. The archive retains its
+two-call bootstrap limit but no separate 48KB source rejection. Existing per-file,
+per-result, response-size, tool-round and
+Linux memory-admission limits remain in force. Budget exhaustion produces
 an explicit failed terminal state rather than silently dropping required files.
 Complete `reasoning_content` stays in memory and is returned
 on subsequent tool rounds; it is not displayed, imported, or persisted as visible
@@ -148,13 +162,30 @@ killed by this policy; systemd resource limits remain the final bound. Test-only
 CLI overrides `--test-memory-available-mib` / `--test-memory-current-mib` require
 `--allow-test-failpoints`; there is no HTTP override.
 
-The prior-conversation window is selected by the remaining serialized byte
-budget, reserving initial space for tools. At later tool rounds only those older
-visible-history messages may be removed to regain space. The current user request,
-mandatory reference files, current tool results and full current reasoning are
-never trimmed. The model is explicitly told to search older history; if these
-required inputs alone exceed 48,000 bytes the turn fails with `context_budget`.
+The initial prior-conversation window uses serialized UTF-8 bytes, including tool
+schemas, as a conservative token bound and reserves initial space for tools.
+After a completed provider response reports valid integer `prompt_tokens`,
+`completion_tokens` and consistent `total_tokens`, the next request may instead
+use that measured input plus the complete serialized UTF-8 bytes of every new
+assistant/tool message and 256 tokens per new message for framing. Missing or
+invalid usage never grants extra space: the last valid measurement still charges
+all later messages, or the initial byte bound applies. Counts are emitted as
+structured `model_usage` service log records with only fixed labels and numeric
+usage/configuration values; no source text, reasoning, identities or credentials
+are logged. The parser accepts a final usage frame with empty `choices`.
+
+At later tool rounds only older visible-history messages may be removed to regain
+space. Removed history is not speculatively deducted from measured token usage.
+The current request, mandatory references, current tool results and full current
+reasoning are never trimmed. The model is told to search omitted older history;
+required input beyond the configured model window fails with `context_budget`.
 Historical and future daily-ledger month paths and content participate in snapshot
 revision hashing, so two edits based on one old revision cannot overwrite each
-other silently. `read_file` applies its 32,000-byte bound to the serialized tool
-result before advancing read offsets or granting the proposal hash.
+other silently. `read_file` and `read_skill` apply a 12,000-byte bound to each
+serialized page before advancing contiguous read offsets or granting the full
+source hash. Both expose `offset`, `nextOffset` and `complete`; a repeated complete
+read of an unchanged hash returns an explicit reference to the original still in
+context. `propose_changes` accepts either full `content` or 1–16 exact `edits`
+(`oldText`/`newText`). Edits must match uniquely, require the same complete-read
+and fresh-hash checks, and register a full proposal through the existing
+confirmation path. The HTTP v1 DTO and the user's confirmation remain unchanged.

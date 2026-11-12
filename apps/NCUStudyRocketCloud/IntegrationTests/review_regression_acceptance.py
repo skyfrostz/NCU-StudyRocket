@@ -31,7 +31,9 @@ try:
   for m in request:
    if m.get('role')=='tool':assert len(m['content'].encode())<=32000
  print('PASS emoji JSON byte limit: partial read cannot grant proposal hash')
- run([tool('read_file',{'path':'笔记/emoji.md'},'first'),tool('read_file',{'path':'笔记/emoji.md','offset':result['nextOffset']},'rest'),tool('propose_changes',propose,'propose')])
+ # Small explicit character pages fit the delivery limit on every platform;
+ # all chunks, rather than a former assumption of two pages, authorize edits.
+ run([tool('read_file',{'path':'笔记/emoji.md','offset':offset,'limit':2000},f'part-{offset}') for offset in range(0,8000,2000)]+[tool('propose_changes',propose,'propose')])
  assert len(f.request('GET','/v1/proposals')[1]['proposals'])==1
  print('PASS all delivered chunks authorize the complete file')
  huge={'path':'笔记/combining.md','baseHash':qa.sha('a'+'\u0301'*20000),'content':'Synthetic rejected\n','reason':'synthetic'}

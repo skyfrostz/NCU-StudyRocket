@@ -74,7 +74,7 @@ import StudyRocketShared
         let memory=try CloudMemoryAdmission(testAvailableMiB:testMemory("--test-memory-available-mib"),testCurrentMiB:testMemory("--test-memory-current-mib"))
         let store=try CloudStore(root:URL(fileURLWithPath:repository),state:state,failpoint:failpoint)
         let key=ProcessInfo.processInfo.environment["DEEPSEEK_API_KEY"] ?? ""
-        let agent=CloudAgent(store:store,apiKey:key,fixture:fixture,testUpstream:testUpstream,memoryAdmission:memory)
+        let agent=try CloudAgent(store:store,apiKey:key,fixture:fixture,testUpstream:testUpstream,memoryAdmission:memory)
         let router=Router()
         let handler=CloudHTTP(store:store,agent:agent)
         for path in ["v1/health","v1/snapshot","v1/week","v1/daily","v1/summaries","v1/proposals","v1/proposals/challenge","v1/chat/history","v1/events","v1/files/manifest","v1/backups/latest","v1/versions","v1/history","v1/operations/{id}","v1/documents/{key}"] {

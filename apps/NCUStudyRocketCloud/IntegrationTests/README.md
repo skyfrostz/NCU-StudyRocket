@@ -56,8 +56,23 @@ The pre-cloud Host keeps `HostProposalStore.values`, `appliedReplays`, and write
 The additional synthetic suites accept `--binary`:
 `backup_download_acceptance.py`, `skill_update_acceptance.py`,
 `memory_admission_acceptance.py`, `background_context_acceptance.py`,
-`review_regression_acceptance.py`, and `history_budget_acceptance.py`.
+`review_regression_acceptance.py`, `history_budget_acceptance.py`, and
+`context_window_acceptance.py`.
 They use only temporary data and fixture/loopback model responses.
+
+`context_window_acceptance.py` uses synthetic Chinese sources with the reported
+production byte sizes (10,429-byte rules, 10,757-byte profile, 2,680-byte
+preferences and a 26,846-byte timetable). It checks a complete paged read and
+one precise schedule proposal while preserving all original files. Additional
+cases lower the configurable window to test usage calibration, invalid/missing
+usage, full reasoning retention, explicit budget failures and next-turn recovery,
+read-before-edit authorization, source changes, recoverable bad edit arguments,
+long skill pagination, larger archive bootstraps, trusted Beijing date/week
+context and invalid configuration. Mock usage values are test
+doubles, not measured provider tokenization. The main acceptance suite also
+replays failed/interrupted terminal SSE events and compares their text with
+persisted history. Large-window capacity, production memory use and real provider
+quality still require separate live evidence.
 
 `live_provider_acceptance.py` is a deliberately separate opt-in operator test for
 an already running isolated service. It requires `--base` named `live-qa-*`, an

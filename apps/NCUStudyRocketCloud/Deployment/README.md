@@ -39,6 +39,25 @@ pairing files or run the service user's Foundation CLI while inheriting `/root` 
 Until cutover passes, expose only authenticated read routes and public health via Nginx;
 reject public mutations and pairing with 503. Preview data is not yet authoritative.
 
+During the approved pairing stage, replace only the unconditional non-GET gate
+inside this virtual host's `location /` with the following. Pairing still requires
+the short-lived one-use code; every data route still requires device authentication.
+Do not change the SoulCourse virtual host or global proxy configuration.
+
+```nginx
+set $studyrocket_cutover_block 1;
+set $studyrocket_cutover_key "$request_method:$uri";
+if ($request_method ~ ^(GET|HEAD)$) { set $studyrocket_cutover_block 0; }
+if ($studyrocket_cutover_key ~ "^POST:/v1/(pair|files/read|backups/read|versions/read)$") { set $studyrocket_cutover_block 0; }
+if ($studyrocket_cutover_block = 1) { return 503; }
+```
+
+Check with the active Nginx binary before a graceful reload. Verify unsigned reads
+return 401 and chat/commit/fact requests return 503. Keep this gate until both
+clients' repository identity, data preservation and initial synchronization are
+verified. Remove this temporary block to enable the approved normal business
+routes, retaining all application authentication and confirmation checks.
+
 ## Backups and observation
 
 `backup.py` runs the cloud CLI's locked filesystem/SQLite snapshot, checks the source
@@ -54,6 +73,12 @@ process. It records service cgroups, available memory, swap and both health endp
 without message contents. Acceptance requires at least 50 representative requests,
 no OOM or persistent swapping, cloud peak target ≤300 MiB, system available memory
 ≥350 MiB and no material SoulCourse degradation. A short run is not a 24-hour pass.
+
+On 2026-11-12 the user explicitly waived waiting for the complete 24-hour window
+before cutover. Record this as a waived duration requirement, never as a 24-hour
+PASS. Keep collecting observations; planned cutover stops are distinguished from
+unexpected outages. Data integrity, backup, resource limits, authentication and
+SoulCourse checks remain required.
 
 ## Restore rehearsal: a new directory only
 
