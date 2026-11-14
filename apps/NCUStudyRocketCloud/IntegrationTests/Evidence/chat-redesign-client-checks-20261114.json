@@ -1,0 +1,61 @@
+{
+  "date": "2026-11-14",
+  "scope": "client and shared only; isolated synthetic runtime",
+  "sharedChecks": "PASS",
+  "desktop": {
+    "groups": 18,
+    "debug": "PASS",
+    "release": "PASS",
+    "installedBinarySHA256": "b70dc569ce4d43bc6dca718b93619745e4de48b5201272bae1a97c03423afa7f",
+    "status": "PASS",
+    "runtimeObserved": [
+      "windowed composer natural wrapping",
+      "full screen composer natural wrapping",
+      "latest message stable after scroll",
+      "final package opens signed history with empty preserved composer"
+    ]
+  },
+  "mobile": {
+    "tests": 141,
+    "failures": 0,
+    "release": "PASS",
+    "selfCheckBuild": "PASS",
+    "installedBinarySHA256": "82999ba9876922d1c297082e2c460b3cef5b06254af235655b6bf0ec95ab9927",
+    "inPlaceInstallation": "PASS",
+    "backupReadback": {
+      "filesBefore": 6,
+      "filesAfter": 6,
+      "unchanged": 6,
+      "missing": 0,
+      "changed": 0
+    },
+    "automaticLaunch": false,
+    "isolatedRuntime": [
+      "native photo picker",
+      "attachment-only send",
+      "thumbnail and QuickLook",
+      "native multiline return",
+      "light and dark",
+      "largest standard font",
+      "refresh to latest",
+      "interrupt old turn then send new turn once"
+    ],
+    "interruptReceipt": {
+      "oldState": "interrupted",
+      "newState": "completed",
+      "newMessageCount": 1
+    },
+    "runtimePackageCaveat": "UI matrix observed before final cache-retention and expiry-label patches; final patches have automated tests and physical installation."
+  },
+  "notRun": [
+    "physical camera",
+    "VoiceOver interaction",
+    "accessibility extra large text",
+    "Chinese IME composition",
+    "physical software keyboard avoidance",
+    "physical cross-network new attachments"
+  ],
+  "productionAcademicWrites": false,
+  "twentyFourHourObservation": "WAIVED_NOT_PASSED",
+  "retention": "USER_APPROVED_MAX_30_DAYS_FROM_UPLOAD"
+}

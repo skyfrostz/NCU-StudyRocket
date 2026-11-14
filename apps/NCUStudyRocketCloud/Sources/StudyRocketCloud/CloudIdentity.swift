@@ -55,7 +55,7 @@ extension CloudStore {
     func health(modelReady: Bool, authenticated: Bool) throws -> HealthResponse {
         try ensureReady()
         let count = try db.run("SELECT count(*) AS n FROM devices WHERE revoked=0").first!.column("n")!.integer!
-        return HealthResponse(hostVersion:"cloud-1.0.0",repositoryBound:true,codexReady:modelReady,pairedDeviceCount:authenticated ? count : 0,activeThreadID:authenticated ? threadID : nil,repositoryID:authenticated ? repositoryID : nil,dynamicToolsReady:modelReady,chatState:modelReady ? "ready" : "unavailable",backend:"cloud",capabilities:["academic-files","durable-operations","shared-chat","history-import","sse-replay","proposal-confirmation"],legacyRepositoryID:authenticated ? try db.value("legacyRepositoryID") : nil)
+        return HealthResponse(hostVersion:"cloud-1.0.0",repositoryBound:true,codexReady:modelReady,pairedDeviceCount:authenticated ? count : 0,activeThreadID:authenticated ? threadID : nil,repositoryID:authenticated ? repositoryID : nil,dynamicToolsReady:modelReady,chatState:modelReady ? "ready" : "unavailable",backend:"cloud",capabilities:["academic-files","durable-operations","shared-chat","history-import","sse-replay","proposal-confirmation","chat-attachments","targeted-interrupt"],legacyRepositoryID:authenticated ? try db.value("legacyRepositoryID") : nil)
     }
     func revoke(deviceID: String) throws { try db.run("UPDATE devices SET revoked=1 WHERE id=?",[.text(deviceID)]) }
 }

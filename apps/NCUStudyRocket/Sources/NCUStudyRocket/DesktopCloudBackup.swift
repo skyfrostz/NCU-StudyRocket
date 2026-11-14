@@ -23,6 +23,7 @@ actor DesktopCloudBackup {
         self.apiFactory = apiFactory
     }
     func synchronize(root: URL) async throws -> URL? {
+        try expireLocalAttachmentCopies()
         let binding = try DesktopCloudBinding.read(root)
         let scope = RequestSigning.bodyHash(Data(binding.repositoryID.utf8))
         guard active.insert(scope).inserted else { return nil }
@@ -52,6 +53,11 @@ actor DesktopCloudBackup {
                 let target = try validated(entry.path, under: temporary)
                 guard entry.byteCount >= 0 else { throw DesktopCloudError.message("云备份长度无效。") }
                 try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                if entry.path.hasPrefix("attachments/objects/"),
+                   let cached = try reusableAttachment(entry, parent: parent) {
+                    try FileManager.default.linkItem(at: cached, to: target)
+                    continue
+                }
                 guard FileManager.default.createFile(atPath: target.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { throw CocoaError(.fileWriteUnknown) }
                 let handle = try FileHandle(forWritingTo: target)
                 do {
@@ -87,6 +93,37 @@ actor DesktopCloudBackup {
             try? FileManager.default.removeItem(at: temporary)
             throw error
         }
+    }
+    /// The user's original files are outside this directory and never touched.
+    /// Expired bytes are removed from every retained backup, not just the latest.
+    private func expireLocalAttachmentCopies(now: Date = .now) throws {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return }
+        guard let walker = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isSymbolicLinkKey]) else { return }
+        for case let file as URL in walker {
+            if (try file.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink == true { walker.skipDescendants(); continue }
+            guard file.lastPathComponent == "_download-receipt.json",
+                  let receipt = try? JSONDecoder().decode(CloudBackupManifest.self, from: Data(contentsOf: file)) else { continue }
+            let expired = receipt.files.filter { $0.path.hasPrefix("attachments/") && ($0.expiresAt.map { $0 <= now } ?? false) }
+            guard !expired.isEmpty else { continue }
+            for entry in expired {
+                let target = try validated(entry.path, under: file.deletingLastPathComponent())
+                if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
+            }
+            let names = Set(expired.map(\.path))
+            let updated = CloudBackupManifest(id: receipt.id, createdAt: receipt.createdAt, files: receipt.files.filter { !names.contains($0.path) })
+            try JSONEncoder().encode(updated).write(to: file, options: .atomic)
+            verified.removeAll()
+        }
+    }
+    private func reusableAttachment(_ entry: CloudBackupEntry, parent: URL) throws -> URL? {
+        guard entry.expiresAt.map({ $0 > Date() }) == true else { return nil }
+        for folder in try FileManager.default.contentsOfDirectory(at: parent, includingPropertiesForKeys: [.isSymbolicLinkKey]) {
+            guard (try folder.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink != true,
+                  FileManager.default.fileExists(atPath: folder.appendingPathComponent("_download-receipt.json").path) else { continue }
+            let path = try validated(entry.path, under: folder)
+            if let identity = try? ChatAttachmentTransfer.fingerprint(path), identity.byteCount == entry.byteCount, identity.sha256 == entry.sha256 { return path }
+        }
+        return nil
     }
     private func validated(_ path: String, under root: URL) throws -> URL {
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)

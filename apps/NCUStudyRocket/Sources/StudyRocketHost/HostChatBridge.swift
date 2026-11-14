@@ -274,9 +274,9 @@ private final class HostCodexSession {
         ])
     }
 
-    func interrupt() {
+    func interrupt(targetTurnID: String? = nil) {
         touchActivity()
-        guard let activeTurnID, let input else { return }
+        guard let activeTurnID, let input, targetTurnID == nil || targetTurnID == activeTurnID else { return }
         sendRaw(["id": nextID(), "method": "turn/interrupt", "params": ["threadId": threadID, "turnId": activeTurnID]], to: input)
     }
 
@@ -701,11 +701,12 @@ final class HostChatBridge: @unchecked Sendable {
         return true
     }
 
-    func interrupt() {
+    func interrupt(targetTurnID: String? = nil) {
         Task { @MainActor [weak self] in
-            self?.session?.interrupt()
+            self?.session?.interrupt(targetTurnID: targetTurnID)
         }
-        onEvent?("chat.interrupted")
+        // Wait for the session's actual terminal event; interrupt acceptance
+        // must never announce that a still-running upstream turn has stopped.
     }
 
     func shutdown() {

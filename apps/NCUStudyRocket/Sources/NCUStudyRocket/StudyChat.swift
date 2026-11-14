@@ -1,3 +1,4 @@
+import UniformTypeIdentifiers
 import Foundation
 import SwiftUI
 import AppKit
@@ -38,10 +39,11 @@ struct ChatMessage: Identifiable, Hashable {
     let phase: ChatMessagePhase
     let turnState: ChatTurnState?
     let isStreaming: Bool
+    let attachments: [ChatAttachmentDTO]
 
-    init(id: String, role: Role, text: String, date: Date, turnID: String? = nil, phase: ChatMessagePhase = .unknown, turnState: ChatTurnState? = nil, isStreaming: Bool = false) {
+    init(id: String, role: Role, text: String, date: Date, turnID: String? = nil, phase: ChatMessagePhase = .unknown, turnState: ChatTurnState? = nil, isStreaming: Bool = false, attachments: [ChatAttachmentDTO] = []) {
         self.id = id; self.role = role; self.text = text; self.date = date
-        self.turnID = turnID; self.phase = phase; self.turnState = turnState; self.isStreaming = isStreaming
+        self.turnID = turnID; self.phase = phase; self.turnState = turnState; self.isStreaming = isStreaming; self.attachments = attachments
     }
 }
 
@@ -369,8 +371,8 @@ final class CodexAppServerClient: NSObject {
     func interrupt() {
         guard let threadID = currentThreadID, let turnID = activeTurnID, isRunning else { return }
         sendRequest(method: "turn/interrupt", params: ["threadId": threadID, "turnId": turnID])
-        activeTurnID = nil
-        finishTurn(.success(ChatTurnResult(turnID: turnID, status: .interrupted, errorMessage: nil, completedAt: .now)))
+        // A request acknowledgement is not a terminal event. Keep the active turn
+        // until turn/completed confirms the upstream cancellation.
     }
 
     func disconnect() {
@@ -606,6 +608,7 @@ final class StudyChatStore: ObservableObject {
     let transcript = ChatTranscriptState()
     @Published var draft = "" {
         didSet {
+            persistComposer()
             if let root, DesktopCloudBinding.isManaged(root) {
                 UserDefaults.standard.set(draft, forKey: "studyrocket.cloud.input." + RequestSigning.bodyHash(Data(root.path.utf8)))
             }
@@ -615,6 +618,59 @@ final class StudyChatStore: ObservableObject {
     @Published var connectionState: ChatConnectionState = .disconnected
     @Published var errorMessage: String?
     @Published var isBusy = false
+    @Published var attachmentPreviewURL: URL?
+    private var supportsAttachments = false
+    private var supportsTargetedInterrupt = false
+    @Published private(set) var isStopping = false
+    @Published private(set) var attachments: [DesktopChatAttachment] = [] { didSet { persistComposer() } }
+    private var attachmentTasks: [String: Task<Void, Never>] = [:]
+    private struct Intent: Codable {
+        let id: String
+        let text: String
+        let attachments: [DesktopChatAttachment]
+    }
+    private struct FrozenState: Codable {
+        var active: Intent?
+        var replacement: Intent?
+        var failed: Intent?
+        var targetTurnID: String?
+        var interruptOperationID: String?
+        var composer: DesktopChatDraftCache.Draft?
+        var failedWasTerminal: Bool? = nil
+        var terminalReadOperationID: String? = nil
+    }
+    private var activeIntent: Intent?
+    private var replacementIntent: Intent?
+    private var failedIntent: Intent?
+    private var interruptionTask: Task<Void, Never>?
+    private var interruptionToken: UUID?
+    private var historyRequestSequence = 0
+    private var restoringComposer = false
+    private var interruptOperationID: String?
+    private var terminalReadOperationID: String?
+    var canSubmit: Bool {
+        (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
+            && attachments.allSatisfy { $0.metadata.state == .ready && $0.metadata.expiresAt > .now }
+            && replacementIntent == nil && (failedIntent == nil || failedIntent.map { hostTerminalTurnIDs.contains($0.id) } == true) && !isStopping
+    }
+    private var isCloud: Bool { root.map(DesktopCloudBinding.isManaged) ?? false }
+    private func persistComposer() { _ = persistIntents() }
+    @discardableResult private func persistIntents(composer: DesktopChatDraftCache.Draft? = nil) -> Bool {
+        if restoringComposer { return true }
+        guard let root else { return false }
+        let value = FrozenState(active: activeIntent, replacement: replacementIntent, failed: failedIntent,
+            targetTurnID: hostActiveTurnID, interruptOperationID: interruptOperationID,
+            composer: composer ?? .init(text: draft, attachments: attachments),
+            failedWasTerminal: failedIntent.map { hostTerminalTurnIDs.contains($0.id) },
+            terminalReadOperationID: terminalReadOperationID)
+        do { try persistState(value, root: root); return true }
+        catch { errorMessage = "无法保存聊天草稿，内容仍在输入框中：" + error.localizedDescription; return false }
+    }
+    private func persistState(_ state: FrozenState, root: URL) throws {
+        let url = DesktopChatDraftCache.directory(for: root).appendingPathComponent("session.json")
+        try DesktopChatDraftCache.writeDurably(JSONEncoder().encode(state), to: url)
+    }
+
     @Published var lastSubmitted: String?
     @Published private(set) var threadID: String?
     private let selfCheckConfiguration: StudyRocketSelfCheckConfiguration?
@@ -659,7 +715,9 @@ final class StudyChatStore: ObservableObject {
         taskDescriptorStore = StudyRocketTaskDescriptorStore(directory: configuration?.taskDescriptorDirectory)
         client.onTurnStarted = { [weak self] turnID, startedAt in
             guard let self else { return }
+            self.hostActiveTurnID = turnID
             self.assignPendingSubmission(to: turnID, startedAt: startedAt)
+            if self.isStopping { self.client.interrupt() }
         }
         client.onReplyDelta = { [weak self] turnID, itemID, delta, phase in
             self?.replaceStreaming(turnID: turnID, itemID: itemID, text: delta, phase: phase)
@@ -676,6 +734,7 @@ final class StudyChatStore: ObservableObject {
         }
         client.onTurnCompleted = { [weak self] result in
             guard let self else { return }
+            self.hostTerminalTurnIDs.insert(result.turnID)
             switch result.status {
             case .completed:
                 if let unknown = self.pendingUnknownMessages.removeValue(forKey: result.turnID), !unknown.isEmpty {
@@ -689,6 +748,7 @@ final class StudyChatStore: ObservableObject {
                 self.pendingUnknownMessages.removeValue(forKey: result.turnID); self.completeTurn(result); self.setState(.failed); self.isBusy = false; self.errorMessage = result.errorMessage ?? "本轮对话失败。"
             case .inProgress: break
             }
+            if result.status != .inProgress { self.finishActiveTurn(result.turnID) }
         }
         client.onRetry = { [weak self] message in
             guard let self else { return }
@@ -710,6 +770,7 @@ final class StudyChatStore: ObservableObject {
 
     private func publishHistory(_ history: [ChatMessage]) {
         let presented = Self.present(history)
+        if let root { history.flatMap(\.attachments).forEach { DesktopChatDraftCache.markSent($0, root: root) } }
         if usingHost { hostTerminalTurnIDs.formUnion(presented.filter { $0.status != .inProgress }.map(\.id)) }
         if transcript.turns.isEmpty {
             transcript.replaceHistory(presented)
@@ -758,7 +819,7 @@ final class StudyChatStore: ObservableObject {
             guard role != .system else { return nil }
             let phase = ChatMessagePhase(rawValue: item.phase ?? "") ?? .unknown
             let state = ChatTurnState(rawValue: item.status ?? "")
-            return ChatMessage(id: item.id, role: role, text: item.text, date: item.date, turnID: item.turnID, phase: phase, turnState: state)
+            return ChatMessage(id: item.id, role: role, text: item.text, date: item.date, turnID: item.turnID, phase: phase, turnState: state, attachments: item.attachments ?? [])
         }
     }
 
@@ -773,12 +834,19 @@ final class StudyChatStore: ObservableObject {
     private func assignPendingSubmission(to turnID: String, startedAt: Date?) {
         guard let pendingSubmissionID, let index = turnIndex(pendingSubmissionID) else { return }
         var turn = transcript.turns.remove(at: index)
-        turn = ChatTurnPresentation(id: turnID, userMessage: turn.userMessage.map { ChatMessage(id: $0.id, role: $0.role, text: $0.text, date: startedAt ?? $0.date, turnID: turnID, phase: $0.phase, turnState: .inProgress) }, finalMessages: turn.finalMessages, processMessages: turn.processMessages, status: .inProgress, startedAt: startedAt ?? turn.startedAt, completedAt: nil)
-        transcript.turns.insert(turn, at: index)
+        if let authoritativeIndex = turnIndex(turnID) {
+            let existing = transcript.turns.remove(at: authoritativeIndex)
+            turn.finalMessages = existing.finalMessages
+            turn.processMessages = existing.processMessages
+        }
+        turn = ChatTurnPresentation(id: turnID, userMessage: turn.userMessage.map { ChatMessage(id: $0.id, role: $0.role, text: $0.text, date: startedAt ?? $0.date, turnID: turnID, phase: $0.phase, turnState: .inProgress, attachments: $0.attachments) }, finalMessages: turn.finalMessages, processMessages: turn.processMessages, status: .inProgress, startedAt: startedAt ?? turn.startedAt, completedAt: nil)
+        transcript.turns.insert(turn, at: min(index, transcript.turns.count))
         self.pendingSubmissionID = nil
+        persistIntents()
     }
 
     private func replaceStreaming(turnID: String, itemID: String, text: String, phase: ChatMessagePhase) {
+        guard !hostTerminalTurnIDs.contains(turnID) else { return }
         let index = ensureTurn(turnID)
         var turn = transcript.turns[index]
         let partial = ChatMessage(id: itemID, role: .assistant, text: text, date: .now, turnID: turnID, phase: phase, isStreaming: true)
@@ -819,7 +887,7 @@ final class StudyChatStore: ObservableObject {
         var turn = transcript.turns[index]
         turn.status = result.status; turn.completedAt = result.completedAt ?? .now; turn.errorMessage = result.errorMessage
         if let user = turn.userMessage {
-            turn.userMessage = ChatMessage(id: user.id, role: user.role, text: user.text, date: user.date, turnID: result.turnID, phase: user.phase, turnState: result.status)
+            turn.userMessage = ChatMessage(id: user.id, role: user.role, text: user.text, date: user.date, turnID: result.turnID, phase: user.phase, turnState: result.status, attachments: user.attachments)
         }
         transcript.turns[index] = turn
         if result.status == .failed { requestScroll(to: result.turnID, force: false) }
@@ -828,7 +896,7 @@ final class StudyChatStore: ObservableObject {
     private func markLatestTurn(_ status: ChatTurnState, errorMessage: String? = nil) {
         guard let index = transcript.turns.indices.last else { return }
         var turn = transcript.turns[index]; turn.status = status; turn.errorMessage = errorMessage; turn.completedAt = .now
-        if let user = turn.userMessage { turn.userMessage = ChatMessage(id: user.id, role: user.role, text: user.text, date: user.date, turnID: user.turnID, phase: user.phase, turnState: status) }
+        if let user = turn.userMessage { turn.userMessage = ChatMessage(id: user.id, role: user.role, text: user.text, date: user.date, turnID: user.turnID, phase: user.phase, turnState: status, attachments: user.attachments) }
         transcript.turns[index] = turn
         if status == .failed { requestScroll(to: turn.id, force: false) }
     }
@@ -872,6 +940,13 @@ final class StudyChatStore: ObservableObject {
         }
         connectionGeneration &+= 1
         let generation = connectionGeneration
+        attachmentTasks.values.forEach { $0.cancel() }; attachmentTasks.removeAll()
+        for index in attachments.indices where [.uploading, .processing].contains(attachments[index].metadata.state) {
+            attachments[index].metadata.state = .unknown
+            attachments[index].metadata.issue = "连接已变化，点重试查询并继续。"
+        }
+        interruptionTask?.cancel(); interruptionTask = nil; interruptionToken = nil; isStopping = false
+        if let activeIntent { failedIntent = activeIntent; persistIntents() }
         hostEventsTask?.cancel()
         hostEventsTask = nil
         hostTurnTask?.cancel()
@@ -883,8 +958,39 @@ final class StudyChatStore: ObservableObject {
         stressFixtureTask?.cancel()
         stressFixtureTask = nil
 #endif
+        let hadPreviousRoot = self.root != nil
         let rootChanged = self.root?.standardizedFileURL != root.standardizedFileURL
+        let sessionURL = DesktopChatDraftCache.directory(for: root).appendingPathComponent("session.json")
+        let savedSession = rootChanged ? (try? Data(contentsOf: sessionURL)).flatMap { try? JSONDecoder().decode(FrozenState.self, from: $0) } : nil
+        if rootChanged, (FileManager.default.fileExists(atPath: sessionURL.path) && savedSession == nil) || DesktopChatDraftCache.isLegacyDraftUnreadable(root: root) {
+            let message = "本机聊天草稿无法读取，已保留原缓存，请先修复缓存后重连。"
+            errorMessage = message; setState(.failed); transcript.setLoadState(.failed(message)); return
+        }
+        let protected = Set([savedSession?.active, savedSession?.replacement, savedSession?.failed].compactMap { $0 }.flatMap { $0.attachments.map(\.id) } + (savedSession?.composer?.attachments.map(\.id) ?? []))
+        let legacyComposer = rootChanged ? DesktopChatDraftCache.load(root: root, protecting: protected) : nil
+        let cachedComposer = rootChanged ? (savedSession?.composer ?? legacyComposer) : nil
+        restoringComposer = true
         self.root = root.standardizedFileURL
+        if rootChanged {
+            attachments = cachedComposer?.attachments ?? []
+            if hadPreviousRoot || draft.isEmpty { draft = cachedComposer?.text ?? "" }
+            activeIntent = nil; failedIntent = nil; replacementIntent = nil
+            interruptOperationID = nil; terminalReadOperationID = nil; lastSubmitted = nil
+            if let frozen = savedSession {
+                activeIntent = frozen.active; failedIntent = frozen.failed ?? frozen.active
+                replacementIntent = frozen.replacement; hostActiveTurnID = frozen.targetTurnID
+                interruptOperationID = frozen.interruptOperationID
+                terminalReadOperationID = frozen.terminalReadOperationID
+                lastSubmitted = failedIntent?.text
+                if frozen.failedWasTerminal == true, let failedIntent { hostTerminalTurnIDs.insert(failedIntent.id) }
+            }
+            for index in attachments.indices {
+                if attachments[index].metadata.expiresAt <= .now { attachments[index].metadata.state = .expired }
+                else if [.uploading, .processing].contains(attachments[index].metadata.state) { attachments[index].metadata.state = .unknown }
+            }
+        }
+        restoringComposer = false
+        persistIntents()
         if DesktopCloudBinding.isManaged(root), (rootChanged || serviceChanged), draft.isEmpty {
             draft = UserDefaults.standard.string(forKey: "studyrocket.cloud.input." + RequestSigning.bodyHash(Data(root.path.utf8))) ?? ""
         }
@@ -929,6 +1035,8 @@ final class StudyChatStore: ObservableObject {
             do {
                 let health = try await hostClient.health(for: root)
                 guard generation == connectionGeneration, !Task.isCancelled else { return }
+                supportsAttachments = health.capabilities?.contains("chat-attachments") == true
+                supportsTargetedInterrupt = health.capabilities?.contains("targeted-interrupt") == true
                 let history = try await hostClient.history()
                 if DesktopCloudBinding.isManaged(root), draft.isEmpty {
                     let recoveredDraft = await hostClient.pendingCloudDraft()
@@ -945,6 +1053,7 @@ final class StudyChatStore: ObservableObject {
                 await refreshHostProposals()
                 guard generation == connectionGeneration else { return }
                 setState(.connected)
+                if failedIntent != nil { errorMessage = "有一条发送结果待确认的消息，请点重试查询。" }
                 return
             } catch {
                 guard generation == connectionGeneration, !Task.isCancelled else { return }
@@ -987,6 +1096,8 @@ final class StudyChatStore: ObservableObject {
     func reconnect() async {
         guard let root else { return }
         connectionGeneration &+= 1
+        interruptionTask?.cancel(); interruptionTask = nil; isStopping = false
+        attachmentTasks.values.forEach { $0.cancel() }; attachmentTasks.removeAll()
         hostEventsTask?.cancel(); hostEventsTask = nil
         hostTurnTask?.cancel(); hostTurnTask = nil
         resetHostStream()
@@ -1074,47 +1185,248 @@ final class StudyChatStore: ObservableObject {
         transcript.proposals[index].isSelected = selected
     }
 
-    func send() { send(appendUser: true) }
-
-    private func send(appendUser: Bool) {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isBusy else { return }
-        lastSubmitted = text
-        if appendUser {
-            let localID = "local-\(UUID().uuidString)"
-            pendingSubmissionID = localID
-            transcript.turns.append(ChatTurnPresentation(id: localID, userMessage: ChatMessage(id: UUID().uuidString, role: .user, text: text, date: .now, turnID: localID, turnState: .inProgress), status: .inProgress, startedAt: .now))
-            requestScroll(to: localID, force: true)
+    func chooseAttachments() {
+        let panel = NSOpenPanel(); panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false; panel.canChooseFiles = true
+        panel.allowedContentTypes = DesktopChatDraftCache.allowedExtensions.compactMap { UTType(filenameExtension: $0) }
+        if panel.runModal() == .OK { addAttachments(panel.urls) }
+    }
+    func addAttachments(_ urls: [URL]) {
+        guard let root, isCloud, supportsAttachments else { errorMessage = "当前服务不支持附件，请连接支持附件的新版云服务后添加。"; return }
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                guard attachments.count < ChatAttachmentLimits.messageCount else { throw StudyChatError.unavailable("每条消息最多添加 10 个附件。") }
+                let attachment = try DesktopChatDraftCache.importFile(url, root: root)
+                guard attachments.reduce(attachment.metadata.byteCount, { $0 + $1.metadata.byteCount }) <= ChatAttachmentLimits.messageBytes else {
+                    try? FileManager.default.removeItem(at: attachment.localURL.deletingLastPathComponent())
+                    throw StudyChatError.unavailable("每条消息的附件总量不能超过 100 MiB。")
+                }
+                attachments.append(attachment); retryAttachment(attachment.id)
+            } catch { errorMessage = error.localizedDescription }
         }
-        draft = ""; errorMessage = nil; isBusy = true; setState(.thinking); pendingUnknownMessages.removeAll()
+    }
+    func removeAttachment(_ id: String) {
+        attachmentTasks.removeValue(forKey: id)?.cancel()
+        attachments.removeAll { $0.id == id }
+        let generation = connectionGeneration
+        Task {
+            do { let transfer = try await hostClient.attachmentTransfer(); _ = try await transfer.remove(id: id) }
+            catch { if generation == connectionGeneration { errorMessage = "已从草稿移除，服务器清理待重试；未发送的附件会自动到期。" } }
+        }
+    }
+    func refreshAttachmentExpiry() {
+        for index in attachments.indices where attachments[index].metadata.expiresAt <= .now && ![.expired, .removed].contains(attachments[index].metadata.state) {
+            attachments[index].metadata.state = .expired
+            attachments[index].metadata.issue = "附件已到期，可从保留的本机副本重新上传。"
+        }
+    }
+    func retryAttachment(_ id: String) {
+        guard attachmentTasks[id] == nil, let attachment = attachments.first(where: { $0.id == id }) else { return }
+        if [.failed, .expired].contains(attachment.metadata.state) || attachment.metadata.expiresAt <= .now, let root {
+            do {
+                let replacement = try DesktopChatDraftCache.importFile(attachment.localURL, root: root)
+                if let index = attachments.firstIndex(where: { $0.id == id }) { attachments[index] = replacement }
+                retryAttachment(replacement.id)
+            } catch { errorMessage = error.localizedDescription }
+            return
+        }
+        let generation = connectionGeneration
+        attachmentTasks[id] = Task { [weak self] in
+            guard let self else { return }
+            defer { if generation == connectionGeneration { attachmentTasks[id] = nil } }
+            do {
+                let transfer = try await hostClient.attachmentTransfer()
+                let request = ChatAttachmentCreateRequest(id: id, filename: attachment.metadata.filename, mimeType: attachment.metadata.mimeType,
+                    byteCount: attachment.metadata.byteCount, sha256: attachment.metadata.sha256)
+                var result = try await transfer.upload(file: attachment.localURL, request: request) { [weak self] value in
+                    await self?.updateAttachment(value, generation: generation)
+                }
+                for _ in 0..<120 where result.state == .processing {
+                    try await Task.sleep(for: .seconds(1))
+                    result = try await transfer.status(id: id)
+                    updateAttachment(result, generation: generation)
+                }
+                if result.state == .processing { throw StudyChatError.unavailable("附件仍在处理，稍后点重试查询。") }
+            } catch is CancellationError { return }
+            catch {
+                guard generation == connectionGeneration, let index = attachments.firstIndex(where: { $0.id == id }) else { return }
+                if case LocalHostError.attachmentRejected = error { attachments[index].metadata.state = .failed }
+                else { attachments[index].metadata.state = .unknown }
+                attachments[index].metadata.issue = error.localizedDescription
+            }
+        }
+    }
+    private func updateAttachment(_ metadata: ChatAttachmentDTO, generation: Int) {
+        guard generation == connectionGeneration, let index = attachments.firstIndex(where: { $0.id == metadata.id }) else { return }
+        attachments[index].metadata = metadata
+    }
+    func previewAttachment(_ attachment: ChatAttachmentDTO) {
+        guard let root, attachment.expiresAt > .now else { errorMessage = "附件已到期，文件名与消息记录仍保留。"; return }
+        let directory = DesktopChatDraftCache.directory(for: root).appendingPathComponent(attachment.id, isDirectory: true)
+        let url = directory.appendingPathComponent(URL(fileURLWithPath: attachment.filename).lastPathComponent)
+        let generation = connectionGeneration
+        Task {
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                if !FileManager.default.fileExists(atPath: url.path) {
+                    let transfer = try await hostClient.attachmentTransfer()
+                    try await transfer.download(attachment, to: url)
+                }
+                guard generation == connectionGeneration else { return }
+                attachmentPreviewURL = url
+            } catch { if generation == connectionGeneration { errorMessage = error.localizedDescription } }
+        }
+    }
+    func send() {
+        guard canSubmit, let root else { return }
+        if isBusy, usingHost, !supportsTargetedInterrupt { errorMessage = "当前服务不支持安全定向停止，请等待本轮完成或更新服务。输入已保留。"; return }
+        if !attachments.isEmpty, !supportsAttachments { errorMessage = "当前服务不支持附件，原消息与附件已保留。"; return }
+        let intent = Intent(id: UUID().uuidString, text: draft.trimmingCharacters(in: .whitespacesAndNewlines), attachments: attachments)
+        let state = FrozenState(active: isBusy ? activeIntent : intent, replacement: isBusy ? intent : nil,
+            failed: nil, targetTurnID: hostActiveTurnID, interruptOperationID: interruptOperationID,
+            composer: .init(text: "", attachments: []))
+        do { try persistState(state, root: root) }
+        catch { errorMessage = "无法保存待发送消息，原草稿已保留：" + error.localizedDescription; return }
+        // One durable record holds both the frozen payload and emptied composer.
+        if isBusy { replacementIntent = intent } else { activeIntent = intent }
+        failedIntent = nil
+        restoringComposer = true
+        draft = ""; attachments = []; errorMessage = nil
+        restoringComposer = false
+        if isBusy { stop() } else { submit(intent) }
+    }
+    private func submit(_ intent: Intent) {
+        errorMessage = nil
+        activeIntent = intent; failedIntent = nil; terminalReadOperationID = nil
+        guard persistIntents() else { failedIntent = intent; return }
+        lastSubmitted = intent.text
+        let localID = "local-" + intent.id
+        pendingSubmissionID = localID
+        transcript.turns.append(ChatTurnPresentation(id: localID, userMessage: ChatMessage(id: intent.id + "-user", role: .user,
+            text: intent.text, date: .now, turnID: localID, turnState: .inProgress, attachments: intent.attachments.map(\.metadata)),
+            status: .inProgress, startedAt: .now))
+        requestScroll(to: localID, force: true)
+        isBusy = true; setState(.thinking); pendingUnknownMessages.removeAll()
         if usingHost {
-            resetHostStream()
-            hostActiveTurnID = nil
-            sendThroughHost(text)
+            resetHostStream(); hostActiveTurnID = isCloud ? intent.id : nil
+            sendThroughHost(intent)
+            return
+        }
+        let generation = connectionGeneration
+        Task {
+            do { _ = try await client.send(intent.text) }
+            catch {
+                guard generation == connectionGeneration, activeIntent?.id == intent.id, !Task.isCancelled else { return }
+                failedIntent = intent; persistIntents(); isBusy = false; setState(.failed); errorMessage = error.localizedDescription
+            }
+        }
+    }
+    func retryLast() {
+        if isStopping { interruptionTask?.cancel(); interruptionTask = nil; isStopping = false; stop(); return }
+        guard let intent = failedIntent, !isBusy else { return }
+        if hostTerminalTurnIDs.contains(intent.id) {
+            submit(Intent(id: UUID().uuidString, text: intent.text, attachments: intent.attachments))
             return
         }
         let generation = connectionGeneration
         Task {
             do {
-                let result = try await client.send(text)
-                guard generation == connectionGeneration, !Task.isCancelled else { return }
-                if result.status == .interrupted { setState(.stopped) }
+                let response = try await hostClient.history()
+                guard generation == connectionGeneration else { return }
+                rememberHostTerminals(response); publishHistory(Self.messages(from: response))
+                if response.messages.contains(where: { $0.turnID == intent.id }) || (response.terminalTurns ?? []).contains(where: { $0.turnID == intent.id }) {
+                    activeIntent = intent; hostActiveTurnID = intent.id; failedIntent = nil; errorMessage = nil
+                    if hostTerminalTurnIDs.contains(intent.id) { finishActiveTurn(intent.id) }
+                    else { isBusy = true; if replacementIntent != nil { stop() } }
+                    persistIntents()
+                    return
+                }
+                guard isCloud else { throw StudyChatError.unavailable("旧本机模式无法核实未知发送回执；消息已保留，请先重连查询，未自动重发。") }
+                let operation = try await hostClient.operation(intent.id)
+                guard generation == connectionGeneration else { return }
+                if ["succeeded", "interrupted"].contains(operation.state) {
+                    // The recent history window is bounded. Query this exact
+                    // already-terminal turn; never cancel whichever turn is newest.
+                    terminalReadOperationID = terminalReadOperationID ?? UUID().uuidString
+                    guard persistIntents(), let readOperationID = terminalReadOperationID else { return }
+                    let receipt = try await hostClient.interrupt(turnID: intent.id, operationID: readOperationID)
+                    guard generation == connectionGeneration, failedIntent?.id == intent.id else { return }
+                    guard let terminal = receipt.terminal else { throw StudyChatError.unavailable("终态回执仍待确认，未重复发送。") }
+                    activeIntent = intent; hostActiveTurnID = intent.id
+                    acceptInterruptTerminal(terminal)
+                    return
+                }
+                guard operation.state == "not_found" else {
+                    throw StudyChatError.unavailable("服务器已记录这条消息，正在等待权威历史；未重复发送。")
+                }
+                // Only explicit not_found permits replay with the frozen identity.
+                activeIntent = intent; isBusy = true; hostActiveTurnID = isCloud ? intent.id : nil
+                sendThroughHost(intent)
+            } catch { if generation == connectionGeneration { errorMessage = error.localizedDescription } }
+        }
+    }
+    func stop() {
+        guard isBusy, interruptionTask == nil else { return }
+        if usingHost, !supportsTargetedInterrupt { errorMessage = "当前服务不支持安全定向停止，请等待本轮完成或更新服务。"; return }
+        isStopping = true; status = "正在停止…"; hostDisplay.flush()
+        interruptOperationID = interruptOperationID ?? UUID().uuidString
+        guard persistIntents() else { isStopping = false; return }
+        if !usingHost { client.interrupt(); return }
+        let generation = connectionGeneration
+        let token = UUID(); interruptionToken = token
+        interruptionTask = Task { [weak self] in
+            guard let self else { return }
+            defer { if generation == connectionGeneration, interruptionToken == token { interruptionTask = nil; interruptionToken = nil } }
+            do {
+                if hostActiveTurnID == nil { await reconcileHostHistory(finalState: .inProgress, generation: generation) }
+                guard let target = hostActiveTurnID else { throw StudyChatError.unavailable("上一条消息身份尚未确认，请重试查询；新消息已保留。") }
+                if !hostTerminalTurnIDs.contains(target) {
+                    let receipt = try await hostClient.interrupt(turnID: target, operationID: interruptOperationID!)
+                    guard generation == connectionGeneration, !Task.isCancelled else { return }
+                    if let terminal = receipt.terminal {
+                        acceptInterruptTerminal(terminal)
+                        return
+                    }
+                }
+                for _ in 0..<60 {
+                    guard generation == connectionGeneration, !Task.isCancelled else { return }
+                    await reconcileHostHistory(finalState: .inProgress, generation: generation)
+                    if hostTerminalTurnIDs.contains(target) { finishActiveTurn(target); return }
+                    try await Task.sleep(for: .milliseconds(500))
+                }
+                throw StudyChatError.unavailable("仍在确认上一条消息是否停止。新消息已保留，点重试继续查询。")
             } catch {
                 guard generation == connectionGeneration, !Task.isCancelled else { return }
-                isBusy = false; setState(.failed); errorMessage = error.localizedDescription; if draft.isEmpty { draft = text }
+                errorMessage = error.localizedDescription
             }
         }
     }
-
-    func retryLast() { guard let lastSubmitted else { return }; draft = lastSubmitted; send(appendUser: true) }
-    func stop() {
+    private func acceptInterruptTerminal(_ terminal: ChatTurnTerminalDTO) {
+        guard hostActiveTurnID == terminal.turnID,
+              let state = ChatTurnState(rawValue: terminal.status), state != .inProgress else { return }
         hostDisplay.flush()
-        if usingHost {
-            Task { try? await hostClient.interrupt() }
-        } else {
-            client.interrupt()
-        }
-        markLatestTurn(.interrupted); isBusy = false; setState(.stopped)
+        assignPendingSubmission(to: terminal.turnID, startedAt: nil)
+        completeTurn(.init(turnID: terminal.turnID, status: state, errorMessage: terminal.message, completedAt: terminal.completedAt))
+        hostTerminalTurnIDs.insert(terminal.turnID)
+        setState(state == .failed ? .failed : state == .interrupted ? .stopped : .connected)
+        errorMessage = state == .failed ? terminal.message : nil
+        finishActiveTurn(terminal.turnID)
+    }
+    private func finishActiveTurn(_ turnID: String) {
+        guard hostActiveTurnID == turnID || !usingHost else { return }
+        isBusy = false; isStopping = false; hostActiveTurnID = nil
+        let terminalStatus = transcript.turns.first(where: { $0.id == turnID })?.status
+        if terminalStatus == .failed || terminalStatus == .interrupted, replacementIntent == nil, let intent = activeIntent {
+            failedIntent = intent
+            // Legacy Host turn identity differs from its client request ID.
+            hostTerminalTurnIDs.insert(intent.id)
+        } else if failedIntent?.id == activeIntent?.id { failedIntent = nil }
+        activeIntent = nil; interruptOperationID = nil
+        interruptionTask?.cancel(); interruptionTask = nil; interruptionToken = nil
+        if let next = replacementIntent { replacementIntent = nil; submit(next) }
+        persistIntents()
     }
     func disconnect() {
         connectionGeneration &+= 1
@@ -1211,23 +1523,28 @@ final class StudyChatStore: ObservableObject {
     }
 #endif
 
-    private func sendThroughHost(_ text: String) {
-        hostTurnTask?.cancel()
+    private func sendThroughHost(_ intent: Intent) {
         let generation = connectionGeneration
         hostTurnTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await hostClient.send(text)
-            } catch is CancellationError {
-                return
-            } catch {
-                guard generation == connectionGeneration, !Task.isCancelled else { return }
-                isBusy = false
-                setState(.failed)
-                errorMessage = error.localizedDescription
-                if draft.isEmpty { draft = text }
+                let response = try await hostClient.send(intent.text, requestID: intent.id, attachmentIDs: intent.attachments.map(\.id))
+                guard generation == connectionGeneration, activeIntent?.id == intent.id else { return }
+                rememberHostTerminals(response)
+                if isCloud { assignPendingSubmission(to: intent.id, startedAt: .now) }
+                publishHistory(Self.messages(from: response))
+                await reconcileHostHistory(finalState: .inProgress, generation: generation)
+            } catch is CancellationError { return }
+            catch {
+                guard generation == connectionGeneration, activeIntent?.id == intent.id else { return }
+                failedIntent = intent; persistIntents()
+                // The HTTP reply may have been lost after acceptance. Keep the
+                // request identity and consult history before enabling another send.
+                errorMessage = "发送结果待确认：" + error.localizedDescription
+                await reconcileHostHistory(finalState: .inProgress, generation: generation)
+                if !isStopping { isBusy = false }
             }
-            guard generation == connectionGeneration, !Task.isCancelled else { return }
+            guard generation == connectionGeneration, activeIntent?.id == intent.id, !Task.isCancelled else { return }
             hostTurnTask = nil
         }
     }
@@ -1294,19 +1611,8 @@ final class StudyChatStore: ObservableObject {
                 catch { if generation == connectionGeneration { errorMessage = error.localizedDescription } }
             }
         }
-        if event.kind == "chat.failed", isBusy {
-            hostDisplay.flush()
-            isBusy = false
-            markLatestTurn(.failed, errorMessage: "学业服务对话失败，请重试。")
-            setState(.failed)
-            errorMessage = "学业服务对话失败，请重试。"
-            return
-        }
-        if event.kind == "chat.interrupted", isBusy {
-            hostDisplay.flush()
-            isBusy = false
-            markLatestTurn(.interrupted)
-            setState(.stopped)
+        if ["chat.failed", "chat.interrupted", "chat.completed"].contains(event.kind) {
+            Task { await reconcileHostHistory(finalState: .inProgress) }
             return
         }
         guard let chatEvent = event.chat else { return }
@@ -1314,13 +1620,15 @@ final class StudyChatStore: ObservableObject {
         // already contains their final state; replay must not reactivate them
         // or turn a healthy connection into an old model failure.
         if let turnID = chatEvent.turnID, hostTerminalTurnIDs.contains(turnID) { return }
+        if let expected = activeIntent, isCloud, let id = chatEvent.turnID, id != expected.id { return }
+        if activeIntent != nil, let active = hostActiveTurnID, let id = chatEvent.turnID, id != active { return }
         switch chatEvent.kind {
         case "delta":
             guard let turnID = chatEvent.turnID, let itemID = chatEvent.itemID, let delta = chatEvent.text else { return }
             hostActiveTurnID = turnID
             let key = "\(turnID)-\(itemID)"
             guard !hostStreamText.completedItemIDs.contains(key) else { return }
-            if pendingSubmissionID != nil { assignPendingSubmission(to: turnID, startedAt: .now) }
+            // Only a status/start acknowledgement may bind a pending request.
             hostDisplay.enqueue(.init(turnID: turnID, itemID: itemID,
                 text: accumulatedHostText(turnID: turnID, itemID: itemID, delta: delta),
                 phase: ChatMessagePhase(rawValue: chatEvent.phase ?? "") ?? .unknown))
@@ -1350,14 +1658,14 @@ final class StudyChatStore: ObservableObject {
                     if pendingSubmissionID != nil { assignPendingSubmission(to: turnID, startedAt: .now) }
                 }
                 let generation = connectionGeneration
-                Task { await reconcileHostHistory(finalState: .completed, generation: generation) }
+                Task { await reconcileHostHistory(finalState: .inProgress, generation: generation) }
             case "interrupted":
                 if let turnID = chatEvent.turnID {
                     hostActiveTurnID = turnID
                     if pendingSubmissionID != nil { assignPendingSubmission(to: turnID, startedAt: .now) }
                 }
                 let generation = connectionGeneration
-                Task { await reconcileHostHistory(finalState: .interrupted, generation: generation) }
+                Task { await reconcileHostHistory(finalState: .inProgress, generation: generation) }
             case "failed":
                 if let turnID = chatEvent.turnID {
                     hostActiveTurnID = turnID
@@ -1367,10 +1675,9 @@ final class StudyChatStore: ObservableObject {
                 } else {
                     markLatestTurn(.failed, errorMessage: chatEvent.text)
                 }
-                isBusy = false
-                hostActiveTurnID = nil
                 setState(.connected)
                 errorMessage = chatEvent.text ?? "学业服务对话失败，请重试。"
+                if let id = chatEvent.turnID { finishActiveTurn(id) }
             default:
                 break
             }
@@ -1399,9 +1706,13 @@ final class StudyChatStore: ObservableObject {
     private func reconcileHostHistory(finalState: ChatTurnState, generation: Int? = nil) async {
         let generation = generation ?? connectionGeneration
         guard usingHost, generation == connectionGeneration, !Task.isCancelled else { return }
+        historyRequestSequence &+= 1
+        let sequence = historyRequestSequence
+        let expectedIntentID = activeIntent?.id
         do {
             let response = try await hostClient.history()
-            guard usingHost, generation == connectionGeneration, !Task.isCancelled else { return }
+            guard usingHost, generation == connectionGeneration, sequence == historyRequestSequence,
+                  expectedIntentID == activeIntent?.id, !Task.isCancelled else { return }
             let messages = Self.messages(from: response)
             hostDisplay.flush()
             rememberHostTerminals(response)
@@ -1410,14 +1721,21 @@ final class StudyChatStore: ObservableObject {
                (isBusy || pendingSubmissionID != nil || hostActiveTurnID != nil) {
                 let authoritativeTurns = Self.present(messages)
                 let authoritative = (hostActiveTurnID.flatMap { id in authoritativeTurns.first(where: { $0.id == id }) })
-                    ?? authoritativeTurns.last(where: { $0.userMessage?.text == lastSubmitted })
+                    ?? (isCloud ? nil : authoritativeTurns.last(where: { $0.status == .inProgress && $0.userMessage?.text == lastSubmitted && !hostTerminalTurnIDs.contains($0.id) }))
                 if let authoritative {
                     hostActiveTurnID = authoritative.id
                     if pendingSubmissionID != nil { assignPendingSubmission(to: authoritative.id, startedAt: authoritative.startedAt) }
                     if authoritative.status != .inProgress {
                         completeTurn(ChatTurnResult(turnID: authoritative.id, status: authoritative.status, errorMessage: authoritative.errorMessage, completedAt: authoritative.completedAt ?? .now))
-                        isBusy = false
+                        finishActiveTurn(authoritative.id)
                     }
+                } else if let target = hostActiveTurnID, hostTerminalTurnIDs.contains(target) {
+                    if let terminal = response.terminalTurns?.first(where: { $0.turnID == target }) {
+                        assignPendingSubmission(to: target, startedAt: nil)
+                        completeTurn(.init(turnID: target, status: ChatTurnState(rawValue: terminal.status) ?? .failed,
+                            errorMessage: terminal.message, completedAt: terminal.completedAt))
+                    }
+                    finishActiveTurn(target)
                 }
             }
             if finalState != .inProgress {
@@ -1440,9 +1758,9 @@ final class StudyChatStore: ObservableObject {
             }
             await refreshHostProposals()
         } catch {
-            guard usingHost, generation == connectionGeneration, !Task.isCancelled else { return }
-            isBusy = false
-            setState(.failed)
+            guard usingHost, generation == connectionGeneration, sequence == historyRequestSequence,
+                  expectedIntentID == activeIntent?.id, !Task.isCancelled else { return }
+            if !isStopping { setState(.reconnecting) }
             errorMessage = error.localizedDescription
         }
     }
@@ -1469,9 +1787,6 @@ final class StudyChatStore: ObservableObject {
         transcript.skillProposals = skills
         hostProposalIDs = markdownIDs
         hostSkillProposalIDs = skillIDs
-        for item in value.proposals {
-            transcript.expandedProposalTurnIDs.insert(item.turnID)
-        }
     }
 
     func applySelectedChanges(workspace: WorkspaceStore, for turnID: String) {
@@ -1637,7 +1952,7 @@ final class StudyChatStore: ObservableObject {
             }
             let proposal = MarkdownChangeProposal(turnID: turnID, relativePath: path, originalContent: original, proposedContent: prepared, reason: reason, baseHash: repository.hash(original))
             transcript.proposals.removeAll { $0.turnID == turnID && $0.relativePath == path }; transcript.proposals.append(proposal)
-            transcript.expandedProposalTurnIDs.insert(turnID)
+            // Keep the new proposal card compact until explicitly opened.
             return ["success": true, "contentItems": [["type": "inputText", "text": "已建立修改草案：\(path)。应用将展示差异，用户确认后才会写入。"]]]
         } catch { return ["success": false, "contentItems": [["type": "inputText", "text": "无法建立草案：\(error.localizedDescription)"]] ] }
     }

@@ -717,7 +717,7 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
             let toolsReady = chatBridge.canGenerateChat && StudyRocketDynamicToolContract.declarationIsValid
             if isAuthorized(headers: headers, method: method, path: path, body: body) {
                 let repositoryID = RequestSigning.bodyHash(Data(root.path.utf8))
-                let health = HealthResponse(hostVersion: "0.1.0", repositoryBound: bound, codexReady: codexReady, pairedDeviceCount: pairing.deviceCount, activeThreadID: chatBridge.currentThreadID, repositoryID: repositoryID, dynamicToolsReady: toolsReady, chatState: chatState.rawValue, chatIssueCode: chatBridge.chatIssueCode)
+                let health = HealthResponse(hostVersion: "0.1.0", repositoryBound: bound, codexReady: codexReady, pairedDeviceCount: pairing.deviceCount, activeThreadID: chatBridge.currentThreadID, repositoryID: repositoryID, dynamicToolsReady: toolsReady, chatState: chatState.rawValue, chatIssueCode: chatBridge.chatIssueCode, capabilities: ["targeted-interrupt"])
                 payload = (try? encoder.encode(health)) ?? Data("{}".utf8)
             } else {
                 let health = PublicHealthResponse(hostVersion: "0.1.0", repositoryBound: bound, codexReady: codexReady, dynamicToolsReady: toolsReady)
@@ -884,6 +884,10 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
                 guard request.apiVersion == StudyRocketAPI.version else {
                     throw HostChatError.protocolError("客户端版本不兼容，请更新 StudyRocket。")
                 }
+                guard request.attachmentIDs?.isEmpty != false else {
+                    payload = (try? encoder.encode(APIErrorBody(code: "attachments_unsupported", message: "旧本机模式不支持附件，请切换到云服务。", retryable: false))) ?? Data("{}".utf8)
+                    return makeResponse(status: "422 Unprocessable Entity", payload: payload)
+                }
                 _ = chatBridge.send(request.text, requestID: request.clientRequestID)
                 payload = (try? encoder.encode(chatBridge.history())) ?? Data("{}".utf8)
                 status = "202 Accepted"
@@ -908,8 +912,13 @@ private final class StudyRocketHTTPServer: @unchecked Sendable {
                 guard request.apiVersion == StudyRocketAPI.version else {
                     throw HostChatError.protocolError("客户端版本不兼容，请更新 StudyRocket。")
                 }
-                chatBridge.interrupt()
-                payload = Data("{}".utf8)
+                guard !request.turnID.isEmpty, request.turnID != "active" else {
+                    throw HostChatError.protocolError("停止请求必须包含具体回合编号。")
+                }
+                let terminal = chatBridge.history().terminalTurns?.first { $0.turnID == request.turnID }
+                if terminal == nil { chatBridge.interrupt(targetTurnID: request.turnID) }
+                payload = try encoder.encode(ChatInterruptResponse(targetTurnID: request.turnID,
+                    operationID: request.operationID ?? request.turnID, status: terminal?.status ?? "cancelling", terminal: terminal))
                 status = "202 Accepted"
             } catch {
                 payload = (try? encoder.encode(APIErrorBody(code: "invalid_request", message: error.localizedDescription, retryable: false))) ?? Data("{}".utf8)

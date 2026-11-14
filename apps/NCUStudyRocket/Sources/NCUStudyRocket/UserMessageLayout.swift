@@ -28,17 +28,24 @@ struct UserMessageLayout: Layout {
 }
 
 struct UserMessageView: View {
+    @EnvironmentObject private var chat: StudyChatStore
     let message: ChatMessage
     @Binding var showTime: Bool
     var body: some View {
         UserMessageLayout {
-            Text(message.text)
+            VStack(alignment: .leading, spacing: 8) {
+            ForEach(message.attachments) { attachment in
+                DesktopAttachmentCard(metadata: attachment, preview: { chat.previewAttachment(attachment) })
+            }
+            if !message.text.isEmpty { Text(message.text)
                 .studyChatTypography(size: StudyRocketTheme.bodySize)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 14).padding(.vertical, 11)
-                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous)).foregroundStyle(.white)
+                .background(Color(nsColor: .quaternaryLabelColor).opacity(0.45), in: RoundedRectangle(cornerRadius: 18, style: .continuous)).foregroundStyle(.primary)
                 .contextMenu { StudyButton("复制", systemImage: "doc.on.doc") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.text, forType: .string) } }
+            }
+            }
             HStack(spacing: 5) {
                 if let state = message.turnState, state != .completed { Text(state == .interrupted ? "已中断" : state == .failed ? "未完成" : "进行中") }
                 Text(message.date.formatted(date: .omitted, time: .shortened))

@@ -972,6 +972,7 @@ public enum StudyRocketMarkdownParser {
 }
 
 public struct ChatMessageDTO: Codable, Equatable, Sendable, Identifiable {
+    public let attachments: [ChatAttachmentDTO]?
     public let id: String
     public let role: String
     public let text: String
@@ -980,7 +981,8 @@ public struct ChatMessageDTO: Codable, Equatable, Sendable, Identifiable {
     public let phase: String?
     public let status: String?
 
-    public init(id: String, role: String, text: String, date: Date, turnID: String? = nil, phase: String? = nil, status: String? = nil) {
+    public init(id: String, role: String, text: String, date: Date, turnID: String? = nil, phase: String? = nil, status: String? = nil, attachments: [ChatAttachmentDTO]? = nil) {
+        self.attachments = attachments
         self.id = id
         self.role = role
         self.text = text
@@ -1084,11 +1086,13 @@ public struct StudyRocketModelSelection: Equatable, Sendable {
 }
 
 public struct SendChatRequest: Codable, Equatable, Sendable {
+    public let attachmentIDs: [String]?
     public let text: String
     public let clientRequestID: String
     public let apiVersion: Int
 
-    public init(text: String, clientRequestID: String = UUID().uuidString, apiVersion: Int = StudyRocketAPI.version) {
+    public init(text: String, clientRequestID: String = UUID().uuidString, apiVersion: Int = StudyRocketAPI.version, attachmentIDs: [String]? = nil) {
+        self.attachmentIDs = attachmentIDs
         self.text = text
         self.clientRequestID = clientRequestID
         self.apiVersion = apiVersion
@@ -1096,10 +1100,13 @@ public struct SendChatRequest: Codable, Equatable, Sendable {
 }
 
 public struct InterruptRequest: Codable, Equatable, Sendable {
+    public let operationID: String?
+    public var targetTurnID: String { turnID }
     public let turnID: String
     public let apiVersion: Int
 
-    public init(turnID: String, apiVersion: Int = StudyRocketAPI.version) {
+    public init(turnID: String, apiVersion: Int = StudyRocketAPI.version, operationID: String? = nil) {
+        self.operationID = operationID
         self.turnID = turnID
         self.apiVersion = apiVersion
     }

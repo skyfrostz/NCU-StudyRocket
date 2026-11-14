@@ -4,7 +4,7 @@ import StudyRocketShared
 enum StudyRocketTheme {
     static let pageMaxWidth: CGFloat = 1120
     static let readingMaxWidth: CGFloat = 800
-    static let chatMaxWidth: CGFloat = 880
+    static let chatMaxWidth: CGFloat = 800
     static let pageInset: CGFloat = 24
     static let compactInset: CGFloat = 18
     static let sectionGap: CGFloat = 24

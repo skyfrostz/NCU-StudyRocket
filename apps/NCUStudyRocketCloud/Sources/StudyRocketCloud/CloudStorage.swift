@@ -39,6 +39,7 @@ final class CloudDatabase: @unchecked Sendable {
             "CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY,request_hash TEXT NOT NULL,state TEXT NOT NULL,response TEXT,journal TEXT,revision TEXT,created REAL NOT NULL)",
             "CREATE TABLE IF NOT EXISTS proposals (id TEXT PRIMARY KEY,body TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS messages (seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,thread TEXT NOT NULL,role TEXT NOT NULL,text TEXT NOT NULL,date REAL NOT NULL,source TEXT NOT NULL,body TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY,body TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS partials (id TEXT PRIMARY KEY,text TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY,state TEXT NOT NULL,body TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT,body TEXT NOT NULL,date REAL NOT NULL)",
@@ -118,6 +119,7 @@ actor CloudStore {
 
         }
         try db.run("UPDATE operations SET state='interrupted' WHERE state='running'")
+        try Self.recoverAttachmentMirrors(db:db,state:self.state)
     }
     deinit { flock(lockFD, LOCK_UN); close(lockFD); flock(repositoryLockFD, LOCK_UN); close(repositoryLockFD) }
     func ensureReady() throws { if faulted { throw CloudError(503,"recovery_required","服务器需要恢复未完成事务，未接受更多读写。") } }
@@ -334,6 +336,9 @@ actor CloudStore {
         return try commit(id:request.metadata.idempotencyKey,requestHash:requestHash,files:changes,response:json(manifest),revision:newSnapshot.revision)
     }
     func appendEvent(_ event: HostEventEnvelope) throws -> Int {
+        if let chat=event.chat,chat.kind == "delta",let turn=chat.turnID {
+            guard activeRun == turn,!interrupted.contains(turn) else {return 0}
+        }
         let id: Int = try db.transaction {
             if let chat=event.chat, chat.kind == "delta", let turn=chat.turnID,let text=chat.text {
                 try db.run("INSERT INTO partials(id,text) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET text=text||excluded.text",[.text(turn),.text(text)])

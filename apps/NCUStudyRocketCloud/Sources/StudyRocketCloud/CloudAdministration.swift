@@ -72,9 +72,53 @@ enum CloudAdministration {
             }
         }
         try db.run("VACUUM INTO ?",[.text(staging.appendingPathComponent("cloud.sqlite").path)])
-        let manifest:[String:Any] = ["version":1,"repositoryID":try db.value("repositoryID") ?? "","createdAt":ISO8601DateFormatter().string(from:.now),"files":files]
+        let attachmentFiles = try backupAttachments(state: state, staging: staging)
+        let manifest:[String:Any] = ["version":1,"repositoryID":try db.value("repositoryID") ?? "","createdAt":ISO8601DateFormatter().string(from:.now),"files":files,"attachmentFiles":attachmentFiles]
         try CloudStore.durableWrite(JSONSerialization.data(withJSONObject:manifest,options:[.sortedKeys]),to:staging.appendingPathComponent("manifest.json"))
         try FileManager.default.moveItem(at:staging,to:output)
+    }
+
+    /// Called under transaction.lock together with the SQLite snapshot. Objects
+    /// are immutable and linked, so daily snapshots do not multiply blob storage.
+    static func backupAttachments(state: URL, staging: URL) throws -> [[String: Any]] {
+        struct Record: Decodable { let attachment: ChatAttachmentDTO; let sentAt: Date? }
+        let base = state.appendingPathComponent("attachments")
+        guard FileManager.default.fileExists(atPath: base.path) else { return [] }
+        guard (try base.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink != true else { throw CloudError(403,"unsafe_attachment","Invalid attachment directory") }
+        let records = base.appendingPathComponent("records")
+        guard (try records.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink != true else { throw CloudError(403,"unsafe_attachment","Invalid attachment records") }
+        var files: [[String: Any]] = []
+        var objects: [String: (bytes: Int, expires: Date)] = [:]
+        for source in try FileManager.default.contentsOfDirectory(at: records, includingPropertiesForKeys: [.isSymbolicLinkKey, .isRegularFileKey, .fileSizeKey]) {
+            let properties = try source.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey, .fileSizeKey])
+            guard properties.isSymbolicLink != true, properties.isRegularFile == true,
+                  source.pathExtension == "json", UUID(uuidString: source.deletingPathExtension().lastPathComponent) != nil,
+                  (properties.fileSize ?? Int.max) <= 65536 else { throw CloudError(422,"invalid_attachment_record","Invalid attachment backup metadata") }
+            let data = try Data(contentsOf: source)
+            let record = try decode(Record.self, data), item = record.attachment
+            guard record.sentAt != nil, item.state == .ready, item.expiresAt > Date() else { continue }
+            guard item.sha256.count == 64, item.sha256.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
+                  item.byteCount >= 0, item.byteCount <= ChatAttachmentLimits.documentBytes else { throw CloudError(422,"invalid_attachment_record","Invalid attachment backup object") }
+            let path = "attachments/records/" + source.lastPathComponent
+            let destination = staging.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try CloudStore.durableWrite(data, to: destination)
+            files.append(["path": path, "sha256": digest(data), "bytes": data.count, "expiresAt": item.expiresAt.timeIntervalSince1970])
+            let old = objects[item.sha256]
+            objects[item.sha256] = (item.byteCount, max(old?.expires ?? .distantPast, item.expiresAt))
+        }
+        for (hash, metadata) in objects {
+            let source = base.appendingPathComponent("objects/" + hash)
+            guard (try source.deletingLastPathComponent().resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink != true else { throw CloudError(403,"unsafe_attachment","Invalid attachment objects") }
+            let values = try source.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey, .fileSizeKey])
+            guard values.isSymbolicLink != true, values.isRegularFile == true, values.fileSize == metadata.bytes else { throw CloudError(422,"missing_attachment","Attachment backup source missing") }
+            let path = "attachments/objects/" + hash
+            let destination = staging.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try FileManager.default.linkItem(at: source, to: destination)
+            files.append(["path": path, "sha256": hash, "bytes": metadata.bytes, "expiresAt": metadata.expires.timeIntervalSince1970])
+        }
+        return files.sorted { ($0["path"] as! String) < ($1["path"] as! String) }
     }
 }
 

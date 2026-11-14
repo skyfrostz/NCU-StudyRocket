@@ -44,13 +44,15 @@ public struct CloudOperationStatus: Codable, Equatable, Sendable {
     public init(id: String, state: String, revision: String? = nil, message: String? = nil) { self.id = id; self.state = state; self.revision = revision; self.message = message }
 }
 public struct CloudArchivedMessage: Codable, Equatable, Sendable, Identifiable {
+    public let attachments: [ChatAttachmentDTO]?
     public let id: String
     public let sourceThreadID: String
     public let role: String
     public let text: String
     public let date: Date
     public let source: String
-    public init(id: String, sourceThreadID: String, role: String, text: String, date: Date, source: String = "codex-import") {
+    public init(id: String, sourceThreadID: String, role: String, text: String, date: Date, source: String = "codex-import", attachments: [ChatAttachmentDTO]? = nil) {
+        self.attachments=attachments
         self.id = id; self.sourceThreadID = sourceThreadID; self.role = role; self.text = text; self.date = date; self.source = source
     }
 }
@@ -88,7 +90,8 @@ public struct CloudBackupEntry: Codable, Equatable, Sendable {
     public let path: String
     public let sha256: String
     public let byteCount: Int
-    public init(path: String, sha256: String, byteCount: Int) { self.path=path; self.sha256=sha256; self.byteCount=byteCount }
+    public let expiresAt: Date?
+    public init(path: String, sha256: String, byteCount: Int, expiresAt: Date? = nil) { self.path=path; self.sha256=sha256; self.byteCount=byteCount; self.expiresAt=expiresAt }
 }
 public struct CloudBackupManifest: Codable, Sendable, Identifiable {
     public let id: String

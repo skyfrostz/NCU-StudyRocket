@@ -1,0 +1,509 @@
+{
+  "schema": 1,
+  "date": "2026-11-14",
+  "candidate": "v4",
+  "binary_sha256": "95d44340bc674b24e34ea6778784512cb99805bb3e7cc7d61921954062e75cba",
+  "source_manifest_sha256": "d6172a67025fa32362611f4d5b63e90a7238715fe6464cf7158c34667fc0bc6e",
+  "artifact_manifest_sha256_at_test": "4b9d32a2dcae6fbb4abec5795922249de0c55e6ec740917b069e3c55aedd5c7c",
+  "manifest_note": "Additional-format supplemental script updated separately; root must regenerate final artifact manifest after supplemental QA. Runtime binary and Cloud source remain frozen.",
+  "isolated": true,
+  "activated": false,
+  "synthetic_only": true,
+  "credential_included": false,
+  "linux_mock_tests": 80,
+  "suites": [
+    {
+      "name": "cloud_acceptance.py",
+      "exit": 0,
+      "tests": 27,
+      "seconds": 12.86
+    },
+    {
+      "name": "attachment_acceptance.py",
+      "exit": 0,
+      "tests": 17,
+      "seconds": 13.27
+    },
+    {
+      "name": "attachment_backup_acceptance.py",
+      "exit": 0,
+      "tests": 1,
+      "seconds": 1.03
+    },
+    {
+      "name": "attachment_resource_acceptance.py",
+      "exit": 0,
+      "tests": 1,
+      "seconds": 17.37
+    },
+    {
+      "name": "proposal_safety_acceptance.py",
+      "exit": 0,
+      "tests": 4,
+      "seconds": 2.29
+    },
+    {
+      "name": "graceful_shutdown_acceptance.py",
+      "exit": 0,
+      "tests": 4,
+      "seconds": 1.87
+    },
+    {
+      "name": "restore_backup_acceptance.py",
+      "exit": 0,
+      "tests": 26,
+      "seconds": 1.67
+    }
+  ],
+  "native_rounds": [
+    {
+      "round": 1,
+      "result": "PASS",
+      "formats": [
+        "png",
+        "pdf",
+        "docx",
+        "xlsx"
+      ],
+      "content_result": "PASS",
+      "cleanup": "PASS",
+      "provider_delete_confirmed": 4,
+      "all_native_files_referenced_each_round": true,
+      "direct_pdf_diagnostic": "形状：三角形  \n颜色：蓝色  \nVALUE：73",
+      "resource": {
+        "minimum_available_mib": 741,
+        "peak_cgroup_bytes": 268947456,
+        "peak_cloud_rss_kib": 44672,
+        "memory_events": "low 0\nhigh 284\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+      },
+      "same_production_pids": true,
+      "same_production_binary": true,
+      "baseline": {
+        "studyrocket-cloud": {
+          "MainPID": "1217163",
+          "MemoryCurrent": "55316480",
+          "MemoryPeak": "63463424",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        "soulcourse": {
+          "MainPID": "340635",
+          "MemoryCurrent": "73748480",
+          "MemoryPeak": "100933632",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        "soulcourse_readyz": {
+          "exit": 0,
+          "body": "{\"checks\":{\"database\":\"ok\"},\"status\":\"ready\"}"
+        },
+        "production_binary_sha256": "732d4d3fa4cd686027b710c9356c1c2a6ff34b16106f5be8113b14579beba551",
+        "production_current_target": "/opt/studyrocket/cloud/releases/20261112-ui-shutdown-lock-final",
+        "available_mib": 790
+      },
+      "after": {
+        "studyrocket-cloud": {
+          "MainPID": "1217163",
+          "MemoryCurrent": "44470272",
+          "MemoryPeak": "63463424",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        "soulcourse": {
+          "MainPID": "340635",
+          "MemoryCurrent": "64946176",
+          "MemoryPeak": "100933632",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        "soulcourse_readyz": {
+          "exit": 0,
+          "body": "{\"checks\":{\"database\":\"ok\"},\"status\":\"ready\"}"
+        },
+        "production_binary_sha256": "732d4d3fa4cd686027b710c9356c1c2a6ff34b16106f5be8113b14579beba551",
+        "production_current_target": "/opt/studyrocket/cloud/releases/20261112-ui-shutdown-lock-final",
+        "available_mib": 796
+      },
+      "report_hashes": {
+        "qa-report": "9c4db892b06fc298713a14036940523bc770c29564d1eefd7f5e15b272ef227d",
+        "live-attachments": "75c6571ff50931e16f76a85b28262818c65d7378a3ce0366feabc0702149ccb5"
+      }
+    },
+    {
+      "round": 2,
+      "result": "FAIL",
+      "formats": [
+        "png",
+        "pdf",
+        "docx",
+        "xlsx"
+      ],
+      "content_result": "FAIL",
+      "cleanup": "PASS",
+      "provider_delete_confirmed": 4,
+      "all_native_files_referenced_each_round": true,
+      "direct_pdf_diagnostic": "无法读取该 PDF：你提供的文件内容为空，因此无法确定图形形状、颜色和 VALUE 数字。",
+      "resource": {
+        "minimum_available_mib": 732,
+        "peak_cgroup_bytes": 98455552,
+        "peak_cloud_rss_kib": 44928,
+        "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n"
+      },
+      "same_production_pids": true,
+      "same_production_binary": true,
+      "baseline": {
+        "studyrocket-cloud": {
+          "MainPID": "1217163",
+          "MemoryCurrent": "44568576",
+          "MemoryPeak": "63463424",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        "soulcourse": {
+          "MainPID": "340635",
+          "MemoryCurrent": "80408576",
+          "MemoryPeak": "100933632",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        "soulcourse_readyz": {
+          "exit": 0,
+          "body": "{\"checks\":{\"database\":\"ok\"},\"status\":\"ready\"}"
+        },
+        "production_binary_sha256": "732d4d3fa4cd686027b710c9356c1c2a6ff34b16106f5be8113b14579beba551",
+        "production_current_target": "/opt/studyrocket/cloud/releases/20261112-ui-shutdown-lock-final",
+        "available_mib": 734
+      },
+      "after": {
+        "studyrocket-cloud": {
+          "MainPID": "1217163",
+          "MemoryCurrent": "44568576",
+          "MemoryPeak": "63463424",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        "soulcourse": {
+          "MainPID": "340635",
+          "MemoryCurrent": "77066240",
+          "MemoryPeak": "100933632",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        "soulcourse_readyz": {
+          "exit": 0,
+          "body": "{\"checks\":{\"database\":\"ok\"},\"status\":\"ready\"}"
+        },
+        "production_binary_sha256": "732d4d3fa4cd686027b710c9356c1c2a6ff34b16106f5be8113b14579beba551",
+        "production_current_target": "/opt/studyrocket/cloud/releases/20261112-ui-shutdown-lock-final",
+        "available_mib": 796
+      },
+      "report_hashes": {
+        "qa-report": "a788051606855a0e1c2343977de501b6dcc739a7d961989a6e7f54a174cb72d5",
+        "live-attachments": "ffe1c282238031d8f672124e16fa1dc70782058e2765ee7d7e5b5462976244b0"
+      }
+    }
+  ],
+  "native_provider_deletions_confirmed_total": 10,
+  "retention": "Maximum 30 days from provider upload creation; local sent expiry is min(send + 30 days, provider expires_at).",
+  "result": "BLOCKED_PDF_NATIVE_INTERMITTENT",
+  "blocker": "Original v4 round 2 remains FAIL for the 699-byte minimal vector PDF. The bounded control experiment isolates empty native parsing on that sample; a standard ReportLab PDF with embedded bitmap and text passed all fixed observations. Release decision must retain this limitation, not recategorize the original failure as PASS.",
+  "pdf_fixture_sha256": "bfde63f66bf69ae0678b960ca346121ee3b155ea2cc393b6c0f99a57321ad291",
+  "historical_failures_preserved": [
+    "v1 first run INVALID_FIXTURE clipped PDF and overly weak numeric assertion; cleanup 2/2",
+    "v1 second run FAIL PDF empty; cleanup 2/2",
+    "v3 FAIL XLSX converted bytes identity mismatch; cleanup initial 3/4, exact-receipt orphan cleanup later confirmed 1/1",
+    "v4 round 2 FAIL PDF empty; cleanup 4/4"
+  ],
+  "raw_report_directory": "/var/lib/studyrocket/chat-redesign-qa-20261114/v4",
+  "pdf_bounded_diagnostic": {
+    "uploads": 2,
+    "checks_per_same_id": [
+      0,
+      15,
+      60
+    ],
+    "script_sha256": "b80278d956d80d82a6caeeacd77ab69a65bdd8ff281dff0e6230353f843004ec",
+    "samples": {
+      "minimal": {
+        "variant": "minimal",
+        "synthetic": true,
+        "uploads": 1,
+        "checks": [
+          {
+            "seconds_after_upload": 0.0,
+            "get_status": 200,
+            "metadata": {
+              "object": "file",
+              "bytes": 699,
+              "created_at": 1794633460,
+              "purpose": "rich_layout_recognition",
+              "expires_at": 1797225460
+            },
+            "chat_status": 200,
+            "answer": "无法读取该 PDF 的可见内容：当前提供的文件内容为空（`[file content begin]` 与 `[file content end]` 之间没有任何文字或图像信息）。因此无法确定图形形状、颜色、VALUE 数字，也无法抄录其他可见文字。请重新上传包含内容的 PDF 或提供页面截图/文字。",
+            "usage": {
+              "prompt_tokens": 100,
+              "completion_tokens": 192,
+              "total_tokens": 292,
+              "prompt_tokens_details": {
+                "cached_tokens": 0
+              },
+              "completion_tokens_details": {
+                "reasoning_tokens": 118
+              },
+              "prompt_cache_hit_tokens": 0,
+              "prompt_cache_miss_tokens": 100
+            },
+            "correct": false
+          },
+          {
+            "seconds_after_upload": 15.0,
+            "get_status": 200,
+            "metadata": {
+              "object": "file",
+              "bytes": 699,
+              "created_at": 1794633460,
+              "purpose": "rich_layout_recognition",
+              "expires_at": 1797225460
+            },
+            "chat_status": 200,
+            "answer": "我收到的该 PDF 内容为空（无可读取的正文/页面内容），因此无法确定图形形状、颜色、VALUE 数字，也无法抄录其他可见文字。为避免猜测，我不能给出具体答案。请重新提供包含实际页面内容的 PDF 或图片。",
+            "usage": {
+              "prompt_tokens": 100,
+              "completion_tokens": 293,
+              "total_tokens": 393,
+              "prompt_tokens_details": {
+                "cached_tokens": 0
+              },
+              "completion_tokens_details": {
+                "reasoning_tokens": 236
+              },
+              "prompt_cache_hit_tokens": 0,
+              "prompt_cache_miss_tokens": 100
+            },
+            "correct": false
+          },
+          {
+            "seconds_after_upload": 60.0,
+            "get_status": 200,
+            "metadata": {
+              "object": "file",
+              "bytes": 699,
+              "created_at": 1794633460,
+              "purpose": "rich_layout_recognition",
+              "expires_at": 1797225460
+            },
+            "chat_status": 200,
+            "answer": "无法回答：该 PDF 的文本/内容在上述消息中为空（`[file content begin]` 与 `[file content end]` 之间没有可见内容），因此无法读取图形形状、颜色、VALUE 数字或其他可见文字。为避免猜测，我不能编造结果。",
+            "usage": {
+              "prompt_tokens": 100,
+              "completion_tokens": 194,
+              "total_tokens": 294,
+              "prompt_tokens_details": {
+                "cached_tokens": 0
+              },
+              "completion_tokens_details": {
+                "reasoning_tokens": 132
+              },
+              "prompt_cache_hit_tokens": 0,
+              "prompt_cache_miss_tokens": 100
+            },
+            "correct": false
+          }
+        ],
+        "result": "DIAGNOSTIC_ONLY",
+        "cleanup": "PASS",
+        "original_sha256": "bfde63f66bf69ae0678b960ca346121ee3b155ea2cc393b6c0f99a57321ad291",
+        "original_bytes": 699,
+        "upload_status": 200,
+        "upload_receipt": {
+          "object": "file",
+          "bytes": 699,
+          "created_at": 1794633460,
+          "purpose": "rich_layout_recognition",
+          "expires_at": 1797225460
+        },
+        "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+        "peak_cgroup_bytes": 111566848
+      },
+      "standard": {
+        "variant": "standard",
+        "synthetic": true,
+        "uploads": 1,
+        "checks": [
+          {
+            "seconds_after_upload": 0.0,
+            "get_status": 200,
+            "metadata": {
+              "object": "file",
+              "bytes": 14360,
+              "created_at": 1794633525,
+              "purpose": "rich_layout_recognition",
+              "expires_at": 1797225525
+            },
+            "chat_status": 200,
+            "answer": "- 图形形状：三角形  \n- 颜色：蓝色  \n- VALUE数字：73  \n- 其他可见文字：SYNTHETIC FIGURE、VALUE: 73、CONTROL: LILY-268",
+            "usage": {
+              "prompt_tokens": 326,
+              "completion_tokens": 165,
+              "total_tokens": 491,
+              "prompt_tokens_details": {
+                "cached_tokens": 0
+              },
+              "completion_tokens_details": {
+                "reasoning_tokens": 118
+              },
+              "prompt_cache_hit_tokens": 0,
+              "prompt_cache_miss_tokens": 326
+            },
+            "correct": true,
+            "control_text_visible": true
+          },
+          {
+            "seconds_after_upload": 15.0,
+            "get_status": 200,
+            "metadata": {
+              "object": "file",
+              "bytes": 14360,
+              "created_at": 1794633525,
+              "purpose": "rich_layout_recognition",
+              "expires_at": 1797225525
+            },
+            "chat_status": 200,
+            "answer": "图形形状：三角形  \n颜色：蓝色  \nVALUE数字：73  \n其他可见文字：SYNTHETIC FIGURE；CONTROL: LILY-268",
+            "usage": {
+              "prompt_tokens": 326,
+              "completion_tokens": 141,
+              "total_tokens": 467,
+              "prompt_tokens_details": {
+                "cached_tokens": 128
+              },
+              "completion_tokens_details": {
+                "reasoning_tokens": 106
+              },
+              "prompt_cache_hit_tokens": 128,
+              "prompt_cache_miss_tokens": 198
+            },
+            "correct": true,
+            "control_text_visible": true
+          },
+          {
+            "seconds_after_upload": 60.0,
+            "get_status": 200,
+            "metadata": {
+              "object": "file",
+              "bytes": 14360,
+              "created_at": 1794633525,
+              "purpose": "rich_layout_recognition",
+              "expires_at": 1797225525
+            },
+            "chat_status": 200,
+            "answer": "图形形状：三角形  \n颜色：蓝色  \nVALUE数字：73  \n其他可见文字：SYNTHETIC FIGURE；CONTROL: LILY-268",
+            "usage": {
+              "prompt_tokens": 326,
+              "completion_tokens": 200,
+              "total_tokens": 526,
+              "prompt_tokens_details": {
+                "cached_tokens": 128
+              },
+              "completion_tokens_details": {
+                "reasoning_tokens": 165
+              },
+              "prompt_cache_hit_tokens": 128,
+              "prompt_cache_miss_tokens": 198
+            },
+            "correct": true,
+            "control_text_visible": true
+          }
+        ],
+        "result": "DIAGNOSTIC_ONLY",
+        "cleanup": "PASS",
+        "original_sha256": "2e287e87dc3ef2068ce8c2f008b5679588d6e42d4b3cd6a823ae04efb4ee6495",
+        "original_bytes": 14360,
+        "upload_status": 200,
+        "upload_receipt": {
+          "object": "file",
+          "bytes": 14360,
+          "created_at": 1794633525,
+          "purpose": "rich_layout_recognition",
+          "expires_at": 1797225525
+        },
+        "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+        "peak_cgroup_bytes": 111566848
+      }
+    },
+    "resource_report": {
+      "binary_sha256": "95d44340bc674b24e34ea6778784512cb99805bb3e7cc7d61921954062e75cba",
+      "isolated": true,
+      "activated": false,
+      "suites": [
+        {
+          "name": "minimal",
+          "exit": 0
+        },
+        {
+          "name": "standard",
+          "exit": 0
+        }
+      ],
+      "minimum_available_mib": 763,
+      "peak_cgroup_bytes": 111566848,
+      "peak_cloud_rss_kib": 0,
+      "baseline": {
+        "studyrocket-cloud": {
+          "MainPID": "1217163",
+          "MemoryCurrent": "44638208",
+          "MemoryPeak": "63463424",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        "soulcourse": {
+          "MainPID": "340635",
+          "MemoryCurrent": "73281536",
+          "MemoryPeak": "100933632",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        "soulcourse_readyz": {
+          "exit": 0,
+          "body": "{\"checks\":{\"database\":\"ok\"},\"status\":\"ready\"}"
+        },
+        "production_binary_sha256": "732d4d3fa4cd686027b710c9356c1c2a6ff34b16106f5be8113b14579beba551",
+        "production_current_target": "/opt/studyrocket/cloud/releases/20261112-ui-shutdown-lock-final",
+        "available_mib": 769
+      },
+      "result": "DIAGNOSTIC_COMPLETE",
+      "after": {
+        "studyrocket-cloud": {
+          "MainPID": "1217163",
+          "MemoryCurrent": "45334528",
+          "MemoryPeak": "63463424",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        "soulcourse": {
+          "MainPID": "340635",
+          "MemoryCurrent": "73306112",
+          "MemoryPeak": "100933632",
+          "ActiveState": "active",
+          "SubState": "running"
+        },
+        "soulcourse_readyz": {
+          "exit": 0,
+          "body": "{\"checks\":{\"database\":\"ok\"},\"status\":\"ready\"}"
+        },
+        "production_binary_sha256": "732d4d3fa4cd686027b710c9356c1c2a6ff34b16106f5be8113b14579beba551",
+        "production_current_target": "/opt/studyrocket/cloud/releases/20261112-ui-shutdown-lock-final",
+        "available_mib": 824
+      },
+      "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+      "same_production_pids": true,
+      "same_production_binary": true
+    },
+    "inference": "Minimal vector PDF consistently produced empty native parsed content across 60 seconds; standard ReportLab export with embedded bitmap and text succeeded at all three fixed timepoints. This supports parser compatibility/extraction differences, not a readiness delay. The provider exposes no parse status/result download. This is a bounded diagnostic, not proof that every standard PDF works."
+  },
+  "source_manifest_current_verification": {
+    "entries": 40,
+    "mismatches": 0
+  }
+}

@@ -15,6 +15,7 @@
 <key>StudyRocketAppGroupIdentifier</key><string>$(STUDYROCKET_APP_GROUP_IDENTIFIER)</string>
 <key>StudyRocketKeychainService</key><string>$(STUDYROCKET_KEYCHAIN_SERVICE)</string>
 <key>StudyRocketURLScheme</key><string>$(STUDYROCKET_URL_SCHEME)</string>
+<key>NSCameraUsageDescription</key><string>拍摄照片作为学业对话附件。</string>
 <key>NSFaceIDUsageDescription</key><string>使用 Face ID 确认将已选择的学业草案写入 Mac 仓库。</string>
 <key>NSAppTransportSecurity</key><dict>
 <key>NSExceptionDomains</key><dict>

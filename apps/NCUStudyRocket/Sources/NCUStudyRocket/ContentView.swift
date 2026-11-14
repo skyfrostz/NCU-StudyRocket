@@ -1,6 +1,7 @@
 import SwiftUI
 import MarkdownUI
 import AppKit
+import QuickLook
 import StudyRocketChatCore
 import StudyRocketShared
 
@@ -2911,6 +2912,7 @@ struct StudyChatView: View {
             ChatComposer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .quickLookPreview($chat.attachmentPreviewURL)
         .task { await chat.connect(to: workspace.rootURL) }.onReceive(NotificationCenter.default.publisher(for: .studyRocketCloudBindingChanged)) { _ in Task { await chat.reconnect() } }.onChange(of: workspace.rootURL) { _, root in Task { await chat.connect(to: root) } }.sheet(isPresented: $showHelp) { ChatHelpView() }
     }
     private var statusColor: Color { switch chat.connectionState { case .connected: .green; case .thinking, .reconnecting, .connecting: .orange; case .failed: .red; default: .secondary } }
@@ -2922,7 +2924,6 @@ private struct ChatToolbar: View {
     let showHelp: () -> Void
     var body: some View {
         HStack(spacing: 10) {
-            StudyRocketAvatar(size: 30)
             VStack(alignment: .leading, spacing: 2) {
                 Text("StudyRocket 学业助理").studyTypography(size: 15, weight: .semibold)
                 StudyLabel(chat.status, systemImage: "circle.fill").studyTypography(.caption).foregroundStyle(statusColor).labelStyle(.titleAndIcon)
@@ -2935,7 +2936,7 @@ private struct ChatToolbar: View {
         .padding(.horizontal, StudyRocketTheme.pageInset)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 9)
-        .background(.bar).overlay(alignment: .bottom) { Divider() }
+        .background(.bar)
     }
 }
 
@@ -3684,8 +3685,8 @@ struct InlineProposalPanel: View {
                     .studyTypography(size: StudyRocketTheme.bodySize, weight: .medium)
                     .frame(minHeight: 44)
                     .padding(.horizontal, 12)
-                    .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .overlay { RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.orange.opacity(0.24)) }
+                    .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay { RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.primary.opacity(0.08)) }
                     .contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel(expanded ? "收起待确认修改" : "查看待确认修改")
             if expanded {
@@ -3745,43 +3746,68 @@ private struct InlineSkillProposalPanel: View {
 
 struct ChatComposer: View {
     @EnvironmentObject private var chat: StudyChatStore
-    @FocusState private var inputFocused: Bool
-
+    @State private var dropping = false
+    private var hasContent: Bool { !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !chat.attachments.isEmpty }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    ForEach([ReminderRoute.weekly, .monthly]) { route in StudyButton(route.title) { prepare(route.prompt) }.buttonStyle(.borderless).studyTypography(.caption) }
-                    StudyButton("学业答疑") { prepare("我有一个学业问题，请先读取我的档案和相关航线再回答。") }.buttonStyle(.borderless).studyTypography(.caption)
-                    Spacer()
-                }
-                StudyMenu("快捷报告") {
-                    ForEach([ReminderRoute.weekly, .monthly]) { route in StudyButton(route.title) { prepare(route.prompt) } }
-                    StudyButton("学业答疑") { prepare("我有一个学业问题，请先读取我的档案和相关航线再回答。") }
-                }.studyTypography(.caption)
-            }.foregroundStyle(.secondary)
-            HStack(alignment: .bottom, spacing: 10) {
-                TextField("输入问题或今天完成的事实…", text: $chat.draft, axis: .vertical).lineLimit(2...8).studyChatTypography(size: StudyRocketTheme.bodySize).textFieldStyle(.plain).padding(11)
-                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.quaternary))
-                    .focused($inputFocused)
-                    .onSubmit(submit)
-                    .onExitCommand { inputFocused = false }
-                if chat.isBusy { StudyIconButton(systemImage: "stop.fill", label: "停止生成", action: chat.stop) }
-                else { StudyIconButton(systemImage: "arrow.up", label: "发送（Return）", action: submit, disabled: chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+            if !chat.attachments.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(chat.attachments) { attachment in
+                            DesktopAttachmentCard(metadata: attachment.metadata, localURL: attachment.localURL,
+                                remove: { chat.removeAttachment(attachment.id) }, retry: { chat.retryAttachment(attachment.id) },
+                                preview: { chat.attachmentPreviewURL = attachment.localURL })
+                        }
+                    }
+                }.scrollIndicators(.hidden)
             }
-            Text("学业服务先生成修改草案，确认后保存。Shift+Return 换行。") .studyTypography(.caption2).foregroundStyle(.secondary)
-        }.frame(maxWidth: StudyRocketTheme.chatMaxWidth).frame(maxWidth: .infinity).padding(.horizontal, StudyRocketTheme.pageInset).padding(.vertical, 10).background(.bar)
-    }
-
-    private func prepare(_ prompt: String) {
-        chat.prepare(prompt: prompt)
-        inputFocused = true
-    }
-
-    private func submit() {
-        guard !chat.isBusy, !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        chat.send()
-        inputFocused = false
+            DesktopChatTextInput(text: $chat.draft, submit: chat.send, stop: chat.stop, receiveFiles: chat.addAttachments)
+                .overlay(alignment: .topLeading) {
+                    if chat.draft.isEmpty { Text("发消息给 StudyRocket…").foregroundStyle(.tertiary).padding(.top, 9).padding(.leading, 7).allowsHitTesting(false) }
+                }
+            HStack {
+                Menu {
+                    Button("添加照片或文件…", systemImage: "paperclip", action: chat.chooseAttachments)
+                    Button("停止生成", action: chat.stop).keyboardShortcut(".", modifiers: .command).disabled(!chat.isBusy)
+                    Divider()
+                    ForEach([ReminderRoute.weekly, .monthly]) { route in Button(route.title) { chat.prepare(prompt: route.prompt) } }
+                    Button("学业答疑") { chat.prepare(prompt: "我有一个学业问题，请先读取我的档案和相关航线再回答。") }
+                } label: { Image(systemName: "plus").font(.title3).frame(width: 30, height: 30) }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().accessibilityLabel("添加附件与快捷操作")
+                Spacer()
+                if chat.isStopping { Text("正在停止上一条…").font(.caption).foregroundStyle(.secondary) }
+                if chat.isBusy && !hasContent {
+                    Button(action: chat.stop) { Image(systemName: "stop.fill").frame(width: 34, height: 34) }
+                        .buttonStyle(.plain).help("停止生成（⌘.）").accessibilityLabel("停止生成")
+                } else {
+                    Button(action: chat.send) {
+                        Image(systemName: "arrow.up").font(.body.weight(.semibold)).frame(width: 34, height: 34)
+                            .foregroundStyle(Color(nsColor: .textBackgroundColor)).background(Color.primary, in: Circle())
+                    }.buttonStyle(.plain).disabled(!chat.canSubmit).opacity(chat.canSubmit ? 1 : 0.35)
+                        .accessibilityLabel(chat.isBusy ? "停止上一条并发送新消息" : "发送消息")
+                }
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 24))
+        .overlay(RoundedRectangle(cornerRadius: 24).stroke(dropping ? Color.accentColor : Color.primary.opacity(0.08)))
+        .frame(maxWidth: StudyRocketTheme.chatMaxWidth)
+        .padding(.horizontal, StudyRocketTheme.pageInset).padding(.bottom, 12).padding(.top, 6)
+        .frame(maxWidth: .infinity)
+        .task {
+            while !Task.isCancelled {
+                chat.refreshAttachmentExpiry()
+                try? await Task.sleep(for: .seconds(15))
+            }
+        }
+        .onDrop(of: [.fileURL], isTargeted: $dropping) { providers in
+            for provider in providers {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    if let url { Task { @MainActor in chat.addAttachments([url]) } }
+                }
+            }
+            return !providers.isEmpty
+        }
     }
 }
 

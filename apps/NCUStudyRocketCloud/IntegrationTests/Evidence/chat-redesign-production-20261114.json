@@ -1,0 +1,112 @@
+{
+  "result": "DEPLOYED_AND_MAC_SIGNED_READ_VERIFIED",
+  "release": "/opt/studyrocket/cloud/releases/20261114-chat-redesign-95d44340bc67",
+  "binarySHA256": "95d44340bc674b24e34ea6778784512cb99805bb3e7cc7d61921954062e75cba",
+  "markdownCount": 36,
+  "allExistingTablesAndIdentityUnchangedAtCutover": true,
+  "markdownUnchangedAtCutover": true,
+  "addedEmptyTables": [
+    "attachments"
+  ],
+  "tableCounts": {
+    "attachments": 0,
+    "challenges": 0,
+    "devices": 2,
+    "events": 3077,
+    "kv": 9,
+    "messages": 473,
+    "nonces": 4,
+    "operations": 14,
+    "partials": 0,
+    "proposals": 2,
+    "sqlite_sequence": 2,
+    "turns": 9
+  },
+  "oldBackup": {
+    "fileCount": 38,
+    "path": "/var/lib/studyrocket/cloud/backups/20261114T053431Z-325d0a98",
+    "receiptSHA256": "ca7dd2f6a941d48f8c78da9b008c432c103955d0e370e6feefc5e6e128866132"
+  },
+  "newBackup": {
+    "fileCount": 38,
+    "path": "/var/lib/studyrocket/cloud/backups/20261114T053433Z-896d13e1",
+    "receiptSHA256": "239bf6b08aaf84519ab53a4b415d57f93a994153bd12d5fc06f89041cc43b22c"
+  },
+  "health": {
+    "cloudLocal": {
+      "capabilities": [
+        "academic-files",
+        "durable-operations",
+        "shared-chat",
+        "history-import",
+        "sse-replay",
+        "proposal-confirmation",
+        "chat-attachments",
+        "targeted-interrupt"
+      ],
+      "chatState": "ready",
+      "httpStatus": 200
+    },
+    "cloudPublic": {
+      "capabilities": [
+        "academic-files",
+        "durable-operations",
+        "shared-chat",
+        "history-import",
+        "sse-replay",
+        "proposal-confirmation",
+        "chat-attachments",
+        "targeted-interrupt"
+      ],
+      "chatState": "ready",
+      "httpStatus": 200
+    },
+    "soulcourseLocal": {
+      "database": "ok",
+      "httpStatus": 200
+    },
+    "soulcoursePublic": {
+      "database": "ok",
+      "httpStatus": 200
+    }
+  },
+  "gateRestored": true,
+  "timerRestored": true,
+  "unsignedNewRoutes": {
+    "attachments/create": 401,
+    "attachments/chunk": 401,
+    "attachments/complete": 401,
+    "attachments/status": 401,
+    "attachments/read": 401,
+    "attachments/remove": 401,
+    "chat/interrupt": 401
+  },
+  "soulcoursePIDUnchanged": true,
+  "soulcourseConfigHashesUnchanged": true,
+  "limits": "MainPID=1236108\nResult=success\nMemoryCurrent=4521984\nMemoryPeak=5046272\nCPUQuotaPerSecUSec=1s\nMemoryHigh=314572800\nMemoryMax=402653184\nMemorySwapMax=0\n",
+  "meminfoKiB": {
+    "MemAvailable": 816068,
+    "SwapTotal": 3146744,
+    "SwapFree": 3146744
+  },
+  "acceptedPDFLimit": true,
+  "retention": "max30daysFromUpload",
+  "twentyFourHourObservation": "WAIVED_NOT_PASSED",
+  "earlierAttempt": {
+    "result": "ABORTED_DURING_NEW_BACKUP_BEFORE_NEW_SERVICE_START",
+    "reason": "private umask made release directories inaccessible to service user",
+    "oldBackupVerified": true,
+    "binaryOnlyRollback": true,
+    "baselinePreserved": true,
+    "fixed": "release directory permissions and service-user access check"
+  },
+  "macSignedChatRead": "PASS",
+  "macAttachmentMenuEnabled": true,
+  "macBackup": {
+    "backupID": "20261114T053433Z-896d13e1",
+    "entries": 38,
+    "byteCountAndSHA256Verified": true,
+    "manifestSHA256": "96ecd00e63bdfde6cab67780c1af6b4cc45560d9b876176fda4fbace6eeebad5"
+  },
+  "signedReadVerification": "PASS_EXISTING_PAIRED_MAC"
+}

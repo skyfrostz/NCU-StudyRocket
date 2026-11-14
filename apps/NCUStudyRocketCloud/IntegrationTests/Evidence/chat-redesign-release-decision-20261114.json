@@ -1,0 +1,41 @@
+{
+  "binarySHA256": "95d44340bc674b24e34ea6778784512cb99805bb3e7cc7d61921954062e75cba",
+  "manifestSHA256": "b587cc07b02e83e5ae785fc143e4b4988502d8b88e6915fda2ae1a3cfa912d65",
+  "sourceManifestSHA256": "d6172a67025fa32362611f4d5b63e90a7238715fe6464cf7158c34667fc0bc6e",
+  "backupSHA256": "4138d73b9e4c48737ec160838c6d25b0cba692b29e246dcdb137759a427bc792",
+  "result": "PASS_WITH_ACCEPTED_PDF_LIMITATION",
+  "approvedByController": true,
+  "checks": {
+    "cloudAcceptance": "PASS",
+    "attachments": "PASS",
+    "interruptAndRetry": "PASS",
+    "gracefulShutdown": "PASS",
+    "backupRestore": "PASS",
+    "realOffice": "PASS",
+    "realImage": "PASS",
+    "coexistence": "PASS",
+    "cleanup": "PASS",
+    "realPDF": "ACCEPTED_EXTERNAL_LIMITATION"
+  },
+  "userAcceptedPDFCompatibilityLimit": true,
+  "pdfCompatibilityEvidenceSHA256": "cbceb326c54158ed6ed4bb1cd3b53c91cd3a4dc2dd1b4574abca70fbef7c8a35",
+  "pdfLimitAcceptance": "先上线，明确保留 PDF 限制（推荐）",
+  "retentionAcceptance": "采用上传后最多 30 天（推荐）",
+  "productionReleaseUnchanged": true,
+  "testsOnlyIsolatedRepositories": true,
+  "productionDataProtection": "FRESH_QUIESCED_BASELINE_AND_NO_RESTORE",
+  "productionDataHashesAcrossQA": "NOT_CAPTURED; no claim of hash comparison over entire QA period",
+  "testSummary": {
+    "linux": 80,
+    "mobile": 141,
+    "desktopGroups": 18,
+    "additionalNativeFormats": 9,
+    "nativeDeleteConfirmations": 19
+  },
+  "runtimeEvidence": {
+    "cloud": "chat-attachments-v4-qa-20261114.json",
+    "additional": "chat-additional-formats-v4-20261114.json",
+    "clients": "chat-redesign-client-checks-20261114.json"
+  },
+  "decisionNote": "User explicitly accepted native PDF compatibility limitation; failed observations remain FAIL in original evidence. This record approves release, not a claim that every PDF passed."
+}

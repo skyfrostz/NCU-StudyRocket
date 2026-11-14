@@ -92,6 +92,7 @@ compile_check HostWriteServiceChecks \
   -I "$MODULES_DIR" \
   Sources/StudyRocketHost/HostSnapshotBuilder.swift \
   Sources/StudyRocketHost/HostWriteService.swift \
+  Sources/StudyRocketHost/LocalHostRepositoryPolicy.swift \
   Sources/StudyRocketHost/HostProposalStore.swift \
   Tests/HostWriteServiceChecks.swift \
   "${SHARED_OBJECTS[@]}"
@@ -101,6 +102,8 @@ compile_check WeeklyPlanModelChecks \
   -DSTUDYROCKET_MODEL_TESTS \
   -I "$MODULES_DIR" \
   Sources/NCUStudyRocket/Models.swift \
+  Sources/NCUStudyRocket/DesktopCloudWorkspace.swift \
+  Sources/NCUStudyRocket/DesktopCloudBackup.swift \
   Tests/WeeklyPlanModelChecks.swift \
   "${SHARED_OBJECTS[@]}"
 

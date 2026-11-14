@@ -77,11 +77,13 @@ import StudyRocketShared
         let key=ProcessInfo.processInfo.environment["DEEPSEEK_API_KEY"] ?? ""
         let agent=try CloudAgent(store:store,apiKey:key,fixture:fixture,testUpstream:testUpstream,memoryAdmission:memory)
         let router=Router()
-        let handler=CloudHTTP(store:store,agent:agent)
+        let attachmentProvider=CloudAttachmentProvider(store:store,key:key,testUpstream:testUpstream,fixture:fixture != nil)
+        await attachmentProvider.start()
+        let handler=CloudHTTP(store:store,agent:agent,attachmentProvider:attachmentProvider)
         for path in ["v1/health","v1/snapshot","v1/week","v1/daily","v1/summaries","v1/proposals","v1/proposals/challenge","v1/chat/history","v1/events","v1/files/manifest","v1/backups/latest","v1/versions","v1/history","v1/operations/{id}","v1/documents/{key}"] {
             router.get(RouterPath(path)) { request,context in await handler.handle(request,context:context) }
         }
-        for path in ["v1/pair","v1/week","v1/daily","v1/facts","v1/deliveries/toggle","v1/periods/toggle","v1/proposals/apply","v1/chat/send","v1/chat/interrupt","v1/files/read","v1/backups/read","v1/files/commit","v1/history/import","v1/versions/read"] {
+        for path in ["v1/attachments/create","v1/attachments/chunk","v1/attachments/complete","v1/attachments/status","v1/attachments/read","v1/attachments/remove","v1/pair","v1/week","v1/daily","v1/facts","v1/deliveries/toggle","v1/periods/toggle","v1/proposals/apply","v1/chat/send","v1/chat/interrupt","v1/files/read","v1/backups/read","v1/files/commit","v1/history/import","v1/versions/read"] {
             router.post(RouterPath(path)) { request,context in await handler.handle(request,context:context) }
         }
         router.put("v1/week") { request,context in await handler.handle(request,context:context) }
@@ -93,6 +95,7 @@ import StudyRocketShared
 struct CloudHTTP: Sendable {
     let store: CloudStore
     let agent: CloudAgent
+    let attachmentProvider: CloudAttachmentProvider
     func handle(_ request: Request, context: BasicRequestContext) async -> Response {
         do {
             let buffer=try await request.body.collect(upTo:2_097_152)
@@ -115,6 +118,15 @@ struct CloudHTTP: Sendable {
                 return stream(after:after,device:device)
             }
             switch (method,path) {
+            case ("POST","/v1/attachments/create"): return try response(await store.createAttachment(decode(ChatAttachmentCreateRequest.self,body)))
+            case ("POST","/v1/attachments/chunk"): return try response(await store.uploadAttachmentChunk(decode(ChatAttachmentChunkRequest.self,body)))
+            case ("POST","/v1/attachments/complete"):
+                let value=try await store.completeAttachment(decode(ChatAttachmentRequest.self,body).id);await attachmentProvider.kick();return try response(value,status:202)
+            case ("POST","/v1/attachments/status"):
+                let value=try await store.attachmentStatus(decode(ChatAttachmentRequest.self,body).id);await attachmentProvider.kick();return try response(value)
+            case ("POST","/v1/attachments/read"):return try response(await store.readAttachment(decode(ChatAttachmentReadRequest.self,body)))
+            case ("POST","/v1/attachments/remove"):
+                let value=try await store.removeAttachment(decode(ChatAttachmentRequest.self,body).id);await attachmentProvider.kick();return try response(value)
             case ("GET","/v1/snapshot"): return try response(await store.snapshot())
             case ("GET","/v1/week"): return try response(await store.snapshot().week)
             case ("GET","/v1/daily"): return try response(await store.snapshot().daily)
@@ -132,7 +144,7 @@ struct CloudHTTP: Sendable {
                 try await agent.send(decode(SendChatRequest.self,body),raw:body)
                 return try response(await store.chatHistory(),status:202)
             case ("POST","/v1/chat/interrupt"):
-                try await agent.interrupt();return try response(["ok":true])
+                return try response(await agent.interrupt(decode(InterruptRequest.self,body)))
             case ("GET","/v1/versions"):
                 return try response(await store.versions(after:Int(request.uri.queryParameters["after"] ?? "0") ?? 0,limit:Int(request.uri.queryParameters["limit"] ?? "50") ?? 50))
             case ("POST","/v1/versions/read"): return try response(await store.versionFile(decode(CloudVersionReadRequest.self,body)))

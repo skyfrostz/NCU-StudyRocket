@@ -488,3 +488,5 @@ do {
 try runOneOffEventEditorChecks()
 
 runSeasonalVerseChecks()
+
+try await runChatAttachmentTransferChecks()

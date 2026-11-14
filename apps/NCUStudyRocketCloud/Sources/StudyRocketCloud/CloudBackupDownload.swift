@@ -2,7 +2,7 @@ import Foundation
 import StudyRocketShared
 
 private struct VerifiedBackup: Decodable {
-    struct Entry: Decodable { let path: String; let sha256: String; let bytes: Int }
+    struct Entry: Decodable { let path: String; let sha256: String; let bytes: Int; let expiresAt: Double? }
     let version: Int
     let createdAt: String
     let files: [Entry]
@@ -26,20 +26,31 @@ extension CloudStore {
         let receipt=try decode(VerifiedBackup.self,Data(contentsOf:marker))
         let formatter=ISO8601DateFormatter();formatter.formatOptions=[.withInternetDateTime,.withFractionalSeconds]
         let date=formatter.date(from:receipt.createdAt) ?? ISO8601DateFormatter().date(from:receipt.createdAt)
-        guard receipt.version == 1,let date,!receipt.files.isEmpty,receipt.files.count <= 2002,Set(receipt.files.map(\.path)).count == receipt.files.count else {throw CloudError(422,"invalid_backup","Invalid backup receipt")}
+        guard receipt.version == 1,let date,!receipt.files.isEmpty,receipt.files.count <= 20002,Set(receipt.files.map(\.path)).count == receipt.files.count else {throw CloudError(422,"invalid_backup","Invalid backup receipt")}
         let repositoryManifest=try backupURL(id:id,path:"manifest.json")
         guard (try repositoryManifest.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0) <= 2_097_152,
               let metadata=try JSONSerialization.jsonObject(with:Data(contentsOf:repositoryManifest)) as? [String:Any],metadata["repositoryID"] as? String == repositoryID else {throw CloudError(409,"wrong_backup_repository","Backup belongs to another repository")}
-        let entries=try receipt.files.map { entry -> CloudBackupEntry in
-            let permitted=entry.path == "cloud.sqlite" || entry.path == "manifest.json" || (entry.path.hasPrefix("repository/") && Self.allowed(String(entry.path.dropFirst("repository/".count))))
+        let entries=try receipt.files.compactMap { entry -> CloudBackupEntry? in
+            let attachment = Self.isBackupAttachmentPath(entry.path)
+            let permitted=attachment || entry.path == "cloud.sqlite" || entry.path == "manifest.json" || (entry.path.hasPrefix("repository/") && Self.allowed(String(entry.path.dropFirst("repository/".count))))
             guard permitted,entry.bytes >= 0,entry.sha256.count == 64,entry.sha256.allSatisfy({$0.isHexDigit}) else {throw CloudError(422,"invalid_backup","Unexpected backup file")}
+            if attachment {
+                guard let expiry = entry.expiresAt, expiry.isFinite else { throw CloudError(422,"invalid_backup","Attachment expiry missing") }
+                if expiry <= Date().timeIntervalSince1970 { return nil }
+            } else if entry.expiresAt != nil { throw CloudError(422,"invalid_backup","Unexpected file expiry") }
             let file=try backupURL(id:id,path:entry.path)
             let values=try file.resourceValues(forKeys:[.isRegularFileKey,.fileSizeKey])
             guard values.isRegularFile == true,values.fileSize == entry.bytes else {throw CloudError(422,"invalid_backup","Backup file is missing or size differs")}
-            return CloudBackupEntry(path:entry.path,sha256:entry.sha256,byteCount:entry.bytes)
+            return CloudBackupEntry(path:entry.path,sha256:entry.sha256,byteCount:entry.bytes,expiresAt:entry.expiresAt.map { Date(timeIntervalSince1970: $0) })
         }
         guard entries.contains(where:{$0.path == "cloud.sqlite"}),entries.contains(where:{$0.path == "manifest.json"}) else {throw CloudError(422,"invalid_backup","Incomplete backup")}
         return CloudBackupManifest(id:id,createdAt:date,files:entries)
+    }
+    static func isBackupAttachmentPath(_ path: String) -> Bool {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0] == "attachments" else { return false }
+        if parts[1] == "objects" { return parts[2].count == 64 && parts[2].allSatisfy { $0.isHexDigit && !$0.isUppercase } }
+        return parts[1] == "records" && parts[2].hasSuffix(".json") && UUID(uuidString: String(parts[2].dropLast(5))) != nil
     }
     func readBackup(_ request: CloudBackupReadRequest) throws -> CloudBackupFile {
         let manifest=try backupManifest(request.backupID)

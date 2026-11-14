@@ -78,6 +78,7 @@ private final class MobileSyncFixture: @unchecked Sendable {
     private var facts = [QuickFact]()
     private var dropFactReceipt = true
     var legacyRepositoryID: String?
+    var supportsChatCapabilities = true
     private(set) var dailyRequests: [DailyWriteRequest] = []
     private(set) var factRequests: [FactWriteRequest] = []
     private(set) var migratedDeliveryRequests: [DeliveryToggleRequest] = []
@@ -107,6 +108,13 @@ private final class MobileSyncFixture: @unchecked Sendable {
     private let cloudBackend: Bool
     private let firstChatReceiptGate: MobileStubDeliveryGate?
     private var recordedChatRequests: [SendChatRequest] = []
+    private var recordedInterrupts: [InterruptRequest] = []
+    private var interruptTerminals: [String: ChatTurnTerminalDTO] = [:]
+    private var operationStates: [String: String] = [:]
+    var mismatchedInterruptReceipt = false
+    func setInterruptTerminal(_ terminal: ChatTurnTerminalDTO) { lock.lock(); defer { lock.unlock() }; interruptTerminals[terminal.turnID] = terminal }
+    func setOperationState(_ state: String, id: String) { lock.lock(); defer { lock.unlock() }; operationStates[id] = state }
+    var interrupts: [InterruptRequest] { lock.lock(); defer { lock.unlock() }; return recordedInterrupts }
     var chatRequests: [SendChatRequest] {
         lock.lock()
         defer { lock.unlock() }
@@ -179,7 +187,7 @@ private final class MobileSyncFixture: @unchecked Sendable {
                 pairedDeviceCount: 1,
                 activeThreadID: "academic",
                 repositoryID: "repo-test",
-                dynamicToolsReady: codexReady, backend: cloudBackend || legacyRepositoryID != nil ? "cloud" : nil, legacyRepositoryID: legacyRepositoryID
+                dynamicToolsReady: codexReady, backend: cloudBackend || legacyRepositoryID != nil ? "cloud" : nil, capabilities: supportsChatCapabilities ? ["chat-attachments", "targeted-interrupt"] : nil, legacyRepositoryID: legacyRepositoryID
             )))
         case ("GET", "/v1/snapshot"):
             snapshotReads += 1
@@ -219,6 +227,15 @@ private final class MobileSyncFixture: @unchecked Sendable {
                 futureRows: value.plan.futureRows
             )
             return MobileStubResponse(statusCode: 200, data: try encoder.encode(authoritative))
+        case ("POST", "/v1/chat/interrupt"):
+            let value = try JSONDecoder().decode(InterruptRequest.self, from: Self.bodyData(for: request))
+            recordedInterrupts.append(value)
+            let terminal = interruptTerminals[value.turnID]
+            return MobileStubResponse(statusCode: 200, data: try encoder.encode(ChatInterruptResponse(targetTurnID: mismatchedInterruptReceipt ? "wrong-turn" : value.turnID, operationID: value.operationID!, status: terminal?.status ?? "cancelling", terminal: terminal)))
+        case ("GET", let path) where path.hasPrefix("/v1/operations/"):
+            let id = String(path.dropFirst("/v1/operations/".count))
+            guard let state = operationStates[id] else { throw URLError(.networkConnectionLost) }
+            return MobileStubResponse(statusCode: 200, data: try encoder.encode(CloudOperationStatus(id: id, state: state)))
         case ("POST", "/v1/chat/send"):
             guard chatCompletionAfterHistoryReads != nil else {
                 return MobileStubResponse(statusCode: 404, data: try encoder.encode(APIErrorBody(code: "not_found", message: path)))
@@ -2527,6 +2544,309 @@ final class MobileSessionSyncTests: XCTestCase {
             completedDeliveries: revision.hasPrefix("old") ? 2 : 4, totalDeliveries: 5)
         return SnapshotResponse(revision: revision, fetchedAt: Date(timeIntervalSince1970: timestamp),
             home: home, week: base.week, daily: base.daily, summaries: [])
+    }
+
+    func testOlderHistoryResponseCannotEraseOrDowngradeNewerOrdinaryMessages() async throws {
+        for olderUsesConversation in [false, true] {
+            let directory = try temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let fixture = MobileSyncFixture(snapshot: makeSnapshot())
+            let session = makeSession(directory: directory, fixture: fixture)
+            await session.refresh()
+            let gate = MobileStubDeliveryGate(); defer { gate.release() }
+            let reads = MobileLifecycleCounter()
+            let old = ChatHistoryResponse(revision: "old", messages: [ChatMessageDTO(id: "ordinary-A", role: "assistant", text: "旧正文", date: .distantPast)])
+            let fresh = ChatHistoryResponse(revision: "new", messages: [ChatMessageDTO(id: "ordinary-A", role: "assistant", text: "更新后的正文", date: .distantPast), ChatMessageDTO(id: "ordinary-B", role: "assistant", text: "较新已确认的回复", date: .now)])
+            MobileStubURLProtocol.handler = { request in
+                if request.url?.path == "/v1/chat/history" {
+                    reads.increment()
+                    let first = reads.value == 1
+                    return MobileStubResponse(statusCode: 200, data: try JSONEncoder().encode(first ? old : fresh), deliveryGate: first ? gate : nil)
+                }
+                return try fixture.response(for: request)
+            }
+            let earlier = Task { if olderUsesConversation { await session.refreshConversation() } else { await session.refreshChat() } }
+            for _ in 0..<50 where reads.value == 0 { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertEqual(reads.value, 1)
+            if olderUsesConversation { await session.refreshChat() } else { await session.refreshConversation() }
+            XCTAssertEqual(session.chatMessages.map(\.id), ["ordinary-A", "ordinary-B"])
+            gate.release(); await earlier.value
+            XCTAssertEqual(session.chatMessages.map(\.id), ["ordinary-A", "ordinary-B"])
+            XCTAssertEqual(session.chatMessages.first?.text, "更新后的正文")
+        }
+    }
+
+    func testOrdinaryUnknownSendUsesEvictedTerminalAndRequiresExplicitFailureRetry() async throws {
+        for terminalStatus in ["completed", "failed"] {
+            let directory = try temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 100, cloudBackend: true)
+            let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(60)])
+            await session.refresh()
+            MobileStubURLProtocol.handler = { request in
+                let response = try fixture.response(for: request)
+                if request.url?.path == "/v1/chat/send", fixture.chatRequests.count == 1 { throw URLError(.networkConnectionLost) }
+                return response
+            }
+            let attachment = try session.chatDraftStore.importData(Data("附件".utf8), name: "note.txt")
+            session.chatDraftStore.update(attachment.id, remoteID: attachment.id, metadata: ChatAttachmentDTO(id: attachment.id, filename: attachment.name, mimeType: attachment.mimeType, byteCount: attachment.byteCount, sha256: "test", state: .ready, expiresAt: .now.addingTimeInterval(3600)))
+            session.inputDraft = "原始问题"; await session.sendDraft()
+            let requestID = try XCTUnwrap(fixture.chatRequests.first?.clientRequestID)
+            session.inputDraft = "不能被覆盖的普通草稿"
+            fixture.setChatHistory(ChatHistoryResponse(revision: "evicted", messages: []))
+            fixture.setOperationState(terminalStatus == "completed" ? "succeeded" : "failed", id: requestID)
+            fixture.setInterruptTerminal(ChatTurnTerminalDTO(turnID: requestID, status: terminalStatus, message: terminalStatus == "failed" ? "明确失败" : nil))
+            await session.retryFailedChat()
+            XCTAssertEqual(fixture.chatRequests.count, 1, "Terminal reconciliation must not itself resend")
+            XCTAssertEqual(session.inputDraft, "不能被覆盖的普通草稿")
+            XCTAssertEqual(fixture.interrupts.first?.turnID, requestID)
+            XCTAssertNotEqual(fixture.interrupts.first?.operationID, requestID)
+            let pending = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("pending-cloud-chats.json"))) as? [[String: Any]])
+            XCTAssertTrue(pending.isEmpty)
+            if terminalStatus == "completed" { XCTAssertNil(session.lastFailedChatText) }
+            else {
+                XCTAssertEqual(session.lastFailedChatText, "原始问题")
+                XCTAssertTrue(session.chatMessages.contains { session.isFailedChatMessage($0) })
+                await session.retryFailedChat()
+                XCTAssertEqual(fixture.chatRequests.count, 2)
+                XCTAssertEqual(fixture.chatRequests.last?.attachmentIDs, [attachment.id])
+                XCTAssertNotEqual(fixture.chatRequests.last?.clientRequestID, requestID)
+                XCTAssertEqual(session.inputDraft, "不能被覆盖的普通草稿")
+            }
+        }
+    }
+
+    func testOldConnectionOperationSuccessCannotPublishIssueAfterRebinding() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 100, cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(60)])
+        await session.refresh()
+        MobileStubURLProtocol.handler = { request in
+            let response = try fixture.response(for: request)
+            if request.url?.path == "/v1/chat/send" { throw URLError(.networkConnectionLost) }
+            return response
+        }
+        session.inputDraft = "未知回执"; await session.sendDraft()
+        let requestID = try XCTUnwrap(fixture.chatRequests.first?.clientRequestID)
+        fixture.setChatHistory(ChatHistoryResponse(revision: "evicted", messages: [])); fixture.setOperationState("running", id: requestID)
+        let gate = MobileStubDeliveryGate(); defer { gate.release() }
+        let reads = MobileLifecycleCounter()
+        MobileStubURLProtocol.handler = { request in
+            var response = try fixture.response(for: request)
+            if request.url?.path == "/v1/operations/" + requestID { reads.increment(); response.deliveryGate = gate }
+            return response
+        }
+        let retry = Task { await session.retryFailedChat() }
+        for _ in 0..<50 where reads.value == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(reads.value, 1)
+        let endpoint = URL(string: "https://different-studyrocket.test")!
+        try session.replaceClient(with: StudyRocketRemoteClient(endpoint: endpoint), endpoint: endpoint, persistEndpoint: false)
+        session.inputDraft = "新连接的草稿"
+        gate.release(); await retry.value
+        XCTAssertNil(session.lastChatIssue)
+        XCTAssertEqual(session.inputDraft, "新连接的草稿")
+        XCTAssertEqual(fixture.chatRequests.count, 1)
+    }
+
+    func testLegacyFrozenDraftMigratesDistinctStopIdentitiesBeforeNetworkAndKeepsThemOnRelaunch() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        let id = UUID().uuidString, old = UUID().uuidString
+        let raw = try JSONSerialization.data(withJSONObject: ["id": id, "text": "旧格式冻结", "attachmentIDs": [], "oldTurnID": old, "submitted": false])
+        let legacy = try JSONDecoder().decode(MobilePendingReplacement.self, from: raw)
+        XCTAssertNil(legacy.stopOperationID); XCTAssertNil(legacy.terminalReadOperationID)
+        session.chatDraftStore.replacement = legacy; try session.chatDraftStore.save()
+        await session.resumePendingReplacement()
+        let migrated = try XCTUnwrap(session.chatDraftStore.replacement)
+        XCTAssertNotNil(migrated.stopOperationID); XCTAssertNotNil(migrated.terminalReadOperationID)
+        XCTAssertNotEqual(migrated.stopOperationID, id); XCTAssertNotEqual(migrated.terminalReadOperationID, id)
+        XCTAssertNotEqual(migrated.stopOperationID, migrated.terminalReadOperationID)
+        XCTAssertEqual(fixture.interrupts.first?.operationID, migrated.stopOperationID)
+        let restored = makeSession(directory: directory, fixture: fixture)
+        await restored.refresh(); await restored.resumePendingReplacement()
+        XCTAssertEqual(restored.chatDraftStore.replacement?.stopOperationID, migrated.stopOperationID)
+        XCTAssertEqual(restored.chatDraftStore.replacement?.terminalReadOperationID, migrated.terminalReadOperationID)
+        XCTAssertTrue(fixture.interrupts.allSatisfy { $0.operationID == migrated.stopOperationID })
+        XCTAssertEqual(fixture.chatRequests.count, 0)
+    }
+
+    func testEvictedOldTurnUsesTypedTerminalWithoutStoppingAnotherDevicesNewTurn() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 100, cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(60)])
+        await session.refresh()
+        session.inputDraft = "旧问题"; await session.sendDraft()
+        let oldID = try XCTUnwrap(fixture.chatRequests.first?.clientRequestID)
+        let newerID = UUID().uuidString
+        fixture.setChatHistory(ChatHistoryResponse(revision: "after-eviction", messages: [ChatMessageDTO(id: newerID + "/user", role: "user", text: "另一端的新问题", date: .now, turnID: newerID, status: "inProgress")]))
+        fixture.setInterruptTerminal(ChatTurnTerminalDTO(turnID: oldID, status: "interrupted"))
+        session.inputDraft = "保存的新问题"; await session.sendDraft()
+        XCTAssertEqual(fixture.chatRequests.count, 1, "A different device's newer running turn remains active")
+        XCTAssertEqual(session.chatDraftStore.replacement?.oldTerminal?.turnID, oldID)
+        XCTAssertTrue(session.isChatBusy)
+        XCTAssertEqual(fixture.interrupts.map(\.turnID), [oldID])
+        fixture.setChatHistory(ChatHistoryResponse(revision: "newer-finished", messages: [], terminalTurns: [ChatTurnTerminalDTO(turnID: newerID, status: "completed")]))
+        await session.resumePendingReplacement()
+        XCTAssertEqual(fixture.chatRequests.count, 2)
+        XCTAssertEqual(fixture.chatRequests.last?.text, "保存的新问题")
+        XCTAssertEqual(fixture.interrupts.map(\.turnID), [oldID], "Persisted old terminal does not stop the newer turn")
+    }
+
+    func testMismatchedTypedInterruptReceiptCannotReleaseFrozenSend() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 100, cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(60)])
+        await session.refresh()
+        session.inputDraft = "旧问题"; await session.sendDraft()
+        let oldID = try XCTUnwrap(fixture.chatRequests.first?.clientRequestID)
+        fixture.setInterruptTerminal(ChatTurnTerminalDTO(turnID: oldID, status: "completed"))
+        fixture.mismatchedInterruptReceipt = true
+        session.inputDraft = "冻结"; await session.sendDraft()
+        XCTAssertEqual(fixture.chatRequests.count, 1)
+        XCTAssertNil(session.chatDraftStore.replacement?.oldTerminal)
+        XCTAssertTrue(session.lastChatIssue?.contains("不匹配") == true)
+    }
+
+    func testEvictedSubmittedTurnUsesOperationAndTypedTerminalWithoutResending() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        let pending = MobilePendingReplacement(id: UUID().uuidString, text: "已完成但历史已淘汰", attachmentIDs: [], oldTurnID: UUID().uuidString, submitted: true)
+        session.chatDraftStore.replacement = pending; try session.chatDraftStore.save()
+        let newerID = UUID().uuidString
+        fixture.setChatHistory(ChatHistoryResponse(revision: "recent", messages: [ChatMessageDTO(id: newerID, role: "user", text: "新的运行回合", date: .now, turnID: newerID, status: "inProgress")]))
+        fixture.setOperationState("succeeded", id: pending.id)
+        fixture.setInterruptTerminal(ChatTurnTerminalDTO(turnID: pending.id, status: "completed"))
+        await session.resumePendingReplacement()
+        XCTAssertNil(session.chatDraftStore.replacement)
+        XCTAssertEqual(fixture.chatRequests.count, 0)
+        XCTAssertEqual(fixture.interrupts.map(\.turnID), [pending.id])
+        XCTAssertTrue(session.isChatBusy, "The unrelated newer turn is never cleared")
+    }
+
+    func testOlderServiceCannotSilentlyDiscardAttachmentFields() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 100, cloudBackend: true)
+        fixture.supportsChatCapabilities = false
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        let attachment = try session.chatDraftStore.importData(Data("hello".utf8), name: "file.txt")
+        session.chatDraftStore.update(attachment.id, remoteID: attachment.id, metadata: ChatAttachmentDTO(id: attachment.id, filename: attachment.name, mimeType: attachment.mimeType, byteCount: attachment.byteCount, sha256: "test", state: .ready, expiresAt: .now.addingTimeInterval(3600)))
+        session.inputDraft = "不能丢附件"
+        await session.sendDraft()
+        XCTAssertEqual(fixture.chatRequests.count, 0)
+        XCTAssertEqual(session.inputDraft, "不能丢附件")
+        XCTAssertEqual(session.chatDraftStore.attachments.count, 1)
+        XCTAssertTrue(session.lastChatIssue?.contains("不支持附件") == true)
+        await session.interruptChat()
+        XCTAssertTrue(fixture.interrupts.isEmpty)
+    }
+
+    func testReplacementWaitsForExactTerminalAndPreservesNewComposer() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 100, cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(60)])
+        await session.refresh()
+        session.inputDraft = "旧消息"
+        await session.sendDraft()
+        let oldID = try XCTUnwrap(fixture.chatRequests.first?.clientRequestID)
+        session.inputDraft = "冻结的新消息"
+        await session.sendDraft()
+        let frozen = try XCTUnwrap(session.chatDraftStore.replacement)
+        XCTAssertEqual(frozen.oldTurnID, oldID)
+        XCTAssertEqual(fixture.interrupts.first?.turnID, oldID)
+        XCTAssertEqual(fixture.interrupts.first?.operationID, frozen.stopOperationID)
+        XCTAssertEqual(fixture.chatRequests.count, 1)
+        XCTAssertEqual(session.inputDraft, "")
+        session.inputDraft = "下一条普通草稿"
+        await session.sendDraft()
+        XCTAssertEqual(fixture.chatRequests.count, 1)
+        fixture.setChatCompletionRead(1)
+        await session.resumePendingReplacement()
+        XCTAssertEqual(fixture.chatRequests.count, 2)
+        XCTAssertEqual(fixture.chatRequests.last?.clientRequestID, frozen.id)
+        XCTAssertEqual(fixture.chatRequests.last?.text, "冻结的新消息")
+        XCTAssertEqual(session.inputDraft, "下一条普通草稿")
+        XCTAssertNil(session.chatDraftStore.replacement)
+        await session.resumePendingReplacement()
+        XCTAssertEqual(fixture.chatRequests.count, 2)
+    }
+
+    func testAttachmentOnlyReplacementKeepsFrozenIDsWhileOrdinaryDraftChanges() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 100, cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture, chatRecoveryDelays: [.seconds(60)])
+        await session.refresh()
+        session.inputDraft = "旧消息"; await session.sendDraft()
+        let attachment = try session.chatDraftStore.importData(Data("hello".utf8), name: "file.txt")
+        session.chatDraftStore.update(attachment.id, remoteID: attachment.id, metadata: ChatAttachmentDTO(id: attachment.id, filename: attachment.name, mimeType: attachment.mimeType, byteCount: attachment.byteCount, sha256: "test", state: .ready, expiresAt: .now.addingTimeInterval(3600)))
+        session.inputDraft = ""; await session.sendDraft()
+        let frozen = try XCTUnwrap(session.chatDraftStore.replacement)
+        XCTAssertEqual(frozen.attachmentIDs, [attachment.id])
+        XCTAssertTrue(session.chatDraftStore.attachments.isEmpty)
+        XCTAssertEqual(frozen.attachments?.first?.id, attachment.id)
+        session.removeAttachment(attachment)
+        session.inputDraft = "单独的新草稿"
+        fixture.setChatCompletionRead(1)
+        await session.resumePendingReplacement()
+        XCTAssertEqual(fixture.chatRequests.last?.attachmentIDs, [attachment.id])
+        XCTAssertEqual(fixture.chatRequests.last?.clientRequestID, frozen.id)
+        XCTAssertEqual(fixture.chatRequests.last?.text, "")
+        XCTAssertEqual(session.inputDraft, "单独的新草稿")
+    }
+
+    func testReplacementCrashBeforePOSTReusesIDOnlyAfterAuthoritativeOperationAbsence() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), chatCompletionAfterHistoryReads: 100, cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        let pending = MobilePendingReplacement(id: UUID().uuidString, text: "冻结请求", attachmentIDs: ["attachment"], oldTurnID: UUID().uuidString, submitted: true)
+        session.chatDraftStore.replacement = pending
+        try session.chatDraftStore.save(text: "新草稿")
+        session.inputDraft = "新草稿"
+        fixture.setChatHistory(ChatHistoryResponse(revision: "terminal", messages: [], terminalTurns: [ChatTurnTerminalDTO(turnID: pending.oldTurnID, status: "interrupted")]))
+        MobileStubURLProtocol.handler = { request in
+            if request.url?.path == "/v1/operations/" + pending.id {
+                return MobileStubResponse(statusCode: 404, data: try JSONEncoder().encode(APIErrorBody(code: "operation_not_found", message: "No operation")))
+            }
+            return try fixture.response(for: request)
+        }
+        await session.resumePendingReplacement()
+        XCTAssertEqual(fixture.chatRequests.count, 1)
+        XCTAssertEqual(fixture.chatRequests.first?.clientRequestID, pending.id)
+        XCTAssertEqual(fixture.chatRequests.first?.attachmentIDs, pending.attachmentIDs)
+        XCTAssertEqual(session.inputDraft, "新草稿")
+        XCTAssertEqual(fixture.interrupts.count, 0)
+    }
+
+    func testSubmittedReplacementWithUnknownReceiptNeverResendsOnRelaunch() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot(), cloudBackend: true)
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        session.chatDraftStore.replacement = MobilePendingReplacement(id: UUID().uuidString, text: "冻结", attachmentIDs: ["attachment"], oldTurnID: UUID().uuidString, submitted: true)
+        try session.chatDraftStore.save(text: "保留正在编辑的内容")
+        let restored = makeSession(directory: directory, fixture: fixture)
+        await restored.refresh()
+        await restored.resumePendingReplacement()
+        await restored.resumePendingReplacement()
+        XCTAssertEqual(fixture.chatRequests.count, 0)
+        XCTAssertEqual(fixture.interrupts.count, 0)
+        XCTAssertTrue(restored.chatDraftStore.replacement?.submitted == true)
+        XCTAssertEqual(restored.inputDraft, "保留正在编辑的内容")
     }
 
     private func makeSession(

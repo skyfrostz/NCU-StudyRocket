@@ -10,6 +10,7 @@ actor StudyRocketHostClient {
     private var cloudBinding: DesktopCloudBinding?
     private var cloudRequired = false
     private var lastEventID: String?
+    private var capabilities = Set<String>()
     private let tokenURL: URL
 
     init(
@@ -30,7 +31,7 @@ actor StudyRocketHostClient {
         let previousRequired = cloudRequired
         cloudRequired = DesktopCloudBinding.isManaged(root)
         let next = try? DesktopCloudBinding.read(root)
-        if next != cloudBinding { lastEventID = nil }
+        if next != cloudBinding { lastEventID = nil; capabilities.removeAll() }
         cloudBinding = next
         endpoint = next?.endpoint ?? localEndpoint
         return previousBinding != cloudBinding || previousRequired != cloudRequired
@@ -60,6 +61,7 @@ actor StudyRocketHostClient {
             let expected = RequestSigning.bodyHash(Data(root.standardizedFileURL.path.utf8))
             guard health.repositoryID == expected else { throw LocalHostError.server("StudyRocket Host 绑定了其他仓库。") }
         }
+        capabilities = Set(health.capabilities ?? [])
         return health
     }
 
@@ -131,24 +133,65 @@ actor StudyRocketHostClient {
             .flatMap { UserDefaults.standard.string(forKey: $0) }
     }
 
-    func send(_ text: String) async throws {
-        var requestID = UUID().uuidString
-        var persistedKey: String?
-        if let cloudBinding {
-            let key = "studyrocket.cloud.pending-chat." + cloudBinding.repositoryID + "." + RequestSigning.bodyHash(Data(text.utf8))
-            persistedKey = key
-            requestID = UserDefaults.standard.string(forKey: key) ?? requestID
-            // Kept until a successful history acknowledgement, so uncertain retries
-            // survive restart and retain the same server idempotency key.
-            UserDefaults.standard.set(requestID, forKey: key)
-            UserDefaults.standard.set(text, forKey: key + ".text")
-        }
-        _ = try await post("/v1/chat/send", body: SendChatRequest(text: text, clientRequestID: requestID), as: ChatHistoryResponse.self)
-        if let persistedKey { UserDefaults.standard.removeObject(forKey: persistedKey); UserDefaults.standard.removeObject(forKey: persistedKey + ".text") }
+    func send(_ text: String, requestID: String, attachmentIDs: [String] = []) async throws -> ChatHistoryResponse {
+        guard attachmentIDs.isEmpty || (cloudBinding != nil && capabilities.contains("chat-attachments")) else { throw LocalHostError.server("旧本机模式不支持附件，请切换到云服务后重试。") }
+        return try await post("/v1/chat/send", body: SendChatRequest(text: text, clientRequestID: requestID, attachmentIDs: attachmentIDs.isEmpty ? nil : attachmentIDs), as: ChatHistoryResponse.self)
     }
 
-    func interrupt() async throws {
-        _ = try await post("/v1/chat/interrupt", body: InterruptRequest(turnID: ""), as: EmptyResponse.self)
+    func operation(_ id: String) async throws -> CloudOperationStatus {
+        guard cloudBinding != nil, UUID(uuidString: id) != nil else { throw LocalHostError.server("当前连接不支持请求回执查询。") }
+        let binding = cloudBinding
+        var request = URLRequest(url: endpoint.appendingPathComponent("/v1/operations/" + id))
+        request.httpMethod = "GET"; try authenticate(&request)
+        let (data, response) = try await session.data(for: request)
+        guard binding == cloudBinding, let http = response as? HTTPURLResponse else { throw LocalHostError.invalidResponse }
+        if http.statusCode == 404, let error = try? JSONDecoder().decode(APIErrorBody.self, from: data), error.code == "operation_not_found" {
+            return CloudOperationStatus(id: id, state: "not_found")
+        }
+        guard (200..<300).contains(http.statusCode) else { throw LocalHostError.server("请求状态尚无法确认，请稍后重试。") }
+        let status = try JSONDecoder().decode(CloudOperationStatus.self, from: data)
+        guard status.id == id else { throw LocalHostError.invalidResponse }
+        return status
+    }
+    func interrupt(turnID: String, operationID: String) async throws -> ChatInterruptResponse {
+        guard capabilities.contains("targeted-interrupt") else { throw LocalHostError.server("当前服务不支持安全定向停止，请更新服务后重试；新消息已保留。") }
+        guard !turnID.isEmpty else { throw LocalHostError.server("尚未确认上一轮身份，正在查询状态。") }
+        let response = try await post("/v1/chat/interrupt", body: InterruptRequest(turnID: turnID, operationID: operationID), as: ChatInterruptResponse.self)
+        guard response.targetTurnID == turnID, response.operationID == operationID else { throw LocalHostError.invalidResponse }
+        if let terminal = response.terminal {
+            guard terminal.turnID == turnID, terminal.status == response.status,
+                  ["completed", "interrupted", "failed"].contains(terminal.status) else { throw LocalHostError.invalidResponse }
+        } else {
+            guard response.status == "cancelling" else { throw LocalHostError.invalidResponse }
+        }
+        return response
+    }
+
+    func attachmentTransfer() throws -> ChatAttachmentTransfer {
+        guard let binding = cloudBinding, capabilities.contains("chat-attachments") else { throw LocalHostError.server("旧本机模式不支持附件，请切换到云服务。") }
+        return ChatAttachmentTransfer { [weak self] path, body in
+            guard let self else { throw LocalHostError.unavailable }
+            return try await self.attachmentRequest(path: path, body: body, binding: binding)
+        }
+    }
+
+    private func attachmentRequest(path: String, body: Data, binding: DesktopCloudBinding) async throws -> Data {
+        guard cloudBinding == binding else { throw LocalHostError.unavailable }
+        var request = URLRequest(url: binding.endpoint.appendingPathComponent(path))
+        request.httpMethod = "POST"; request.httpBody = body
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        try authenticate(&request)
+        let (data, response) = try await session.data(for: request)
+        guard cloudBinding == binding else { throw LocalHostError.unavailable }
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            if let error = try? JSONDecoder().decode(APIErrorBody.self, from: data) {
+                let permanent = ["unsupported_attachment", "invalid_attachment", "attachment_type_mismatch", "invalid_attachment_text", "invalid_attachment_json", "invalid_attachment_archive", "attachment_hash_mismatch"]
+                if permanent.contains(error.code) { throw LocalHostError.attachmentRejected(error.message) }
+                throw LocalHostError.server(error.message)
+            }
+            throw LocalHostError.invalidResponse
+        }
+        return data
     }
 
     func proposals() async throws -> ProposalListResponse {
@@ -215,12 +258,13 @@ enum LocalHostError: LocalizedError {
     case unavailable
     case invalidResponse
     case server(String)
+    case attachmentRejected(String)
 
     var errorDescription: String? {
         switch self {
         case .unavailable: return "StudyRocket Host 未启动。"
         case .invalidResponse: return "StudyRocket Host 返回了无效响应。"
-        case .server(let message): return message
+        case .server(let message), .attachmentRejected(let message): return message
         }
     }
 }

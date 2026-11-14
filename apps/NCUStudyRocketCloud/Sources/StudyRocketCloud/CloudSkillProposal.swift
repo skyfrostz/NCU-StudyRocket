@@ -31,6 +31,7 @@ extension CloudStore {
         return try safeURL(file.path,root:root,write:true)
     }
     func registerSkillProposal(path: String, content: String, baseHash: String, reason: String, evidence: [[String:Any]], turn: String, readHashes: [String:String]) throws -> ProposalDTO {
+        guard activeRun == turn,!interrupted.contains(turn) else {throw CancellationError()}
         guard readHashes[path] == baseHash,!reason.isEmpty,reason.count <= 1500,(3...8).contains(evidence.count) else {throw CloudError(422,"skill_evidence_required","Skill 更新须有至少三次可证规律、改进理由，并先完整读取目标。")}
         let original=try file(path)
         guard original.hash == baseHash else {throw CloudError(409,"conflict","Skill 读取后已变化，请重新读取。")}

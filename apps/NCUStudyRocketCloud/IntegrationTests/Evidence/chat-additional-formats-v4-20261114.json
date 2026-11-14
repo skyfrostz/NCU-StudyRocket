@@ -1,0 +1,234 @@
+{
+  "result": "PASS",
+  "synthetic": true,
+  "binarySHA256": "95d44340bc674b24e34ea6778784512cb99805bb3e7cc7d61921954062e75cba",
+  "fixtureManifestSHA256": "fc4b60860f98279e45a625efcfa141b96eee0fc7fb867b172409cff50adacd81",
+  "formats": [
+    {
+      "filename": "legacy-word.doc",
+      "mimeType": "application/msword",
+      "byteCount": 9216,
+      "sha256": "9415f432b3938dac9f0215d58ff084eadb7dd17440d5822162bb21b254d25f7a"
+    },
+    {
+      "filename": "legacy-sheet.xls",
+      "mimeType": "application/vnd.ms-excel",
+      "byteCount": 5632,
+      "sha256": "651135703124f7b8571bfa54ab466188569d9bee9088d8b57131968934b905a7"
+    },
+    {
+      "filename": "slides.ppt",
+      "mimeType": "application/vnd.ms-powerpoint",
+      "byteCount": 606208,
+      "sha256": "1762cda7908f0c9c7de7d0274c94b894a36f3bde44b954e476d10054471111cd"
+    },
+    {
+      "filename": "slides.pptx",
+      "mimeType": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "byteCount": 6915,
+      "sha256": "c590e590fb96b36e1135f415e46f7cfe2d42fd9b48f1fe5717bf2ab9c275485a"
+    },
+    {
+      "filename": "plain.txt",
+      "mimeType": "text/plain",
+      "byteCount": 10,
+      "sha256": "b090c34d09315bbc8563da47afa8560000cc9b05040c4777780dc4d2ab03434d"
+    },
+    {
+      "filename": "notes.md",
+      "mimeType": "text/markdown",
+      "byteCount": 32,
+      "sha256": "ba576640ab6bf7930c86b4dddee9031466554180d7f3aa8e445e3736e4d10e01"
+    },
+    {
+      "filename": "table.csv",
+      "mimeType": "text/csv",
+      "byteCount": 27,
+      "sha256": "74212ff07f5cec3b2162345c08047bf10470c7e5b0d6decb67fa7431c06393e1"
+    },
+    {
+      "filename": "data.json",
+      "mimeType": "application/json",
+      "byteCount": 22,
+      "sha256": "b7424466baca46374aa49a4975d6dfbf42295fbd9d8db8b248b6505d9461ee58"
+    },
+    {
+      "filename": "shape.jpg",
+      "mimeType": "image/jpeg",
+      "byteCount": 9882,
+      "sha256": "dd5fa1887f486795eeb6ee7d4e588376163cae9a731fbf8c6de9cc64f285e3fc"
+    }
+  ],
+  "uploads": [
+    {
+      "filename": "legacy-word.doc",
+      "state": "ready",
+      "localIDHash": "a3544e1c765124227a7aaee5b28a9d9299878f8f6d082361e46aba2d3a66664e",
+      "expiresAt": 816412572.2171668
+    },
+    {
+      "filename": "legacy-sheet.xls",
+      "state": "ready",
+      "localIDHash": "3f90127b263bd69d6702cec45bbc3c0dc6e0388eada880469b53da84ecac6258",
+      "expiresAt": 816412576.318116
+    },
+    {
+      "filename": "slides.ppt",
+      "state": "ready",
+      "localIDHash": "0de22b9e3aa550cae39b4afbe4091a1087dd5f11fa63d0eef2c09985a9db08b6",
+      "expiresAt": 816412580.4153951
+    },
+    {
+      "filename": "slides.pptx",
+      "state": "ready",
+      "localIDHash": "d876470aefd1adaec47f7fa72d70f9e85734a504d440fbaa21046ec9ef10dbb8",
+      "expiresAt": 816412584.6026647
+    },
+    {
+      "filename": "plain.txt",
+      "state": "ready",
+      "localIDHash": "997cc1f0684b6a90135ec2f57e3c91939bf24f28b2edec90ae9e7775c6b297a8",
+      "expiresAt": 816412588.6966783
+    },
+    {
+      "filename": "notes.md",
+      "state": "ready",
+      "localIDHash": "5df95a812ad35f8a5c1feb82d428418c80b13b11185e8840ceeaf26885f996d2",
+      "expiresAt": 816412590.7815925
+    },
+    {
+      "filename": "table.csv",
+      "state": "ready",
+      "localIDHash": "926830d48b0e9c22cfee1806abf5155cfb10ab2d4814b21e0949e313fe205256",
+      "expiresAt": 816412592.8643746
+    },
+    {
+      "filename": "data.json",
+      "state": "ready",
+      "localIDHash": "85a6fa96ec506086a034929151f311d2de7d660b036d18e9d5895cea06719101",
+      "expiresAt": 816412594.948919
+    },
+    {
+      "filename": "shape.jpg",
+      "state": "ready",
+      "localIDHash": "0eed0cf7f9df97ba615c9588a94da7c4a2116a539f1a4f241c57de3d61edd2f0",
+      "expiresAt": 816412597.0366793
+    }
+  ],
+  "readback": {
+    "legacy-word.doc": {
+      "result": "PASS",
+      "sha256": "9415f432b3938dac9f0215d58ff084eadb7dd17440d5822162bb21b254d25f7a",
+      "byteCount": 9216
+    },
+    "legacy-sheet.xls": {
+      "result": "PASS",
+      "sha256": "651135703124f7b8571bfa54ab466188569d9bee9088d8b57131968934b905a7",
+      "byteCount": 5632
+    },
+    "slides.ppt": {
+      "result": "PASS",
+      "sha256": "1762cda7908f0c9c7de7d0274c94b894a36f3bde44b954e476d10054471111cd",
+      "byteCount": 606208
+    },
+    "slides.pptx": {
+      "result": "PASS",
+      "sha256": "c590e590fb96b36e1135f415e46f7cfe2d42fd9b48f1fe5717bf2ab9c275485a",
+      "byteCount": 6915
+    },
+    "plain.txt": {
+      "result": "PASS",
+      "sha256": "b090c34d09315bbc8563da47afa8560000cc9b05040c4777780dc4d2ab03434d",
+      "byteCount": 10
+    },
+    "notes.md": {
+      "result": "PASS",
+      "sha256": "ba576640ab6bf7930c86b4dddee9031466554180d7f3aa8e445e3736e4d10e01",
+      "byteCount": 32
+    },
+    "table.csv": {
+      "result": "PASS",
+      "sha256": "74212ff07f5cec3b2162345c08047bf10470c7e5b0d6decb67fa7431c06393e1",
+      "byteCount": 27
+    },
+    "data.json": {
+      "result": "PASS",
+      "sha256": "b7424466baca46374aa49a4975d6dfbf42295fbd9d8db8b248b6505d9461ee58",
+      "byteCount": 22
+    },
+    "shape.jpg": {
+      "result": "PASS",
+      "sha256": "dd5fa1887f486795eeb6ee7d4e588376163cae9a731fbf8c6de9cc64f285e3fc",
+      "byteCount": 9882
+    }
+  },
+  "content": "PASS",
+  "cleanup": "PASS",
+  "terminal": {
+    "status": "completed",
+    "issueCode": null
+  },
+  "perFileContent": {
+    "legacy-word.doc": "PASS",
+    "legacy-sheet.xls": "PASS",
+    "slides.ppt": "PASS",
+    "slides.pptx": "PASS",
+    "plain.txt": "PASS",
+    "notes.md": "PASS",
+    "table.csv": "PASS",
+    "data.json": "PASS",
+    "shape.jpg": "PASS"
+  },
+  "answerMapping": {
+    "legacy-word.doc": {
+      "code": "MAPLE-246"
+    },
+    "legacy-sheet.xls": {
+      "code": "BIRCH-357"
+    },
+    "slides.ppt": {
+      "code": "PINE-468"
+    },
+    "slides.pptx": {
+      "code": "PINE-468"
+    },
+    "plain.txt": {
+      "code": "LARCH-579"
+    },
+    "notes.md": {
+      "code": "CEDAR-680"
+    },
+    "table.csv": {
+      "code": "ELM-791"
+    },
+    "data.json": {
+      "code": "WILLOW-802"
+    },
+    "shape.jpg": {
+      "shape": "circle",
+      "color": "green",
+      "number": "91"
+    }
+  },
+  "temporaryRepositoryUnchanged": true,
+  "fixtureShutdown": "PASS",
+  "elapsedSeconds": 32.684,
+  "providerCleanup": {
+    "expectedNativeFiles": 9,
+    "uploadedNativeFiles": 9,
+    "confirmedDeletedFiles": 9,
+    "exactSetMatch": true,
+    "deleteRequestCount": 9,
+    "errors": []
+  },
+  "resources": {
+    "peakCgroupBytes": 38981632,
+    "minimumAvailableMiB": 771,
+    "elapsedSeconds": 33.91,
+    "memoryEvents": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+    "sameProductionPIDs": true,
+    "sameProductionBinary": true,
+    "productionHealthPASS": true,
+    "scriptSHA": "b7abb0077388a604956a1c8d058eaae0622735e2a710926c2f5767e98ed26b45"
+  }
+}
