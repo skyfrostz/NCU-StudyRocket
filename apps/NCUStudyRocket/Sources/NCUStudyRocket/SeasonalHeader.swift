@@ -1,43 +1,10 @@
 import SwiftUI
 import StudyRocketShared
 
-struct SeasonalVerse: Identifiable {
-    let id: String
-    let text: String
-    let author: String
-    let work: String
-    let source: URL
-
-    var punctuatedText: String { text.hasSuffix("。") ? text : text + "。" }
-
-    static let calendar: Calendar = {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
-        return calendar
-    }()
-
-    private static let verses: [String: Self] = {
-        let url = Bundle.main.url(forResource: "SeasonalVerses", withExtension: "tsv")
-            ?? Bundle.module.url(forResource: "SeasonalVerses", withExtension: "tsv")
-        guard let url, let data = try? String(contentsOf: url, encoding: .utf8) else { return [:] }
-        var entries: [String: Self] = [:]
-        for line in data.split(separator: "\n") {
-            let columns = line.components(separatedBy: "\t")
-            guard columns.count == 5, let link = URL(string: columns[4]) else { continue }
-            entries[columns[0]] = Self(id: columns[0], text: columns[1], author: columns[2], work: columns[3], source: link)
-        }
-        return entries
-    }()
-
-    static func on(_ date: Date) -> Self? {
-        let parts = calendar.dateComponents([.month, .day], from: date)
-        return verses[String(format: "%02d-%02d", parts.month!, parts.day!)]
-    }
-}
-
 struct SeasonalHeader: View {
     let record: () -> Void
-    @State private var showSource = false
+    @State private var selectedVerse: SeasonalVerse?
+    @Environment(\.scenePhase) private var scenePhase
     @State private var anchor = Date.now
     private static func greeting(at date: Date) -> String {
         switch SeasonalVerse.calendar.component(.hour, from: date) {
@@ -63,19 +30,12 @@ struct SeasonalHeader: View {
                         .studyTypography(.subheadline, weight: .medium)
                         .foregroundStyle(.secondary)
                     if let verse = SeasonalVerse.on(context.date) {
-                        Button { showSource.toggle() } label: {
+                        Button { selectedVerse = verse } label: {
                             Text(verbatim: verse.punctuatedText).studyPoetryTypography()
                                 .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
                         }
                         .buttonStyle(.plain).help("查看诗句出处")
                         .accessibilityHint("查看作者与篇名")
-                        .popover(isPresented: $showSource) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(verse.punctuatedText).studyPoetryTypography(size: 17, relativeTo: .headline)
-                                Text("宋 · \(verse.author)《\(verse.work)》").foregroundStyle(.secondary)
-                                Link("阅读原文", destination: verse.source)
-                            }.padding(18).frame(maxWidth: 360, alignment: .leading)
-                        }
                     }
                     Text(Self.dateLabel.string(from: context.date)).studyTypography(.subheadline).foregroundStyle(.secondary)
                 }
@@ -83,6 +43,15 @@ struct SeasonalHeader: View {
                 StudyButton("记一件事", systemImage: "square.and.pencil", action: record)
             }
         }
+        .id(anchor)
+        .popover(item: $selectedVerse) { verse in
+            VStack(alignment: .leading, spacing: 8) {
+                Text(verse.punctuatedText).studyPoetryTypography(size: 17, relativeTo: .headline)
+                Text("宋 · \(verse.author)《\(verse.work)》").foregroundStyle(.secondary)
+                Link("阅读原文", destination: verse.source)
+            }.padding(18).frame(maxWidth: 360, alignment: .leading)
+        }
+        .onChange(of: scenePhase) { _, phase in if phase == .active { anchor = .now } }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in anchor = .now }
     }
 }

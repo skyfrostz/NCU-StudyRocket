@@ -31,11 +31,16 @@ if [[ "$IS_PREVIEW" == "1" ]]; then APP="$ROOT/.build/NCU StudyRocket Preview.ap
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 mkdir -p "$APP/Contents/PlugIns"
-cp "$ROOT/Sources/NCUStudyRocket/Resources/SeasonalVerses.tsv" "$ROOT/Licenses/chinese-poetry.txt" "$APP/Contents/Resources/"
 SHARED_RESOURCES="$BIN_DIR/NCUStudyRocketShared_StudyRocketShared.bundle"
-if [[ -d "$SHARED_RESOURCES" ]]; then
-  cp -R "$SHARED_RESOURCES" "$APP/Contents/Resources/"
+SHARED_RESOURCE_FILES="$SHARED_RESOURCES"
+if [[ -d "$SHARED_RESOURCES/Contents/Resources" ]]; then
+  SHARED_RESOURCE_FILES="$SHARED_RESOURCES/Contents/Resources"
 fi
+if [[ ! -f "$SHARED_RESOURCE_FILES/SeasonalVerses.tsv" || ! -f "$SHARED_RESOURCE_FILES/chinese-poetry.txt" ]]; then
+  print -u2 "Shared seasonal verse resources are missing from the build."
+  exit 1
+fi
+cp -R "$SHARED_RESOURCES" "$APP/Contents/Resources/"
 cp "$BIN_DIR/NCUStudyRocket" "$APP/Contents/MacOS/NCUStudyRocket"
 EXPECTED_SDK="$(xcrun --sdk macosx --show-sdk-version)"
 LINKED_SDK="$(xcrun vtool -show-build "$APP/Contents/MacOS/NCUStudyRocket" | awk '$1=="sdk"{print $2; exit}')"

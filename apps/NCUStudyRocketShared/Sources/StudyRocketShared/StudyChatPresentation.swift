@@ -30,15 +30,18 @@ public struct StudyProposalDiffView: View {
     private let input: Input
     private let originalTitle: String
     private let proposedTitle: String
+    private let renderMarkdown: ((String) -> AnyView)?
     @State private var loaded: Loaded?
     @State private var showsFullFile = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     public init(original: String, proposed: String,
-                originalTitle: String = "修改前", proposedTitle: String = "修改后") {
+                originalTitle: String = "修改前", proposedTitle: String = "修改后",
+                renderMarkdown: ((String) -> AnyView)? = nil) {
         input = Input(original: original, proposed: proposed)
         self.originalTitle = originalTitle
         self.proposedTitle = proposedTitle
+        self.renderMarkdown = renderMarkdown
     }
 
     public var body: some View {
@@ -50,6 +53,10 @@ public struct StudyProposalDiffView: View {
                 } else {
                     Text("仅显示变化 · 移除 \(diff.removedLineCount) 行，新增 \(diff.addedLineCount) 行")
                         .studyTypography(.callout).foregroundStyle(.secondary)
+                    if renderMarkdown != nil {
+                        Text("按排版阅读变化；表头与列表上文仅用于理解。源码可展开核对。")
+                            .studyTypography(.caption).foregroundStyle(.secondary)
+                    }
                     LazyVStack(alignment: .leading, spacing: 16) {
                         ForEach(diff.hunks) { hunk in
                             VStack(alignment: .leading, spacing: 8) {
@@ -88,8 +95,8 @@ public struct StudyProposalDiffView: View {
 
     private func comparison(_ diff: ProposalLineDiff, original: Range<Int>, proposed: Range<Int>, isFullFile: Bool = false) -> some View {
         ProposalDiffComparisonLayout(prefersStacked: dynamicTypeSize.isAccessibilitySize) {
-            ProposalDiffSide(title: originalTitle, lines: diff.originalLines, range: original, added: false, isFullFile: isFullFile)
-            ProposalDiffSide(title: proposedTitle, lines: diff.proposedLines, range: proposed, added: true, isFullFile: isFullFile)
+            ProposalDiffSide(title: originalTitle, lines: diff.originalLines, range: original, added: false, isFullFile: isFullFile, renderMarkdown: renderMarkdown)
+            ProposalDiffSide(title: proposedTitle, lines: diff.proposedLines, range: proposed, added: true, isFullFile: isFullFile, renderMarkdown: renderMarkdown)
         }
     }
 }
@@ -140,6 +147,8 @@ private struct ProposalDiffSide: View {
     let range: Range<Int>
     let added: Bool
     let isFullFile: Bool
+    let renderMarkdown: ((String) -> AnyView)?
+    @State private var showsSource = false
     @State private var expanded = false
 
     var body: some View {
@@ -149,20 +158,21 @@ private struct ProposalDiffSide: View {
             if range.isEmpty {
                 Text("无内容").studyTypography(.callout).foregroundStyle(.secondary)
             } else {
-                LazyVStack(alignment: .leading, spacing: 3) {
-                    ForEach(visibleRange, id: \.self) { index in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text("\(index + 1)").studyTypography(.caption).monospacedDigit()
-                                .foregroundStyle(.secondary).frame(minWidth: 24, alignment: .trailing)
-                                .accessibilityHidden(true)
-                            Text(verbatim: lines[index].isEmpty ? " " : lines[index])
-                                .studyChatTypography(size: 16)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
+                if let renderMarkdown {
+                    let excerpt = ProposalMarkdownExcerpt.renderable(lines: lines, range: visibleRange)
+                    if excerpt.isEmpty {
+                        Text("此处仅有管理标记或空白变化，请展开源码核对。")
+                            .studyTypography(.callout).foregroundStyle(.secondary)
+                    } else {
+                        renderMarkdown(excerpt)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
                     }
-                }
-                .textSelection(.enabled)
+                    DisclosureGroup("查看 Markdown 源码", isExpanded: $showsSource) {
+                        if showsSource { sourceLines }
+                    }
+                    .studyTypography(.caption)
+                } else { sourceLines }
                 if !expanded, range.count > 80 {
                     StudyButton("展开其余 \(range.count - 80) 行") { expanded = true }
                         .studyTypography(.callout)
@@ -176,6 +186,22 @@ private struct ProposalDiffSide: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.18), lineWidth: 1))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
+    }
+
+    private var sourceLines: some View {
+        LazyVStack(alignment: .leading, spacing: 3) {
+            ForEach(visibleRange, id: \.self) { index in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("\(index + 1)").studyTypography(.caption).monospacedDigit()
+                        .foregroundStyle(.secondary).frame(minWidth: 24, alignment: .trailing)
+                        .accessibilityHidden(true)
+                    Text(verbatim: lines[index].isEmpty ? " " : lines[index])
+                        .font(.system(.callout, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }.textSelection(.enabled)
     }
 
     private var visibleRange: Range<Int> {

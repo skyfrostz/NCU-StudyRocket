@@ -3,6 +3,13 @@ import XCTest
 @testable import StudyRocketMobile
 import StudyRocketShared
 
+private final class MobileLifecycleCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.lock(); count += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+}
+
 private struct MobileStubResponse {
     let statusCode: Int
     let data: Data
@@ -779,6 +786,421 @@ final class MobileSessionSyncTests: XCTestCase {
         XCTAssertTrue(fixture.writePaths.isEmpty)
     }
 
+    func testForegroundColdStartCoalescesAndKeepsCachedSnapshotWhileChecking() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cached = makeSnapshot()
+        try JSONEncoder().encode(cached).write(to: directory.appendingPathComponent("snapshot.json"))
+        let fixture = MobileSyncFixture(snapshot: cached)
+        let session = makeSession(directory: directory, fixture: fixture)
+        let gate = MobileStubDeliveryGate()
+        MobileStubURLProtocol.handler = { request in
+            let response = try fixture.response(for: request)
+            return MobileStubResponse(statusCode: response.statusCode, data: response.data,
+                deliveryGate: request.url?.path == "/v1/health" ? gate : nil)
+        }
+        let first = Task { await session.enterForeground() }
+        for _ in 0..<50 where fixture.readCounts.health == 0 { try await Task.sleep(for: .milliseconds(2)) }
+        let duplicate = Task { await session.enterForeground() }
+        XCTAssertEqual(session.state, .connecting)
+        XCTAssertEqual(session.snapshot?.revision, cached.revision)
+        gate.release()
+        await first.value; await duplicate.value
+        XCTAssertEqual(fixture.readCounts.health, 1)
+        XCTAssertEqual(fixture.readCounts.snapshot, 1)
+        XCTAssertEqual(session.state, .online)
+        session.leaveForeground()
+    }
+
+    func testBackgroundRejectsLateHealthAndDoesNotStartSnapshotOrSSE() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot())
+        let session = makeSession(directory: directory, fixture: fixture, eventStreamsEnabled: true)
+        let gate = MobileStubDeliveryGate()
+        MobileStubURLProtocol.handler = { request in
+            let response = try fixture.response(for: request)
+            return MobileStubResponse(statusCode: response.statusCode, data: response.data, deliveryGate: gate)
+        }
+        let refresh = Task { await session.enterForeground() }
+        for _ in 0..<50 where fixture.readCounts.health == 0 { try await Task.sleep(for: .milliseconds(2)) }
+        session.leaveForeground()
+        gate.release()
+        await refresh.value
+        XCTAssertNil(session.snapshot)
+        XCTAssertEqual(fixture.readCounts.snapshot, 0)
+        XCTAssertFalse(session.isEventStreamRunning)
+        session.startEventStream()
+        XCTAssertFalse(session.isEventStreamRunning)
+        MobileStubURLProtocol.handler = fixture.response
+        await session.enterForeground()
+        XCTAssertEqual(session.state, .online)
+        session.leaveForeground()
+    }
+
+    func testTransientRetryIsBoundedAndNetworkRecoveryOnlyProbes() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot())
+        let session = makeSession(directory: directory, fixture: fixture)
+        session.connectionRetryDelays = [.milliseconds(5), .milliseconds(5), .milliseconds(5)]
+        let requests = MobileLifecycleCounter()
+        MobileStubURLProtocol.handler = { _ in requests.increment(); throw URLError(.notConnectedToInternet) }
+        await session.refresh()
+        try await Task.sleep(for: .milliseconds(90))
+        XCTAssertEqual(requests.value, 4)
+        session.networkPathChanged(isAvailable: false)
+        session.networkPathChanged(isAvailable: true)
+        XCTAssertNotEqual(session.state, .online)
+        MobileStubURLProtocol.handler = fixture.response
+        for _ in 0..<50 where session.state != .online { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertEqual(session.state, .online)
+        XCTAssertEqual(fixture.readCounts.snapshot, 1)
+        session.leaveForeground()
+    }
+
+    func testBackgroundWinsOverQueuedForegroundAndCancelsRetry() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot())
+        let session = makeSession(directory: directory, fixture: fixture)
+        session.foregroundDidChange(isActive: true)
+        session.foregroundDidChange(isActive: false)
+        try await Task.sleep(for: .milliseconds(10))
+        XCTAssertEqual(fixture.readCounts.health, 0)
+        session.connectionRetryDelays = [.milliseconds(10)]
+        let requests = MobileLifecycleCounter()
+        MobileStubURLProtocol.handler = { _ in requests.increment(); throw URLError(.timedOut) }
+        await session.enterForeground()
+        session.leaveForeground()
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(requests.value, 1)
+        XCTAssertFalse(session.isEventStreamRunning)
+    }
+
+    func testReplacementEndpointRejectsOldRefreshResponse() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot())
+        let session = makeSession(directory: directory, fixture: fixture)
+        let gate = MobileStubDeliveryGate()
+        MobileStubURLProtocol.handler = { request in
+            let response = try fixture.response(for: request)
+            return MobileStubResponse(statusCode: response.statusCode, data: response.data, deliveryGate: gate)
+        }
+        let old = Task { await session.refresh() }
+        for _ in 0..<50 where fixture.readCounts.health == 0 { try await Task.sleep(for: .milliseconds(2)) }
+        let endpoint = URL(string: "https://replacement.test")!
+        try session.replaceClient(with: StudyRocketRemoteClient(endpoint: endpoint), endpoint: endpoint, persistEndpoint: false)
+        gate.release()
+        await old.value
+        XCTAssertNil(session.health)
+        XCTAssertNil(session.snapshot)
+        XCTAssertEqual(session.state, .connecting)
+        session.leaveForeground()
+    }
+
+    func testAuthenticationFailureDoesNotRetryOnTimerOrNetworkPath() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot())
+        let session = makeSession(directory: directory, fixture: fixture)
+        session.connectionRetryDelays = [.milliseconds(5)]
+        let requests = MobileLifecycleCounter()
+        MobileStubURLProtocol.handler = { _ in
+            requests.increment()
+            return MobileStubResponse(statusCode: 401, data: try JSONEncoder().encode(APIErrorBody(code: "unauthorized", message: "Pair again")))
+        }
+        await session.refresh()
+        session.networkPathChanged(isAvailable: false)
+        session.networkPathChanged(isAvailable: true)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(requests.value, 1)
+        XCTAssertEqual(session.state, .failed("Pair again"))
+        MobileStubURLProtocol.handler = fixture.response
+        await session.refresh()
+        XCTAssertEqual(session.state, .online)
+        session.leaveForeground()
+    }
+
+    func testCancelledReplayCannotClearResumedReplayOwnership() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot())
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        try writeDrafts(directory: directory, legacy: false, deliveryTexts: ["交付物 3"], periodIDs: [], includeDaily: false)
+        let firstGate = MobileStubDeliveryGate(), resumedGate = MobileStubDeliveryGate()
+        let writes = MobileLifecycleCounter()
+        MobileStubURLProtocol.handler = { request in
+            if request.url?.path == "/v1/deliveries/toggle" {
+                writes.increment()
+                if writes.value == 1 {
+                    return MobileStubResponse(statusCode: 503, data: try JSONEncoder().encode(APIErrorBody(code: "unavailable", message: "Retry")), deliveryGate: firstGate)
+                }
+                let response = try fixture.response(for: request)
+                return MobileStubResponse(statusCode: response.statusCode, data: response.data, deliveryGate: resumedGate)
+            }
+            return try fixture.response(for: request)
+        }
+        let oldReplay = Task { await session.commitPendingDrafts() }
+        for _ in 0..<50 where writes.value == 0 { try await Task.sleep(for: .milliseconds(2)) }
+        session.leaveForeground()
+        let resumed = Task { await session.enterForeground() }
+        for _ in 0..<50 where writes.value < 2 { try await Task.sleep(for: .milliseconds(2)) }
+        firstGate.release()
+        await oldReplay.value
+        XCTAssertEqual(writes.value, 2)
+        XCTAssertTrue(session.isReplayingPendingToggles)
+        resumedGate.release()
+        await resumed.value
+        XCTAssertFalse(session.isReplayingPendingToggles)
+        XCTAssertEqual(session.pendingDeliveryCount, 0)
+        session.leaveForeground()
+    }
+
+    func testConcurrentRefreshDuringReplaySharesReadWithoutOverlappingWrites() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot())
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        try writeDrafts(directory: directory, legacy: false, deliveryTexts: ["交付物 3"], periodIDs: [], includeDaily: false)
+        let gate = MobileStubDeliveryGate()
+        MobileStubURLProtocol.handler = { request in
+            let response = try fixture.response(for: request)
+            return MobileStubResponse(statusCode: response.statusCode, data: response.data,
+                deliveryGate: request.url?.path == "/v1/deliveries/toggle" ? gate : nil)
+        }
+        let replay = Task { await session.commitPendingDrafts() }
+        for _ in 0..<50 where !session.isReplayingPendingToggles { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertTrue(session.isReplayingPendingToggles)
+        let first = Task { await session.refresh() }
+        let second = Task { await session.refresh() }
+        try await Task.sleep(for: .milliseconds(10))
+        XCTAssertEqual(fixture.readCounts.health, 2)
+        gate.release()
+        await replay.value; await first.value; await second.value
+        XCTAssertEqual(fixture.readCounts.health, 2)
+        XCTAssertEqual(fixture.readCounts.snapshot, 2)
+        XCTAssertEqual(fixture.writePaths, ["/v1/deliveries/toggle"])
+        session.leaveForeground()
+    }
+
+    func testHistoricalSnapshotReplayCannotOverwriteCurrentHTTPAuthorityOrCache() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let old = timedSnapshot(revision: "old-merged-tasks", timestamp: 1_000, label: "11月12日 · 周四")
+        let current = timedSnapshot(revision: "current-independent-tasks", timestamp: 2_000, label: "11月14日 · 周六")
+        let next = timedSnapshot(revision: "new-authoritative-change", timestamp: 3_001, label: "11月14日 · 周六")
+        let event = timedSnapshot(revision: "event-payload-never-adopted", timestamp: 3_000, label: "不可作为当前内容")
+        let fixture = MobileSyncFixture(snapshot: current)
+        let session = makeSession(directory: directory, fixture: fixture)
+        let reads = MobileLifecycleCounter(), newReadGate = MobileStubDeliveryGate()
+        MobileStubURLProtocol.handler = { request in
+            if request.url?.path == "/v1/snapshot" {
+                reads.increment()
+                return MobileStubResponse(statusCode: 200, data: try JSONEncoder().encode(reads.value == 1 ? current : next), deliveryGate: reads.value == 1 ? nil : newReadGate)
+            }
+            return try fixture.response(for: request)
+        }
+        await session.refresh()
+        for _ in 0..<100 { session.consumeHostEvent(HostEventEnvelope(kind: "snapshot", snapshot: old)) }
+        session.consumeHostEvent(HostEventEnvelope(kind: "resync", snapshot: old,
+            chat: ChatStreamEvent(kind: "item_completed", turnID: "history", itemID: "item", text: "历史正文仍然保留")))
+        XCTAssertTrue(session.chatMessages.contains { $0.text == "历史正文仍然保留" })
+        session.consumeHostEvent(HostEventEnvelope(kind: "chat", chat: ChatStreamEvent(kind: "status", turnID: "history", status: "completed")))
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(session.snapshot, current)
+        XCTAssertEqual(reads.value, 1, "Old event pages must not cause a GET storm")
+        let cached = try JSONDecoder().decode(SnapshotResponse.self, from: Data(contentsOf: directory.appendingPathComponent("snapshot.json")))
+        XCTAssertEqual(cached, current)
+        // A genuinely new event invalidates once; even while GET is delayed,
+        // its historical payload is never rendered as current content.
+        for _ in 0..<20 { session.consumeHostEvent(HostEventEnvelope(kind: "snapshot", snapshot: event)) }
+        for _ in 0..<50 where reads.value < 2 { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertEqual(session.snapshot, current)
+        XCTAssertEqual(reads.value, 2)
+        newReadGate.release()
+        for _ in 0..<50 where session.snapshot?.revision != next.revision { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertEqual(session.snapshot, next)
+        XCTAssertEqual(reads.value, 2)
+        session.leaveForeground()
+    }
+
+    func testSnapshotInvalidationDuringExistingGETRequiresFollowupRead() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let initial = timedSnapshot(revision: "initial", timestamp: 1_000, label: "11月14日")
+        let earlyRead = timedSnapshot(revision: "read-before-event", timestamp: 1_100, label: "11月14日")
+        let event = timedSnapshot(revision: "invalidated", timestamp: 1_200, label: "事件内容不可直接显示")
+        let latest = timedSnapshot(revision: "read-after-event", timestamp: 1_300, label: "11月14日")
+        let fixture = MobileSyncFixture(snapshot: initial)
+        let session = makeSession(directory: directory, fixture: fixture)
+        let reads = MobileLifecycleCounter(), gate = MobileStubDeliveryGate()
+        MobileStubURLProtocol.handler = { request in
+            if request.url?.path == "/v1/snapshot" {
+                reads.increment()
+                let value = reads.value == 1 ? initial : reads.value == 2 ? earlyRead : latest
+                return MobileStubResponse(statusCode: 200, data: try JSONEncoder().encode(value), deliveryGate: reads.value == 2 ? gate : nil)
+            }
+            return try fixture.response(for: request)
+        }
+        await session.refresh()
+        let pull = Task { await session.refreshVisibleContent() }
+        for _ in 0..<50 where reads.value < 2 { try await Task.sleep(for: .milliseconds(2)) }
+        session.consumeHostEvent(HostEventEnvelope(kind: "resync", snapshot: event))
+        try await Task.sleep(for: .milliseconds(5))
+        gate.release()
+        await pull.value
+        for _ in 0..<50 where session.snapshot?.revision != latest.revision { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertEqual(session.snapshot, latest)
+        XCTAssertEqual(reads.value, 3, "Dirty-during-read needs exactly one followup authoritative GET")
+        session.leaveForeground()
+    }
+
+    func testNewSnapshotInvalidationDuringFollowupIsRetainedButFutureTimestampIsBounded() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let initial = timedSnapshot(revision: "initial", timestamp: 1_000, label: "11月14日")
+        let firstEvent = timedSnapshot(revision: "event-one", timestamp: 1_200, label: "事件")
+        let secondEvent = timedSnapshot(revision: "event-two", timestamp: 1_400, label: "事件")
+        let futureEvent = timedSnapshot(revision: "future-event", timestamp: 9_999, label: "未来时间")
+        let latest = timedSnapshot(revision: "latest", timestamp: 1_500, label: "11月14日")
+        let firstRead = timedSnapshot(revision: "before-first", timestamp: 1_100, label: "11月14日")
+        let secondRead = timedSnapshot(revision: "before-second", timestamp: 1_300, label: "11月14日")
+        let fixture = MobileSyncFixture(snapshot: initial)
+        let session = makeSession(directory: directory, fixture: fixture)
+        let reads = MobileLifecycleCounter(), gate = MobileStubDeliveryGate()
+        MobileStubURLProtocol.handler = { request in
+            if request.url?.path == "/v1/snapshot" {
+                reads.increment()
+                let value = reads.value == 1 ? initial : reads.value == 2 ? firstRead : reads.value == 3 ? secondRead : latest
+                return MobileStubResponse(statusCode: 200, data: try JSONEncoder().encode(value), deliveryGate: reads.value == 3 ? gate : nil)
+            }
+            return try fixture.response(for: request)
+        }
+        await session.refresh()
+        session.consumeHostEvent(HostEventEnvelope(kind: "snapshot", snapshot: firstEvent))
+        for _ in 0..<50 where reads.value < 3 { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertEqual(reads.value, 3)
+        session.consumeHostEvent(HostEventEnvelope(kind: "snapshot", snapshot: secondEvent))
+        gate.release()
+        for _ in 0..<50 where session.snapshot?.revision != latest.revision { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertEqual(session.snapshot, latest)
+        XCTAssertEqual(reads.value, 4)
+        session.consumeHostEvent(HostEventEnvelope(kind: "snapshot", snapshot: futureEvent))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(reads.value, 6, "A single future timestamp may not start an endless read loop")
+        XCTAssertEqual(session.snapshot, latest)
+        session.leaveForeground()
+    }
+
+    func testVisibleRefreshCompletesWhileSlowPendingReplayKeepsOwnIndicator() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try writeDrafts(directory: directory, legacy: false, deliveryTexts: ["交付物 3"], periodIDs: [], includeDaily: false)
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot())
+        let session = makeSession(directory: directory, fixture: fixture)
+        let gate = MobileStubDeliveryGate()
+        MobileStubURLProtocol.handler = { request in
+            let response = try fixture.response(for: request)
+            return MobileStubResponse(statusCode: response.statusCode, data: response.data,
+                deliveryGate: request.url?.path == "/v1/deliveries/toggle" ? gate : nil)
+        }
+        var completedRead = false
+        let visibleRefresh = Task { await session.refreshVisibleContent(); completedRead = true }
+        for _ in 0..<50 where !completedRead || !session.isReplayingPendingToggles { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertTrue(completedRead, "Pull spinner must not wait for the queued write receipt")
+        XCTAssertFalse(session.isRefreshingSnapshot)
+        XCTAssertEqual(session.state, .online)
+        XCTAssertTrue(session.isReplayingPendingToggles)
+        XCTAssertEqual(session.pendingDeliveryCount, 1)
+        gate.release()
+        await visibleRefresh.value
+        await session.refresh()
+        XCTAssertEqual(fixture.writePaths, ["/v1/deliveries/toggle"])
+        XCTAssertEqual(session.pendingDeliveryCount, 0)
+        session.leaveForeground()
+    }
+
+    func testSlowSnapshotCannotRollBackNewerQueuedWriteReceipt() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try writeDrafts(directory: directory, legacy: false, deliveryTexts: ["交付物 3"], periodIDs: [], includeDaily: false)
+        let original = makeSnapshot()
+        let fixture = MobileSyncFixture(snapshot: original)
+        let session = makeSession(directory: directory, fixture: fixture)
+        let writeGate = MobileStubDeliveryGate(), readGate = MobileStubDeliveryGate()
+        let reads = MobileLifecycleCounter()
+        MobileStubURLProtocol.handler = { request in
+            if request.url?.path == "/v1/snapshot" {
+                reads.increment()
+                if reads.value > 1 {
+                    return MobileStubResponse(statusCode: 200, data: try JSONEncoder().encode(original), deliveryGate: readGate)
+                }
+            }
+            let response = try fixture.response(for: request)
+            return MobileStubResponse(statusCode: response.statusCode, data: response.data,
+                deliveryGate: request.url?.path == "/v1/deliveries/toggle" ? writeGate : nil)
+        }
+        await session.refreshVisibleContent()
+        for _ in 0..<50 where fixture.writePaths.isEmpty { try await Task.sleep(for: .milliseconds(2)) }
+        let secondRead = Task { await session.refreshVisibleContent() }
+        for _ in 0..<50 where reads.value < 2 { try await Task.sleep(for: .milliseconds(2)) }
+        writeGate.release()
+        for _ in 0..<50 where session.pendingDeliveryCount != 0 { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertEqual(session.snapshot?.revision, "r1")
+        readGate.release()
+        await secondRead.value
+        XCTAssertEqual(session.snapshot?.revision, "r1")
+        XCTAssertEqual(fixture.writePaths, ["/v1/deliveries/toggle"])
+        session.leaveForeground()
+    }
+
+    func testOnlineReadKeepsCacheStatusAndUsesBoundedRequestTimeouts() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixture = MobileSyncFixture(snapshot: makeSnapshot())
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        let gate = MobileStubDeliveryGate()
+        MobileStubURLProtocol.handler = { request in
+            if request.url?.path == "/v1/health" { XCTAssertEqual(request.timeoutInterval, 8) }
+            if request.url?.path == "/v1/snapshot" { XCTAssertEqual(request.timeoutInterval, 12) }
+            let response = try fixture.response(for: request)
+            return MobileStubResponse(statusCode: response.statusCode, data: response.data,
+                deliveryGate: request.url?.path == "/v1/snapshot" ? gate : nil)
+        }
+        let refresh = Task { await session.refreshVisibleContent() }
+        for _ in 0..<50 where fixture.readCounts.snapshot < 2 { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertTrue(session.isRefreshingSnapshot)
+        XCTAssertEqual(session.state, .online, "Checking an online snapshot must not insert an offline card")
+        XCTAssertNotNil(session.snapshot)
+        gate.release()
+        await refresh.value
+        XCTAssertFalse(session.isRefreshingSnapshot)
+        MobileStubURLProtocol.handler = { _ in throw URLError(.timedOut) }
+        await session.refreshVisibleContent()
+        XCTAssertNotNil(session.snapshot)
+        XCTAssertFalse(session.isRefreshingSnapshot)
+        XCTAssertNotEqual(session.state, .online)
+        let offlineState = session.state
+        let retryGate = MobileStubDeliveryGate()
+        MobileStubURLProtocol.handler = { request in
+            let response = try fixture.response(for: request)
+            return MobileStubResponse(statusCode: response.statusCode, data: response.data,
+                deliveryGate: request.url?.path == "/v1/health" ? retryGate : nil)
+        }
+        let retry = Task { await session.refreshVisibleContent() }
+        for _ in 0..<50 where !session.isRefreshingSnapshot { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertEqual(session.state, offlineState, "A manual pull must not replace the existing cache status with connecting text")
+        retryGate.release()
+        await retry.value
+        XCTAssertEqual(session.state, .online)
+        session.leaveForeground()
+    }
+
     func testConcurrentRefreshUsesOneSnapshotAndOneReplay() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -846,6 +1268,34 @@ final class MobileSessionSyncTests: XCTestCase {
         XCTAssertEqual(session.pendingPeriodCount, 0)
         XCTAssertEqual(session.state, .online)
         XCTAssertNil(session.pendingToggleSyncIssue)
+    }
+
+    func testBackgroundFactReceiptDoesNotOverwriteSnapshotOrPostNextFact() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = makeSnapshot()
+        let fixture = MobileSyncFixture(snapshot: original)
+        let session = makeSession(directory: directory, fixture: fixture)
+        await session.refresh()
+        let first = QuickFact(text: "第一条测试事实"), second = QuickFact(text: "第二条测试事实")
+        try session.enqueueFact(first); try session.enqueueFact(second)
+        let gate = MobileStubDeliveryGate(), writes = MobileLifecycleCounter()
+        let late = SnapshotResponse(revision: "old-scene-receipt", home: original.home, week: original.week, daily: original.daily, summaries: [])
+        MobileStubURLProtocol.handler = { request in
+            if request.url?.path == "/v1/facts" {
+                writes.increment()
+                return MobileStubResponse(statusCode: 200, data: try JSONEncoder().encode(late), deliveryGate: gate)
+            }
+            return try fixture.response(for: request)
+        }
+        let sync = Task { await session.syncFacts() }
+        for _ in 0..<50 where writes.value == 0 { try await Task.sleep(for: .milliseconds(2)) }
+        session.leaveForeground()
+        gate.release()
+        await sync.value
+        XCTAssertEqual(session.snapshot?.revision, original.revision)
+        XCTAssertEqual(session.pendingFacts, [second])
+        XCTAssertEqual(writes.value, 1)
     }
 
     func testFactQueueSurvivesLostReceiptAndRelaunch() async throws {
@@ -2069,10 +2519,21 @@ final class MobileSessionSyncTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(session.queueMigrationItems(archive).first).canSubmit)
     }
 
+    private func timedSnapshot(revision: String, timestamp: TimeInterval, label: String) -> SnapshotResponse {
+        let base = makeSnapshot()
+        let home = HomeSnapshot(dateLabel: label,
+            periods: [PeriodSnapshot(id: "morning", title: "上午", text: revision)],
+            firstOpenTask: revision, visibleDeliveries: base.home.visibleDeliveries,
+            completedDeliveries: revision.hasPrefix("old") ? 2 : 4, totalDeliveries: 5)
+        return SnapshotResponse(revision: revision, fetchedAt: Date(timeIntervalSince1970: timestamp),
+            home: home, week: base.week, daily: base.daily, summaries: [])
+    }
+
     private func makeSession(
         directory: URL,
         fixture: MobileSyncFixture,
-        chatRecoveryDelays: [Duration]? = nil
+        chatRecoveryDelays: [Duration]? = nil,
+        eventStreamsEnabled: Bool = false
     ) -> MobileSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MobileStubURLProtocol.self]
@@ -2085,11 +2546,11 @@ final class MobileSessionSyncTests: XCTestCase {
             return MobileSession(
                 cacheDirectory: directory,
                 client: remote,
-                eventStreamsEnabled: false,
+                eventStreamsEnabled: eventStreamsEnabled,
                 chatRecoveryDelays: chatRecoveryDelays
             )
         }
-        return MobileSession(cacheDirectory: directory, client: remote, eventStreamsEnabled: false)
+        return MobileSession(cacheDirectory: directory, client: remote, eventStreamsEnabled: eventStreamsEnabled)
     }
 
     private func temporaryDirectory() throws -> URL {

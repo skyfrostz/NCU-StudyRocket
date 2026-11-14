@@ -3,10 +3,10 @@ import PackageDescription
 
 #if os(Linux)
 let sharedExcludes = ["Resources/Fonts"]
-let sharedResources: [Resource] = []
+let sharedResources: [Resource] = [.copy("Resources/SeasonalVerses.tsv"), .copy("Resources/chinese-poetry.txt")]
 #else
 let sharedExcludes: [String] = []
-let sharedResources: [Resource] = [.copy("Resources/Fonts")]
+let sharedResources: [Resource] = [.copy("Resources/Fonts"), .copy("Resources/SeasonalVerses.tsv"), .copy("Resources/chinese-poetry.txt")]
 #endif
 
 let package = Package(

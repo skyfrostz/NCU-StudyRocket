@@ -56,10 +56,7 @@ public struct StudyRocketMobileRoot: View {
       navigate(destination.tabIndex)
     }
     #if os(iOS)
-      .task {
-        await reminders.updateRecords(recordedDays)
-        await session.refresh()
-      }
+      .task { await reminders.updateRecords(recordedDays) }
       .onChange(of: recordedDays) { _, days in Task { await reminders.updateRecords(days) } }
       .onChange(of: reminders.pendingRoute, initial: true) { _, route in
         guard let route else { return }
@@ -68,17 +65,16 @@ public struct StudyRocketMobileRoot: View {
         _ = reminders.takePendingRoute()
       }
     #endif
+    .task { if scenePhase == .active { await session.enterForeground() } }
     .onChange(of: scenePhase) { _, phase in
       switch phase {
       case .active:
-        Task {
-          await session.refresh()
-          #if os(iOS)
-          await reminders.updateRecords(recordedDays)
-          #endif
-        }
+        session.foregroundDidChange(isActive: true)
+        #if os(iOS)
+        Task { await reminders.updateRecords(recordedDays) }
+        #endif
       case .background, .inactive:
-        session.stopEventStream()
+        session.foregroundDidChange(isActive: false)
       @unknown default:
         break
       }
@@ -321,6 +317,7 @@ private struct MobileHomeView: View {
   @State private var deliveryNotice: String?
   @State private var deliveryConfirmation: DeliverySnapshot?
   @State private var confirmedChildIDs: [String] = []
+  @State private var homeClockAnchor = Date.now
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -361,6 +358,8 @@ private struct MobileHomeView: View {
       ScrollView {
         VStack(alignment: .leading, spacing: 18) {
           homeHeader
+          MobileDailyVerseView()
+          MobileStatusBanner(session: session)
           quickActions
           Spacer(minLength: 24)
           MobileUnframedConnectionPrompt { onNavigate(5) }
@@ -374,10 +373,12 @@ private struct MobileHomeView: View {
   }
 
   private var homeContent: some View {
-    TimelineView(.periodic(from: .now, by: 60)) { context in
-      ScrollView {
+    ScrollView {
+      TimelineView(.periodic(from: homeClockAnchor, by: 60)) { context in
         VStack(alignment: .leading, spacing: 18) {
           homeHeader
+          MobileDailyVerseView()
+          MobileStatusBanner(session: session)
           MobileSnapshotFreshness(session: session)
           if let message = session.chatUnavailableMessage {
             MobileInlineNotice(
@@ -547,10 +548,10 @@ private struct MobileHomeView: View {
         }
         .padding(MobileTheme.pageInset)
         .safeAreaPadding(.bottom, 8)
+        .onChange(of: PlanningDate.key(context.date)) { _, _ in Task { await session.refreshVisibleContent() } }
       }
-      .refreshable { await session.refresh() }
-      .onChange(of: PlanningDate.key(context.date)) { _, _ in Task { await session.refresh() } }
     }
+    .refreshable { await session.refreshVisibleContent() }
   }
 
   private var homeHeader: some View {
@@ -560,16 +561,7 @@ private struct MobileHomeView: View {
         Text("NCU StudyRocket")
           .studyTypography(.title2, weight: .bold)
           .fixedSize(horizontal: false, vertical: true)
-        ViewThatFits(in: .horizontal) {
-          HStack(alignment: .center, spacing: 8) {
-            homeDateLabel
-            MobileStatusBanner(session: session)
-          }
-          VStack(alignment: .leading, spacing: 5) {
-            homeDateLabel
-            MobileStatusBanner(session: session)
-          }
-        }
+        homeDateLabel
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -2098,7 +2090,8 @@ private struct MobileProposalRow: View {
         isSelected ? "取消选择 \(proposal.relativePath)" : "选择 \(proposal.relativePath)")
       DisclosureGroup(proposal.relativePath) {
         Text(proposal.reason).studyTypography(.footnote).foregroundStyle(.secondary)
-        StudyProposalDiffView(original: proposal.originalContent, proposed: proposal.proposedContent)
+        StudyProposalDiffView(original: proposal.originalContent, proposed: proposal.proposedContent,
+                        renderMarkdown: { AnyView(MobileProposalMarkdownPreview(source: $0)) })
       }
     }
   }
@@ -2398,13 +2391,7 @@ private struct MobilePlanView: View {
   @State private var linkageTimetable = ""
   @State private var linkagePlan: WeeklyPlanSnapshot?
   @State private var linkageRevision: String?
-  @State private var showOrganizationDraftChoice = false
-  private let organizationPrompt = "请读取当前周计划、课表和我的偏好，帮我整理独立任务、交付物及其关联。同一时段的独立事项分别保留；条件缓冲和截止提醒关联原任务，活动进入课表。保留已有任务身份、完成状态与历史，不按相似文字自动完成或合并任务。任务联动尚未启用时请生成可预览的启用草案；已启用时整理现有关联。先说明具体变化，不确定的关联向我确认，然后通过正式草案入口提交，由我确认后保存。"
-
-  private func prepareOrganizationDraft() {
-    session.inputDraft = organizationPrompt
-    onNavigate(1)
-  }
+  @State private var showOrganization = false
 
   var body: some View {
     NavigationStack {
@@ -2413,14 +2400,12 @@ private struct MobilePlanView: View {
           planHeader
           HStack {
             StudyButton("让 AI 整理", systemImage: "sparkles") {
-              if session.inputDraft.isEmpty || session.inputDraft == organizationPrompt {
-                prepareOrganizationDraft()
-              } else {
-                showOrganizationDraftChoice = true
-              }
+              showOrganization = true
+              Task { await session.startOrganization() }
             }
             .buttonStyle(.bordered)
-            .accessibilityHint("打开学业对话输入草稿，确认发送后才开始整理")
+            .disabled(session.pendingWeekDraft == nil && session.currentOrganization == nil && !session.canStartOrganization)
+            .accessibilityHint("直接开始整理，在当前页面查看回复、补充信息和确认差异")
             Spacer()
             Menu {
               StudyButton(session.snapshot?.week.linkage == nil ? "手动配置任务联动" : "手动管理关联、改期与已完成") {
@@ -2475,13 +2460,8 @@ private struct MobilePlanView: View {
           }
         }
       }
-      .confirmationDialog("输入框已有草稿", isPresented: $showOrganizationDraftChoice, titleVisibility: .visible) {
-        StudyButton("把整理请求追加到草稿") {
-          session.inputDraft += "\n\n" + organizationPrompt
-          onNavigate(1)
-        }
-        StudyButton("保留当前草稿并打开对话") { onNavigate(1) }
-        StudyButton("取消", role: .cancel) {}
+      .sheet(isPresented: $showOrganization) {
+        MobileOrganizationSheet(session: session)
       }
       .navigationTitle("周计划")
       .onChange(of: session.repositoryGeneration) { _, _ in expandedEmptyDates.removeAll() }

@@ -500,3 +500,13 @@ shasum -a 256 '工作台/下周计划.md'
 - 草案变更组件为 Shared `StudyProposalDiffView`，宽窄布局按实际宽度和辅助字号切换；完整原文只是可选展开。用户在体验全宋体方案后改为并确认“原生系统字体为主”：两端控件、课表、聊天与输入跟随系统字体，仅首页诗句少量保留宋体。不要恢复全局宋体或强制 Times New Roman 混排；系统图标及代码等宽字体保留各自语义。字体通过 Shared 语义接口统一，Linux 不打包字体。Mac 课表只保留周视图，窄窗横向滚动限于网格内部。
 - Mobile请求重试必须用原请求身份查询权威历史，未知回执不能盲重发。显示合并只降低刷新频率，不改变累计文本；终态必须flush。显式刷新去最新，不能覆盖刷新等待期间用户已改变的滚动意图。
 - 回归入口：`Scripts/test_desktop_chat.sh`（快捷输入/迟到连接/流式）、`Scripts/test_weekly_editing.sh`（草稿收取/切页/CAS/保存防重入）、`Scripts/test_local_proposal_seed.sh`（实际Desktop与Host注册）。完整界面证据边界见 `UI_REPAIR_VALIDATION.md`。
+
+### 2026-11-14：连接恢复、手机整理弹窗与共享诗句
+
+- Mobile 前台刷新统一由 session 生命周期协调；缓存可见不代表在线，网络路径变化只触发健康检查。refresh/replay/SSE 的旧 generation 不得污染当前状态。
+- 计划页 AI 整理通过独立持久化流程直接发送，澄清在原生 sheet 内进行，不覆盖聊天草稿。只确认最新完成回合，保持原任务文字、身份、时间与完成事实。未知确认回执按固定编号查询，确定操作不存在后才允许原意图重试。
+- `SeasonalVerse` 和 366 天资源归 Shared 所有，两端从 `Bundle.module` 读取；北京时间日切与联网状态无关，仅诗句使用宋体接口。
+- 验证与安装边界见 `../NCUStudyRocketMobile/VALIDATION_20261114.md`；云入口恢复见 `../NCUStudyRocketCloud/Deployment/RECOVERY_20261114.md`。
+
+- Mobile 云 SSE 的 snapshot/resync 载荷是历史事件时点的数据，不能直接覆盖当前页面/cache。只作合并失效通知并读取签名 HTTP snapshot；时间戳仅用于过滤旧通知，保留聊天/回执补读及原游标。必须测试历史快照重放后当前日期和内容不回退。
+- Shared 草案差异保留准确源码，Mac/Mobile 通过现有 MarkdownUI 注入排版预览；变化表格补表头，管理注释隐藏但源码可展开，勾选框只展示不可执行。

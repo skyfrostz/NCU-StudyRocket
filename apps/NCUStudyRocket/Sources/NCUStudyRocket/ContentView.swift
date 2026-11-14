@@ -3699,7 +3699,8 @@ struct InlineProposalPanel: View {
                             Text("应用前会再次检查文件是否被外部修改").studyTypography(size: StudyRocketTheme.bodySize).foregroundStyle(.orange)
                         }
                     }
-                    StudyProposalDiffView(original: proposal.originalContent, proposed: proposal.proposedContent)
+                    StudyProposalDiffView(original: proposal.originalContent, proposed: proposal.proposedContent,
+                        renderMarkdown: { AnyView(DesktopProposalMarkdownPreview(source: $0)) })
                 }.padding(.vertical, 4)
             }
             HStack {
@@ -3729,7 +3730,8 @@ private struct InlineSkillProposalPanel: View {
                     Text(proposal.reason).studyTypography(size: StudyRocketTheme.bodySize).foregroundStyle(.secondary)
                     Text("只在确认后写入；应用前会再次检查内容是否变更。")
                         .studyTypography(size: StudyRocketTheme.bodySize).foregroundStyle(.orange)
-                    StudyProposalDiffView(original: proposal.originalContent, proposed: proposal.proposedContent)
+                    StudyProposalDiffView(original: proposal.originalContent, proposed: proposal.proposedContent,
+                        renderMarkdown: { AnyView(DesktopProposalMarkdownPreview(source: $0)) })
                 }
             }
             HStack { Spacer(); StudyButton("应用已选 Skill 调整") { chat.applySelectedSkillChanges(workspace: workspace, for: turnID) }.buttonStyle(.bordered) }

@@ -486,3 +486,5 @@ do {
 }
 
 try runOneOffEventEditorChecks()
+
+runSeasonalVerseChecks()

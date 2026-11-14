@@ -3,6 +3,7 @@ import StudyRocketShared
 import StudyRocketWidgetSupport
 #if os(iOS)
 import LocalAuthentication
+import Network
 import WidgetKit
 #endif
 
@@ -241,6 +242,11 @@ public final class MobileSession: ObservableObject {
     /// allowlisted summaries.  Keeping this separate from the snapshot keeps
     /// the home payload small and makes offline behaviour explicit.
     @Published public private(set) var documentDetails: [String: DocumentDetail] = [:]
+    @Published private(set) var organization: MobileOrganizationWorkflow?
+    @Published private(set) var isApplyingProposals = false
+    @Published private(set) var proposalApplyOutcome: MobileProposalApplyOutcome?
+    private var organizationStarting = false
+
     @Published public var inputDraft = "" {
         didSet { UserDefaults.standard.set(inputDraft, forKey: "studyrocket.inputDraft") }
     }
@@ -324,10 +330,32 @@ public final class MobileSession: ObservableObject {
     private var chatRecoveryTask: Task<Void, Never>?
     private var activeDeliveryMutations = Set<MobileDeliveryMutation>()
     private var completedDeliveryMutations: [MobileDeliveryMutation: MobileDeliveryToggleResult] = [:]
+    // Scene lifetime is independent of endpoint/repository identity. An HTTP
+    // response from a suspended scene must not restart its event stream.
+    private var isForeground = true
+    private var hasEnteredForeground = false
+    private var foregroundGeneration = 0
+    private var connectionRetryTask: Task<Void, Never>?
+    private var connectionRetryToken: UUID?
+    private var automaticRefreshBlocked = false
+    private var lastRefreshWasTransient = false
+    var connectionRetryDelays: [Duration] = [.seconds(2), .seconds(5), .seconds(15)]
+    #if os(iOS)
+    private var networkMonitor: NWPathMonitor?
+    #endif
+    private var lastNetworkPathAvailable: Bool?
+    var isEventStreamRunning: Bool { eventsTask != nil }
     private var refreshTask: Task<Void, Never>?
     private var refreshTaskToken: UUID?
+    @Published public private(set) var isRefreshingSnapshot = false
+    private var pendingSynchronizationTask: Task<Void, Never>?
+    private var pendingSynchronizationToken: UUID?
     private var pendingReplayTask: Task<Void, Never>?
+    private var pendingReplayToken: UUID?
     private var legacyReviewDeferred = false
+    private var snapshotInvalidationTask: Task<Void, Never>?
+    private var snapshotInvalidationToken: UUID?
+    private var pendingSnapshotInvalidation: Date?
     private var isEventProbeInFlight = false
     private var isEventRecoveryInFlight = false
     private let eventStreamsEnabled: Bool
@@ -518,37 +546,201 @@ public final class MobileSession: ObservableObject {
         await refresh()
     }
 
-    public func refresh() async {
-        if let refreshTask {
-            await refreshTask.value
+    /// Called synchronously by scene changes so a queued activation cannot
+    /// overtake a later background event before its refresh Task starts.
+    public func foregroundDidChange(isActive: Bool) {
+        guard isActive else { leaveForeground(); return }
+        guard let lifecycle = prepareForeground() else { return }
+        Task { [weak self] in await self?.refreshForeground(lifecycle: lifecycle) }
+    }
+
+    public func enterForeground() async {
+        guard let lifecycle = prepareForeground() else {
+            if let refreshTask { await refreshTask.value }
             return
         }
-        if let pendingReplayTask {
-            await pendingReplayTask.value
+        await refreshForeground(lifecycle: lifecycle)
+    }
+
+    private func prepareForeground() -> Int? {
+        guard !hasEnteredForeground || !isForeground else { return nil }
+        hasEnteredForeground = true
+        isForeground = true
+        foregroundGeneration &+= 1
+        if client != nil { state = .connecting }
+        startNetworkMonitoring()
+        return foregroundGeneration
+    }
+
+    private func refreshForeground(lifecycle: Int) async {
+        guard isForeground, foregroundGeneration == lifecycle else { return }
+        await refresh()
+        guard isForeground, foregroundGeneration == lifecycle else { return }
+        await refreshOrganization()
+    }
+
+    public func leaveForeground() {
+        isForeground = false
+        foregroundGeneration &+= 1
+        refreshTask?.cancel()
+        refreshTask = nil
+        refreshTaskToken = nil
+        isRefreshingSnapshot = false
+        cancelPendingSynchronization()
+        pendingReplayTask?.cancel()
+        pendingReplayTask = nil
+        pendingReplayToken = nil
+        isReplayingPendingToggles = false
+        cancelConnectionRetry()
+        stopEventStream()
+        #if os(iOS)
+        networkMonitor?.cancel()
+        networkMonitor = nil
+        #endif
+        lastNetworkPathAvailable = nil
+    }
+
+    private func startNetworkMonitoring() {
+        #if os(iOS)
+        guard networkMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        networkMonitor = monitor
+        let generation = foregroundGeneration
+        monitor.pathUpdateHandler = { [weak self] path in
+            let available = path.status == .satisfied
+            Task { @MainActor [weak self] in
+                guard let self, self.foregroundGeneration == generation else { return }
+                self.networkPathChanged(isAvailable: available)
+            }
         }
+        monitor.start(queue: DispatchQueue(label: "StudyRocket.network-path"))
+        #endif
+    }
+
+    // A path is only a reason to probe. It never establishes HTTP availability.
+    func networkPathChanged(isAvailable: Bool) {
+        let previous = lastNetworkPathAvailable
+        lastNetworkPathAvailable = isAvailable
+        guard isForeground, previous == false, isAvailable,
+              !automaticRefreshBlocked else { return }
+        cancelConnectionRetry()
+        Task { [weak self] in await self?.refresh() }
+    }
+
+    public func refresh() async { await refresh(isRetry: false) }
+
+    /// Pull-to-refresh ends when authoritative reads finish. Queued writes keep
+    /// their own supervised task and visible pending/synchronizing indicators.
+    public func refreshVisibleContent() async {
+        await refresh(isRetry: false, showsChecking: false, waitForPendingChanges: false)
+    }
+
+    private func refresh(isRetry: Bool, showsChecking: Bool = true, waitForPendingChanges: Bool = true) async {
+        guard isForeground else { return }
+        if let refreshTask {
+            let joinedToken = refreshTaskToken
+            await refreshTask.value
+            if let joinedToken { finishSnapshotRefresh(token: joinedToken, isRetry: isRetry) }
+            if waitForPendingChanges, let pendingSynchronizationTask { await pendingSynchronizationTask.value }
+            return
+        }
+        if !isRetry { cancelConnectionRetry() }
         let token = UUID()
+        let lifecycle = foregroundGeneration
+        let endpoint = clientGeneration
+        let previousState = state
+        // Manual pulls use their native spinner and leave connection status
+        // untouched until the authoritative read succeeds or fails.
+        if showsChecking, client != nil, state != .online { state = .connecting }
+        isRefreshingSnapshot = true
         let task = Task { @MainActor [weak self] in
-            guard let self else { return }
-            await self.performRefresh()
+            guard let self, !Task.isCancelled, self.isForeground,
+                  lifecycle == self.foregroundGeneration,
+                  endpoint == self.clientGeneration else { return }
+            await self.performRefresh(lifecycle: lifecycle, previousState: previousState)
         }
         refreshTaskToken = token
         refreshTask = task
         await task.value
-        if refreshTaskToken == token {
-            refreshTask = nil
-            refreshTaskToken = nil
+        finishSnapshotRefresh(token: token, isRetry: isRetry)
+        if waitForPendingChanges, let pendingSynchronizationTask { await pendingSynchronizationTask.value }
+    }
+
+    private func finishSnapshotRefresh(token: UUID, isRetry: Bool) {
+        guard refreshTaskToken == token else { return }
+        refreshTask = nil
+        refreshTaskToken = nil
+        isRefreshingSnapshot = false
+        if !isRetry, lastRefreshWasTransient { scheduleConnectionRetry() }
+        if state == .online { startPendingSynchronization() }
+    }
+
+    private func startPendingSynchronization() {
+        guard isForeground, state == .online, pendingSynchronizationTask == nil else { return }
+        let token = UUID(), endpoint = clientGeneration, lifecycle = foregroundGeneration
+        pendingSynchronizationToken = token
+        pendingSynchronizationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if self.pendingSynchronizationToken == token {
+                    self.pendingSynchronizationTask = nil
+                    self.pendingSynchronizationToken = nil
+                }
+            }
+            await self.syncFacts()
+            guard !Task.isCancelled, self.isForeground,
+                  endpoint == self.clientGeneration, lifecycle == self.foregroundGeneration else { return }
+            self.prepareLegacyPendingReviewIfNeeded()
+            if self.legacyPendingToggleCount == 0 { await self.replayPendingToggles() }
         }
     }
 
-    private func performRefresh() async {
+    private func cancelPendingSynchronization() {
+        pendingSynchronizationTask?.cancel()
+        pendingSynchronizationTask = nil
+        pendingSynchronizationToken = nil
+    }
+
+    private func cancelConnectionRetry() {
+        connectionRetryTask?.cancel()
+        connectionRetryTask = nil
+        connectionRetryToken = nil
+    }
+
+    private func scheduleConnectionRetry() {
+        guard isForeground, !automaticRefreshBlocked, connectionRetryTask == nil else { return }
+        let token = UUID(), lifecycle = foregroundGeneration, endpoint = clientGeneration
+        connectionRetryToken = token
+        let delays = connectionRetryDelays
+        connectionRetryTask = Task { [weak self] in
+            for delay in delays {
+                do { try await Task.sleep(for: delay) } catch { break }
+                guard let self, !Task.isCancelled, self.isForeground,
+                      lifecycle == self.foregroundGeneration, endpoint == self.clientGeneration,
+                      !self.automaticRefreshBlocked else { break }
+                await self.refresh(isRetry: true)
+                if !self.lastRefreshWasTransient { break }
+            }
+            if let self, self.connectionRetryToken == token {
+                self.connectionRetryTask = nil
+                self.connectionRetryToken = nil
+            }
+        }
+    }
+
+    private func performRefresh(lifecycle: Int, previousState: MobileConnectionState) async {
+        lastRefreshWasTransient = false
         guard let client else {
             if snapshot == nil { state = .unconfigured }
             return
         }
         var generation = clientGeneration
+        func isCurrent() -> Bool {
+            !Task.isCancelled && isForeground && lifecycle == foregroundGeneration && generation == clientGeneration
+        }
         do {
-            let health = try await client.health()
-            guard generation == clientGeneration else { return }
+            let health = try await client.health(timeoutInterval: 8)
+            guard isCurrent() else { return }
             if let incomingRepositoryID = health.repositoryID,
                let activeRepositoryID,
                incomingRepositoryID != activeRepositoryID {
@@ -569,28 +761,36 @@ public final class MobileSession: ObservableObject {
             if health.chatIssueCode == "provider_auth_failed" {
                 setChatIssue(code: "provider_auth_failed", message: nil)
             }
-            guard health.repositoryBound else {
-                throw MobileHostStateError.configurationUnavailable
-            }
-            let value = try await client.snapshot()
-            guard generation == clientGeneration else { return }
-            snapshot = value
+            guard health.repositoryBound else { throw MobileHostStateError.configurationUnavailable }
+            let revisionBeforeRead = snapshot?.revision
+            let value = try await client.snapshot(timeoutInterval: 12)
+            guard isCurrent() else { return }
+            // A queued write may have received a newer authoritative receipt
+            // while this read was in flight. Never roll that receipt back.
+            let canAdoptRead = snapshot?.revision == revisionBeforeRead
+            if canAdoptRead { snapshot = value }
             state = .online
+            automaticRefreshBlocked = false
             reconnectFailures = 0
             lastConnectionIssue = nil
-            saveCache(value)
+            if canAdoptRead { saveCache(value) }
             startEventStream()
-            await syncFacts()
-            guard generation == clientGeneration else { return }
-            prepareLegacyPendingReviewIfNeeded()
-            if legacyPendingToggleCount == 0 {
-                await replayPendingToggles()
-            }
         } catch {
-            guard generation == clientGeneration, !Self.isRequestCancellation(error) else { return }
+            guard isCurrent() else { return }
+            if Self.isRequestCancellation(error) { state = previousState; return }
             let contextualized = MobileEndpointError.contextualized(error)
             lastConnectionIssue = contextualized.localizedDescription
             state = connectionFailureState(for: contextualized)
+            automaticRefreshBlocked = isAuthenticationOrConfigurationFailure(contextualized)
+            if automaticRefreshBlocked { stopEventStream() }
+            if let remote = error as? StudyRocketRemoteError {
+                lastRefreshWasTransient = remote.body.retryable && !automaticRefreshBlocked
+            }
+            if let urlError = error as? URLError {
+                lastRefreshWasTransient = [.timedOut, .cannotFindHost, .cannotConnectToHost,
+                    .dnsLookupFailed, .networkConnectionLost, .notConnectedToInternet,
+                    .resourceUnavailable].contains(urlError.code)
+            }
         }
     }
 
@@ -601,10 +801,10 @@ public final class MobileSession: ObservableObject {
         let repositoryID: String?
     }
     private var cloudChatsURL: URL { draftsURL.deletingLastPathComponent().appendingPathComponent("pending-cloud-chats.json") }
-    private func persistedChatID(for text: String) throws -> String {
+    private func persistedChatID(for text: String, requestedID: String? = nil) throws -> String {
         var entries = (try? JSONDecoder().decode([PendingCloudChat].self, from: Data(contentsOf: cloudChatsURL))) ?? []
-        if let found = entries.first(where: { $0.text == text && $0.endpoint == clientEndpoint && $0.repositoryID == activeRepositoryID }) { return found.id }
-        let entry = PendingCloudChat(id: UUID().uuidString, text: text, endpoint: clientEndpoint, repositoryID: activeRepositoryID)
+        if let found = entries.first(where: { (requestedID == nil ? $0.text == text : $0.id == requestedID) && $0.endpoint == clientEndpoint && $0.repositoryID == activeRepositoryID }) { return found.id }
+        let entry = PendingCloudChat(id: requestedID ?? UUID().uuidString, text: text, endpoint: clientEndpoint, repositoryID: activeRepositoryID)
         entries.append(entry)
         try FileManager.default.createDirectory(at: cloudChatsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONEncoder().encode(entries).write(to: cloudChatsURL, options: .atomic)
@@ -689,13 +889,13 @@ public final class MobileSession: ObservableObject {
         }
     }
 
-    private func sendChatText(_ text: String) async {
+    private func sendChatText(_ text: String, clearComposer: Bool = true, requestedID: String? = nil) async {
         guard !text.isEmpty, let client else { return }
         guard isChatAvailable else { return }
         guard !isChatBusy else { return }
         let generation = clientGeneration
         let requestID: String
-        do { requestID = try persistedChatID(for: text) }
+        do { requestID = try persistedChatID(for: text, requestedID: requestedID) }
         catch { lastChatIssue = "无法持久保存发送草稿，请保留文字后重试。"; return }
         let pendingID = "mobile-pending-" + requestID
         activeChatRequest = ActiveMobileChatRequest(pendingID: pendingID, text: text,
@@ -716,7 +916,7 @@ public final class MobileSession: ObservableObject {
             let acceptedHistory = try await client.sendChat(text: text, clientRequestID: requestID)
             guard generation == clientGeneration,
                   activeChatRequest?.pendingID == pendingID else { return }
-            if inputDraft.trimmingCharacters(in: .whitespacesAndNewlines) == text { inputDraft = "" }
+            if clearComposer && inputDraft.trimmingCharacters(in: .whitespacesAndNewlines) == text { inputDraft = "" }
             if let acceptedHistory {
                 if !acceptedHistory.messages.isEmpty {
                     mergeHistory(acceptedHistory)
@@ -852,7 +1052,7 @@ public final class MobileSession: ObservableObject {
     }
 
     public func startEventStream() {
-        guard eventStreamsEnabled, eventsTask == nil, let client else { return }
+        guard isForeground, !automaticRefreshBlocked, eventStreamsEnabled, eventsTask == nil, let client else { return }
         reconnectFailures = 0
         streamGeneration &+= 1
         let currentStreamGeneration = streamGeneration
@@ -883,6 +1083,12 @@ public final class MobileSession: ObservableObject {
                     if !Task.isCancelled,
                        self.streamGeneration == currentStreamGeneration,
                        self.clientGeneration == endpointGeneration {
+                        if self.isAuthenticationOrConfigurationFailure(error) {
+                            self.automaticRefreshBlocked = true
+                            self.recordConnectionFailureIfNeeded(error)
+                            self.stopEventStream()
+                            return
+                        }
                         self.noteEventStreamFailure()
                     }
                 }
@@ -908,6 +1114,10 @@ public final class MobileSession: ObservableObject {
     }
 
     public func stopEventStream() {
+        snapshotInvalidationTask?.cancel()
+        snapshotInvalidationTask = nil
+        snapshotInvalidationToken = nil
+        pendingSnapshotInvalidation = nil
         streamGeneration &+= 1
         eventsTask?.cancel()
         eventsTask = nil
@@ -921,7 +1131,7 @@ public final class MobileSession: ObservableObject {
     /// replayed even when the first recovered event is only a heartbeat.
     func noteEventStreamConnected() {
         reconnectFailures = 0
-        guard !isEventRecoveryInFlight else { return }
+        guard isForeground, !automaticRefreshBlocked, !isEventRecoveryInFlight else { return }
         isEventRecoveryInFlight = true
         let streamGeneration = self.streamGeneration
         let endpointGeneration = clientGeneration
@@ -929,7 +1139,7 @@ public final class MobileSession: ObservableObject {
             guard let self,
                   self.streamGeneration == streamGeneration,
                   self.clientGeneration == endpointGeneration else { return }
-            await self.refresh()
+            await self.refresh(isRetry: false, showsChecking: false)
             guard self.streamGeneration == streamGeneration,
                   self.clientGeneration == endpointGeneration else { return }
             await self.refreshChat()
@@ -941,7 +1151,7 @@ public final class MobileSession: ObservableObject {
 
     func noteEventStreamFailure() {
         reconnectFailures += 1
-        guard reconnectFailures >= 3, !isEventProbeInFlight else { return }
+        guard isForeground, !automaticRefreshBlocked, reconnectFailures >= 3, !isEventProbeInFlight else { return }
         reconnectFailures = 0
         isEventProbeInFlight = true
         let streamGeneration = self.streamGeneration
@@ -950,7 +1160,7 @@ public final class MobileSession: ObservableObject {
             guard let self,
                   self.streamGeneration == streamGeneration,
                   self.clientGeneration == endpointGeneration else { return }
-            await self.refresh()
+            await self.refresh(isRetry: false, showsChecking: false)
             guard self.streamGeneration == streamGeneration,
                   self.clientGeneration == endpointGeneration else { return }
             self.isEventProbeInFlight = false
@@ -964,6 +1174,7 @@ public final class MobileSession: ObservableObject {
             let value = try await client.proposals()
             guard generation == clientGeneration else { return }
             proposals = value.proposals
+            prepareOrganizationPreview()
         } catch {
             guard generation == clientGeneration else { return }
             NSLog("StudyRocket Mobile proposal refresh failed: %@", error.localizedDescription)
@@ -972,10 +1183,8 @@ public final class MobileSession: ObservableObject {
 
     func consumeHostEvent(_ event: HostEventEnvelope) {
         if event.kind == "heartbeat" { return }
-        if let snapshot = event.snapshot {
-            self.snapshot = snapshot
-            state = .online
-            saveCache(snapshot)
+        if let eventSnapshot = event.snapshot {
+            invalidateSnapshot(from: eventSnapshot)
         }
 
         switch event.kind {
@@ -993,6 +1202,46 @@ public final class MobileSession: ObservableObject {
         }
 
         if let chat = event.chat { applyChatEvent(chat) }
+    }
+
+    /// Cloud SSE replays its durable event log from the reconnect cursor. Its
+    /// snapshot payload describes the original event, not current authority.
+    /// Keep processing chat/receipt events and the transport cursor normally;
+    /// use snapshot timestamps only to suppress obsolete invalidations.
+    private func invalidateSnapshot(from eventSnapshot: SnapshotResponse) {
+        guard isForeground, !automaticRefreshBlocked,
+              eventSnapshot.fetchedAt > (snapshot?.fetchedAt ?? .distantPast) else { return }
+        pendingSnapshotInvalidation = max(pendingSnapshotInvalidation ?? .distantPast, eventSnapshot.fetchedAt)
+        guard snapshotInvalidationTask == nil else { return }
+        let token = UUID(), endpoint = clientGeneration, lifecycle = foregroundGeneration
+        snapshotInvalidationToken = token
+        snapshotInvalidationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if self.snapshotInvalidationToken == token {
+                    self.snapshotInvalidationTask = nil
+                    self.snapshotInvalidationToken = nil
+                    self.pendingSnapshotInvalidation = nil
+                }
+            }
+            // The first await may join a GET that started before the event.
+            // Allow one followup for that signal, and retain genuinely newer
+            // signals received during it. A repeated/future timestamp cannot
+            // cause an unbounded sequence of authoritative reads.
+            var attemptedTimestamp: Date?
+            var attemptsForTimestamp = 0
+            while true {
+                guard !Task.isCancelled, self.isForeground,
+                      endpoint == self.clientGeneration, lifecycle == self.foregroundGeneration,
+                      let required = self.pendingSnapshotInvalidation,
+                      required > (self.snapshot?.fetchedAt ?? .distantPast) else { return }
+                if attemptedTimestamp != required { attemptedTimestamp = required; attemptsForTimestamp = 0 }
+                guard attemptsForTimestamp < 2 else { return }
+                attemptsForTimestamp += 1
+                await self.refreshVisibleContent()
+                guard self.state == .online else { return }
+            }
+        }
     }
 
     private func applyChatEvent(_ event: ChatStreamEvent) {
@@ -1083,6 +1332,7 @@ public final class MobileSession: ObservableObject {
         let matchedUser = chatMessages.contains { $0.role == "user" && $0.turnID == turnID && $0.text == request.text }
         guard turnID == request.operationID || matchedUser else { return false }
         request.turnID = turnID
+        bindOrganizationTurn(requestID: request.operationID, turnID: turnID)
         activeChatRequest = request
         return true
     }
@@ -1122,6 +1372,7 @@ public final class MobileSession: ObservableObject {
 
     private func applyTerminal(_ terminal: ChatTurnTerminalDTO) {
         guard Self.isTerminalChatStatus(terminal.status) else { return }
+        settleOrganization(terminal: terminal)
         let newlyCompleted = completedTurnIDs.insert(terminal.turnID).inserted
         let matchesActive = activeChatRequest.map { $0.turnID == terminal.turnID || $0.operationID == terminal.turnID } ?? false
         let matchesObserved = activeChatRequest == nil && observedChatTurnID == terminal.turnID
@@ -1203,6 +1454,7 @@ public final class MobileSession: ObservableObject {
             return
         }
         request.turnID = turnID
+        bindOrganizationTurn(requestID: request.operationID, turnID: turnID)
         activeChatRequest = request
         let turnMessages = history.filter { $0.turnID == turnID }
         if let terminal = terminals.last(where: { $0.turnID == turnID }) {
@@ -1249,6 +1501,7 @@ public final class MobileSession: ObservableObject {
     }
 
     private func mergeHistory(_ response: ChatHistoryResponse) {
+        reconcileOrganizationHistory(response)
         let restoringConversation = chatMessages.isEmpty && activeChatRequest == nil
         let terminalStatuses = (response.terminalTurns ?? []).filter { Self.isTerminalChatStatus($0.status) }
             .reduce(into: [String: String]()) { $0[$1.turnID] = $1.status }
@@ -1262,7 +1515,7 @@ public final class MobileSession: ObservableObject {
         if !isChatBusy, inputDraft.isEmpty,
            let data = try? Data(contentsOf: cloudChatsURL),
            let entries = try? JSONDecoder().decode([PendingCloudChat].self, from: data),
-           let unresolved = entries.first(where: { $0.endpoint == clientEndpoint && $0.repositoryID == activeRepositoryID }) {
+           let unresolved = entries.first(where: { $0.endpoint == clientEndpoint && $0.repositoryID == activeRepositoryID && !isOrganizationRequest($0.id) }) {
             inputDraft = unresolved.text
         }
         let history = response.messages
@@ -1325,23 +1578,70 @@ public final class MobileSession: ObservableObject {
         return streamID.hasPrefix(prefix) ? String(streamID.dropFirst(prefix.count)) : streamID
     }
 
-    public func applyProposals(ids: [String]? = nil) async {
-        guard let client, canApplyProposals, let current = snapshot else { return }
+    @discardableResult
+    public func applyProposals(ids: [String]? = nil, expectedRevision: String? = nil) async -> MobileProposalApplyOutcome {
+        guard !isApplyingProposals else { return .busy }
+        guard let client, let current = snapshot, let endpoint = clientEndpoint,
+              let repositoryID = activeRepositoryID, canViewProposals else { return .unavailable }
         let generation = clientGeneration
-        let selectedIDs = ids ?? proposals.map(\.id)
-        guard !selectedIDs.isEmpty else { return }
+        let repository = repositoryGeneration
+        let selectedIDs = (ids ?? proposals.map(\.id)).sorted()
+        guard !selectedIDs.isEmpty else { return .unavailable }
+        isApplyingProposals = true
+        defer { isApplyingProposals = false }
+        var operation = loadProposalApplication()
+        // Reconcile the saved operation before selecting a new revision or key.
+        if let saved = operation, (saved.succeeded || saved.failure != nil), saved.proposalIDs != selectedIDs { operation = nil }
+        if let saved = operation, saved.submitted {
+            let outcome = await reconcileProposalApplication(saved)
+            proposalApplyOutcome = outcome
+            return outcome
+        }
+        if let expectedRevision, expectedRevision != current.revision { return .rejected("计划已变化，请补充要求并重新生成整理草案。") }
+        guard Set(selectedIDs).isSubset(of: Set(proposals.map(\.id))) else { return .rejected("草案已变化，请刷新后重新查看差异。") }
+        if let saved = operation, saved.proposalIDs == selectedIDs, saved.baseRevision != current.revision {
+            return .rejected("原确认基线已变化，请重新生成草案；不会替换原操作编号重试。")
+        }
+        if operation?.proposalIDs != selectedIDs {
+            operation = MobileProposalApplication(endpoint: endpoint, repositoryID: repositoryID,
+                proposalIDs: selectedIDs, baseRevision: current.revision)
+        }
+        guard var operation else { return .unavailable }
         do {
+            try saveProposalApplication(operation)
             let challenge = try await client.proposalChallenge()
-            guard generation == clientGeneration else { return }
+            guard generation == clientGeneration, repository == repositoryGeneration else { return .unavailable }
             let authorization = try await MobileProposalAuthorization.evaluate(challenge: challenge)
-            guard generation == clientGeneration else { return }
-            let response = try await client.applyProposals(ids: selectedIDs, authorization: authorization, baseRevision: current.revision)
-            guard generation == clientGeneration else { return }
+            guard generation == clientGeneration, repository == repositoryGeneration else { return .unavailable }
+            operation.submitted = true
+            try saveProposalApplication(operation)
+            let response = try await client.applyProposals(ids: operation.proposalIDs, authorization: authorization,
+                baseRevision: operation.baseRevision, idempotencyKey: operation.id)
+            guard generation == clientGeneration, repository == repositoryGeneration else { return .unavailable }
+            operation.succeeded = true; operation.resultRevision = response.revision
+            try saveProposalApplication(operation)
             proposals = response.remaining.proposals
+            let outcome = MobileProposalApplyOutcome.applied(revision: response.revision)
+            proposalApplyOutcome = outcome
             await refresh()
+            return outcome
         } catch {
-            guard generation == clientGeneration else { return }
-            lastChatIssue = error.localizedDescription
+            guard generation == clientGeneration, repository == repositoryGeneration else { return .unavailable }
+            // Business rejection is authoritative. Transport/cancellation after POST
+            // is unknown and may only be resolved using the original operation ID.
+            let rejection = (error as? StudyRocketRemoteError).map {
+                ["conflict", "invalid_proposals", "planning_pair_required", "unauthorized", "revision_conflict", "proposal_conflict", "proposal_not_found", "invalid_proposal", "validation_failed", "authorization_failed", "invalid_authorization"].contains($0.body.code)
+            } ?? false
+            if !operation.submitted || rejection {
+                operation.submitted = false
+                try? saveProposalApplication(operation)
+                let result = MobileProposalApplyOutcome.rejected(error.localizedDescription)
+                proposalApplyOutcome = result; lastChatIssue = error.localizedDescription
+                return result
+            }
+            let outcome = await reconcileProposalApplication(operation)
+            proposalApplyOutcome = outcome
+            return outcome
         }
     }
 
@@ -1922,26 +2222,30 @@ public final class MobileSession: ObservableObject {
     }
 
     func syncFacts() async {
-        guard factSyncToken == nil, let repo = activeRepositoryID, let client, state == .online else { return }
-        let token = UUID(), generation = clientGeneration
+        guard isForeground, !Task.isCancelled, factSyncToken == nil, let repo = activeRepositoryID, let client, state == .online else { return }
+        let token = UUID(), generation = clientGeneration, lifecycle = foregroundGeneration
         factSyncToken = token
         defer { if factSyncToken == token { factSyncToken = nil } }
         while let fact = pendingFacts.first, let current = snapshot {
+            guard isForeground, !Task.isCancelled, lifecycle == foregroundGeneration else { return }
             do {
                 let value: SnapshotResponse
                 do { value = try await client.appendFact(fact, repo: repo, revision: current.revision) }
                 catch let error as StudyRocketRemoteError where error.body.code == "conflict" {
-                    guard generation == clientGeneration else { return }
+                    guard !Task.isCancelled, isForeground, lifecycle == foregroundGeneration, generation == clientGeneration else { return }
                     let latest = try await client.snapshot()
-                    guard generation == clientGeneration else { return }
+                    guard !Task.isCancelled, isForeground, lifecycle == foregroundGeneration, generation == clientGeneration else { return }
                     value = try await client.appendFact(fact, repo: repo, revision: latest.revision)
                 }
                 guard generation == clientGeneration else { return }
                 // A 200 receipt for this signed, idempotent request confirms even an older month.
                 try persistFacts(factQueue.filter { !($0.repositoryID == repo && $0.fact.id == fact.id) })
+                // A confirmed receipt may dequeue its original operation, but
+                // an old scene cannot replace the current scene's snapshot.
+                guard !Task.isCancelled, isForeground, lifecycle == foregroundGeneration else { return }
                 snapshot = value; saveCache(value); factSyncError = nil
             } catch {
-                guard generation == clientGeneration else { return }
+                guard !Task.isCancelled, isForeground, lifecycle == foregroundGeneration, generation == clientGeneration else { return }
                 factSyncError = error.localizedDescription
                 return
             }
@@ -2067,12 +2371,15 @@ public final class MobileSession: ObservableObject {
                 repositoryGeneration: requestRepositoryGeneration
             )
         }
+        let token = UUID()
+        pendingReplayToken = token
         pendingReplayTask = task
         isReplayingPendingToggles = true
         await task.value
-        guard generation == clientGeneration,
+        guard pendingReplayToken == token, generation == clientGeneration,
               requestRepositoryGeneration == repositoryGeneration else { return }
         pendingReplayTask = nil
+        pendingReplayToken = nil
         isReplayingPendingToggles = false
     }
 
@@ -2083,7 +2390,7 @@ public final class MobileSession: ObservableObject {
         while !Task.isCancelled {
             let drafts = loadPendingDrafts()
             guard let draft = drafts.deliveries.first(where: { $0.idempotencyKey != nil }) else { break }
-            guard generation == clientGeneration,
+            guard !Task.isCancelled, isForeground, generation == clientGeneration,
                   repositoryGeneration == self.repositoryGeneration,
                   let latest = snapshot else { return }
             guard let delivery = matchingDelivery(text: draft.text, id: draft.deliveryID, in: latest) else {
@@ -2104,7 +2411,7 @@ public final class MobileSession: ObservableObject {
                     confirmedTaskIDs: draft.confirmedTaskIDs,
                     timeoutInterval: 12
                 )
-                guard generation == clientGeneration,
+                guard !Task.isCancelled, isForeground, generation == clientGeneration,
                       repositoryGeneration == self.repositoryGeneration else { return }
                 guard matchingDelivery(text: draft.text, id: draft.deliveryID, in: value)?.isCompleted == draft.isCompleted else {
                     snapshot = value
@@ -2119,7 +2426,7 @@ public final class MobileSession: ObservableObject {
                 saveCache(value)
                 removePendingDeliveryDraft(draft)
             } catch {
-                guard generation == clientGeneration,
+                guard !Task.isCancelled, isForeground, generation == clientGeneration,
                       repositoryGeneration == self.repositoryGeneration,
                       !Task.isCancelled else { return }
                 if shouldReconcileAfterWrite(error),
@@ -2145,7 +2452,7 @@ public final class MobileSession: ObservableObject {
             let drafts = loadPendingDrafts()
             guard let draft = drafts.periods.first(where: { $0.idempotencyKey != nil && !$0.isLegacy }),
                   let taskID = draft.taskID else { break }
-            guard generation == clientGeneration,
+            guard !Task.isCancelled, isForeground, generation == clientGeneration,
                   repositoryGeneration == self.repositoryGeneration,
                   let latest = snapshot else { return }
             if let graph = latest.week.linkage {
@@ -2163,14 +2470,14 @@ public final class MobileSession: ObservableObject {
                     let value = try await client.togglePeriod(dayID: assignment.date, periodID: assignment.periodID, taskID: assignment.legacyTaskID,
                         isCompleted: draft.isCompleted, baseRevision: latest.revision, idempotencyKey: draft.idempotencyKey!,
                         logicalTaskID: linked.id, assignmentID: assignment.id, timeoutInterval: 12)
-                    guard generation == clientGeneration, repositoryGeneration == self.repositoryGeneration else { return }
+                    guard !Task.isCancelled, isForeground, generation == clientGeneration, repositoryGeneration == self.repositoryGeneration else { return }
                     snapshot = value; saveCache(value)
                     guard value.week.linkage?.tasks.first(where: { $0.id == linked.id })?.isCompleted == draft.isCompleted else {
                         pendingToggleSyncIssue = "服务端未确认任务完成状态，本机操作已保留。"; return
                     }
                     removePendingPeriodDraft(draft); continue
                 } catch {
-                    guard generation == clientGeneration, repositoryGeneration == self.repositoryGeneration else { return }
+                    guard !Task.isCancelled, isForeground, generation == clientGeneration, repositoryGeneration == self.repositoryGeneration else { return }
                     pendingToggleSyncIssue = "任务补交未完成：\(error.localizedDescription)"; return
                 }
             }
@@ -2193,7 +2500,7 @@ public final class MobileSession: ObservableObject {
                     idempotencyKey: draft.idempotencyKey!,
                     timeoutInterval: 12
                 )
-                guard generation == clientGeneration,
+                guard !Task.isCancelled, isForeground, generation == clientGeneration,
                       repositoryGeneration == self.repositoryGeneration else { return }
                 guard let updated = matchingPeriod(dayID: draft.dayID, periodID: draft.periodID, in: value),
                       updated.period.tasks.first(where: { $0.id == taskID })?.isCompleted == draft.isCompleted else {
@@ -2209,7 +2516,7 @@ public final class MobileSession: ObservableObject {
                 saveCache(value)
                 removePendingPeriodDraft(draft)
             } catch {
-                guard generation == clientGeneration,
+                guard !Task.isCancelled, isForeground, generation == clientGeneration,
                       repositoryGeneration == self.repositoryGeneration,
                       !Task.isCancelled else { return }
                 if shouldReconcileAfterWrite(error),
@@ -2316,7 +2623,7 @@ public final class MobileSession: ObservableObject {
         isCompleted: Bool
     ) async -> (snapshot: SnapshotResponse, confirmed: Bool)? {
         guard let value = try? await client.snapshot(timeoutInterval: 5),
-              generation == clientGeneration else { return nil }
+              !Task.isCancelled, isForeground, generation == clientGeneration else { return nil }
         snapshot = value
         state = .online
         lastConnectionIssue = nil
@@ -2333,7 +2640,7 @@ public final class MobileSession: ObservableObject {
         isCompleted: Bool
     ) async -> (snapshot: SnapshotResponse, confirmed: Bool)? {
         guard let value = try? await client.snapshot(timeoutInterval: 5),
-              generation == clientGeneration else { return nil }
+              !Task.isCancelled, isForeground, generation == clientGeneration else { return nil }
         snapshot = value
         state = .online
         lastConnectionIssue = nil
@@ -2392,6 +2699,7 @@ public final class MobileSession: ObservableObject {
     public func discardPendingDrafts() {
         pendingReplayTask?.cancel()
         pendingReplayTask = nil
+        pendingReplayToken = nil
         isReplayingPendingToggles = false
         pendingWeekDraft = nil
         pendingDailyDraft = nil
@@ -2407,9 +2715,13 @@ public final class MobileSession: ObservableObject {
     }
 
     public func clearLocalCache() {
+        cancelConnectionRetry()
+        automaticRefreshBlocked = false
         refreshTask?.cancel()
         refreshTask = nil
         refreshTaskToken = nil
+        isRefreshingSnapshot = false
+        cancelPendingSynchronization()
         finishChatActivity()
         clientGeneration &+= 1
         pairAttemptGeneration &+= 1
@@ -2452,6 +2764,8 @@ public final class MobileSession: ObservableObject {
     }
 
     func replaceClient(with newClient: StudyRocketRemoteClient, endpoint: URL, persistEndpoint: Bool, incomingRepositoryID: String? = nil) throws {
+        cancelConnectionRetry()
+        automaticRefreshBlocked = false
         let sameRepository = incomingRepositoryID != nil && incomingRepositoryID == activeRepositoryID
         let sameService = Self.sameEndpoint(clientEndpoint, endpoint) && (incomingRepositoryID == nil || sameRepository)
         let preserveActive = sameRepository || sameService
@@ -2476,6 +2790,8 @@ public final class MobileSession: ObservableObject {
         refreshTask?.cancel()
         refreshTask = nil
         refreshTaskToken = nil
+        isRefreshingSnapshot = false
+        cancelPendingSynchronization()
         stopEventStream()
         clientGeneration &+= 1
         advanceRepositoryGeneration()
@@ -2489,6 +2805,7 @@ public final class MobileSession: ObservableObject {
     }
 
     private func advanceRepositoryGeneration() {
+        cancelPendingSynchronization()
         conversationToken = UUID(); conversationTask?.cancel(); conversationTask = nil
         refreshingConversation = false; conversationRefreshError = nil
         lastChatIssue = nil; lastChatIssueCode = nil; lastFailedChatText = nil
@@ -2496,6 +2813,7 @@ public final class MobileSession: ObservableObject {
         factSyncToken = nil; factSyncError = nil
         pendingReplayTask?.cancel()
         pendingReplayTask = nil
+        pendingReplayToken = nil
         isReplayingPendingToggles = false
         repositoryGeneration &+= 1
         activeDeliveryMutations.removeAll()
@@ -2961,8 +3279,12 @@ public actor StudyRocketRemoteClient {
         try await get("/v1/proposals/challenge", as: ProposalAuthorizationChallenge.self)
     }
 
-    public func applyProposals(ids: [String], authorization: String, baseRevision: String) async throws -> ProposalApplyResponse {
-        try await post("/v1/proposals/apply", body: ProposalApplyRequest(proposalIDs: ids, authorization: authorization, metadata: WriteMetadata(baseRevision: baseRevision)), as: ProposalApplyResponse.self)
+    public func applyProposals(ids: [String], authorization: String, baseRevision: String, idempotencyKey: String = UUID().uuidString) async throws -> ProposalApplyResponse {
+        try await post("/v1/proposals/apply", body: ProposalApplyRequest(proposalIDs: ids, authorization: authorization, metadata: WriteMetadata(baseRevision: baseRevision, idempotencyKey: idempotencyKey)), as: ProposalApplyResponse.self)
+    }
+
+    public func operationStatus(id: String) async throws -> CloudOperationStatus {
+        try await get("/v1/operations/\(id)", as: CloudOperationStatus.self)
     }
 
     public func applyWeek(plan: WeeklyPlanSnapshot, baseRevision: String, events: [OneOffEvent]? = nil, eventBaseHash: String? = nil) async throws -> SnapshotResponse {
@@ -3256,5 +3578,237 @@ extension MobileSession {
         var receipts = migrationReceipts(); receipts[migrationReceiptKey(archive, itemID)] = repo
         try JSONEncoder().encode(receipts).write(to: migrationReceiptsURL, options: .atomic)
         objectWillChange.send()
+    }
+}
+
+// MARK: - Plan organization continuity and proposal receipts
+extension MobileSession {
+    private func organizationStorageURL(endpoint: URL, repository: String, name: String) -> URL {
+        let scope = PeriodCompletion.textHash(for: endpoint.absoluteString + "|" + repository)
+        return cacheURL.deletingLastPathComponent().appendingPathComponent("\(name)-\(scope).json")
+    }
+    var currentOrganization: MobileOrganizationWorkflow? {
+        guard let organization, organization.endpoint == clientEndpoint,
+              organization.repositoryID == activeRepositoryID else { return nil }
+        return organization
+    }
+    var organizationProposals: [ProposalDTO] { currentOrganization?.proposals(from: proposals) ?? [] }
+    var organizationIsRunning: Bool {
+        guard isChatBusy, let round = currentOrganization?.latestRound else { return false }
+        return activeChatRequest?.operationID == round.requestID || (round.turnID != nil && observedChatTurnID == round.turnID)
+    }
+    var canStartOrganization: Bool {
+        isChatAvailable && !isChatBusy && !organizationStarting && pendingWeekDraft == nil
+    }
+    private func loadOrganization() {
+        guard let endpoint = clientEndpoint, let repository = activeRepositoryID else { organization = nil; return }
+        if currentOrganization != nil { return }
+        let url = organizationStorageURL(endpoint: endpoint, repository: repository, name: "organization")
+        organization = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(MobileOrganizationWorkflow.self, from: $0) }
+    }
+    private func storeOrganization(_ value: MobileOrganizationWorkflow) throws {
+        let url = organizationStorageURL(endpoint: value.endpoint, repository: value.repositoryID, name: "organization")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(value).write(to: url, options: .atomic)
+        organization = value
+    }
+    private func updateOrganization(_ update: (inout MobileOrganizationWorkflow) -> Void) {
+        guard var value = currentOrganization else { return }
+        update(&value)
+        do { try storeOrganization(value) }
+        catch { lastChatIssue = "整理进度未能保存在本机，请保留当前页面。" }
+    }
+    func setOrganizationClarification(_ text: String) {
+        updateOrganization { $0.clarificationDraft = text }
+    }
+    private func isOrganizationRequest(_ id: String) -> Bool {
+        loadOrganization()
+        return currentOrganization?.rounds.contains(where: { $0.requestID == id }) == true
+    }
+    /// Starts directly without borrowing or replacing the chat composer's draft.
+    func startOrganization() async {
+        loadOrganization()
+        if let existing = currentOrganization, existing.phase != .applied {
+            await refreshOrganization()
+            return
+        }
+        guard canStartOrganization, let endpoint = clientEndpoint, let repository = activeRepositoryID else { return }
+        organizationStarting = true
+        defer { organizationStarting = false }
+        do {
+            try storeOrganization(MobileOrganizationWorkflow(endpoint: endpoint, repositoryID: repository))
+            await sendOrganizationRound(MobileOrganizationWorkflow.prompt)
+        } catch { lastChatIssue = "无法保存整理请求，未发送。" }
+    }
+    func sendOrganizationClarification() async {
+        guard let workflow = currentOrganization,
+              workflow.phase == .clarification || workflow.phase == .ready || workflow.phase == .failed,
+              !workflow.clarificationDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let text = "继续当前周计划整理。我的补充：\n" + workflow.clarificationDraft + "\n请仍保留原任务文字、日期、时段、ID、完成状态和历史；不要重新排期。本轮如信息充分，请提交完整的可确认草案。"
+        await sendOrganizationRound(text)
+    }
+    private func sendOrganizationRound(_ text: String) async {
+        guard !isChatBusy, isChatAvailable, pendingWeekDraft == nil, var workflow = currentOrganization else { return }
+        let id = UUID().uuidString
+        workflow.rounds.append(.init(requestID: id, turnID: isCloudService ? id : nil,
+            prompt: text, startedAt: .now, priorTurnIDs: chatMessages.compactMap(\.turnID)))
+        workflow.phase = .requesting; workflow.issue = nil
+        workflow.previewRevision = nil; workflow.previewProposalIDs = nil
+        do { try storeOrganization(workflow) }
+        catch { lastChatIssue = "无法保存整理请求，未发送。"; return }
+        await sendChatText(text, clearComposer: false, requestedID: id)
+        guard currentOrganization?.latestRound?.requestID == id else { return }
+        if failedChatWasRejected || (activeChatRequest == nil && currentOrganization?.latestRound?.status == "inProgress" && lastChatIssue != nil) {
+            updateOrganization { $0.phase = .failed; $0.issue = lastChatIssue ?? "本轮未发送，请稍后重试。"; $0.rounds[$0.rounds.count - 1].status = "failed" }
+        } else {
+            updateOrganization { $0.clarificationDraft = "" }
+        }
+    }
+    private func bindOrganizationTurn(requestID: String, turnID: String) {
+        loadOrganization()
+        guard currentOrganization?.latestRound?.requestID == requestID else { return }
+        updateOrganization { $0.rounds[$0.rounds.count - 1].turnID = turnID }
+    }
+    private func settleOrganization(terminal: ChatTurnTerminalDTO) {
+        loadOrganization()
+        guard let round = currentOrganization?.latestRound,
+              round.turnID == terminal.turnID || round.requestID == terminal.turnID else { return }
+        updateOrganization { workflow in
+            let index = workflow.rounds.count - 1
+            workflow.rounds[index].turnID = terminal.turnID
+            workflow.rounds[index].status = terminal.status
+            // Never turn an already confirmed receipt back into a draft on SSE replay.
+            guard workflow.phase != .applied && workflow.phase != .applying && workflow.phase != .receiptUnknown else { return }
+            workflow.phase = terminal.status == "completed" ? .clarification : .failed
+            workflow.issue = terminal.status == "completed" ? nil : (terminal.message ?? "本轮整理未完成，可在这里补充后重新发起。")
+        }
+    }
+    private func reconcileOrganizationHistory(_ history: ChatHistoryResponse) {
+        loadOrganization()
+        guard let round = currentOrganization?.latestRound else { return }
+        var turnID = round.turnID
+        if turnID == nil {
+            let candidates = history.messages.filter {
+                $0.role == "user" && $0.text == round.prompt && $0.date >= round.startedAt.addingTimeInterval(-2)
+                    && !round.priorTurnIDs.contains($0.turnID ?? "") && $0.turnID != nil
+            }
+            let ids = Set(candidates.compactMap(\.turnID))
+            if ids.count == 1, let id = ids.first { turnID = id; bindOrganizationTurn(requestID: round.requestID, turnID: id) }
+        }
+        guard let turnID else { return }
+        let replies = history.messages.filter { $0.turnID == turnID && $0.role == "assistant" }.map(\.text).joined(separator: "\n\n")
+        if !replies.isEmpty { updateOrganization { $0.rounds[$0.rounds.count - 1].reply = replies } }
+        if let terminal = history.terminalTurns?.last(where: { $0.turnID == turnID }) {
+            settleOrganization(terminal: terminal)
+        } else if let status = history.messages.last(where: { $0.turnID == turnID })?.status, Self.isTerminalChatStatus(status) {
+            settleOrganization(terminal: .init(turnID: turnID, status: status))
+        }
+    }
+    private func prepareOrganizationPreview() {
+        loadOrganization()
+        guard let workflow = currentOrganization, workflow.latestRound?.status == "completed",
+              workflow.phase == .clarification || workflow.phase == .ready else { return }
+        let ids = organizationProposals.map(\.id).sorted()
+        guard !ids.isEmpty else { return }
+        updateOrganization {
+            if $0.previewProposalIDs != ids { $0.previewProposalIDs = ids; $0.previewRevision = snapshot?.revision }
+            $0.phase = .ready
+        }
+    }
+    /// Called after foreground recovery and on reopening the sheet. No POST here.
+    func refreshOrganization() async {
+        loadOrganization()
+        if currentOrganization?.phase == .applying, !isApplyingProposals, loadProposalApplication()?.submitted != true {
+            updateOrganization { $0.phase = .ready; $0.issue = "上次确认尚未提交，请重新确认。" }
+        }
+        if let operation = loadProposalApplication(), operation.submitted {
+            let generation = clientGeneration, repository = repositoryGeneration
+            let workflowID = currentOrganization?.id
+            let outcome = await reconcileProposalApplication(operation)
+            guard generation == clientGeneration, repository == repositoryGeneration, currentOrganization?.id == workflowID else { return }
+            proposalApplyOutcome = outcome
+            if let workflow = currentOrganization,
+               !Set(operation.proposalIDs).isDisjoint(with: Set(workflow.proposals(from: proposals).map(\.id)))
+                || currentOrganization?.phase == .receiptUnknown || currentOrganization?.phase == .applying {
+                updateOrganization { value in
+                    switch outcome {
+                    case .applied: value.phase = .applied; value.issue = nil
+                    case .retryAvailable: value.phase = .ready; value.issue = "服务端尚无这次确认的记录，可重新确认；会保留原编号和原基线。"
+                    case .rejected(let message): value.phase = .failed; value.issue = message
+                    default: value.phase = .receiptUnknown; value.issue = "确认回执尚未取得，正在核对原操作；不会重复写入。"
+                    }
+                }
+            }
+        }
+        prepareOrganizationPreview()
+    }
+    func confirmOrganization() async {
+        guard pendingWeekDraft == nil, let workflow = currentOrganization,
+              workflow.latestRound?.status == "completed",
+              workflow.phase == .ready || workflow.phase == .clarification || workflow.phase == .receiptUnknown else { return }
+        let ids = organizationProposals.map(\.id)
+        guard !ids.isEmpty || workflow.phase == .receiptUnknown else { return }
+        if workflow.phase == .receiptUnknown { await refreshOrganization(); return }
+        guard let revision = workflow.previewRevision, ids.sorted() == workflow.previewProposalIDs else {
+            updateOrganization { $0.issue = "草案已变化，请刷新并重新查看差异。" }; return
+        }
+        do { try MobileOrganizationValidation.validate(organizationProposals) }
+        catch { updateOrganization { $0.issue = "草案改变了原任务文字、时间、身份或完成记录。请在这里要求 AI 保留这些内容后重新整理。" }; return }
+        updateOrganization { $0.phase = .applying; $0.issue = nil }
+        let result = await applyProposals(ids: ids, expectedRevision: revision)
+        guard currentOrganization?.id == workflow.id else { return }
+        updateOrganization { value in
+            switch result {
+            case .applied: value.phase = .applied; value.issue = nil
+            case .receiptUnknown: value.phase = .receiptUnknown; value.issue = "确认回执尚未取得，请核对原操作。"
+            case .retryAvailable: value.phase = .ready; value.issue = "服务端尚无这次确认的记录，可重新确认；会保留原编号和原基线。"
+            case .rejected(let message): value.phase = .ready; value.issue = message
+            case .busy: value.phase = .ready
+            case .unavailable: value.phase = .ready; value.issue = "当前暂不可确认，草案已保留。"
+            }
+        }
+    }
+    private func loadProposalApplication() -> MobileProposalApplication? {
+        guard let endpoint = clientEndpoint, let repository = activeRepositoryID else { return nil }
+        let url = organizationStorageURL(endpoint: endpoint, repository: repository, name: "proposal-application")
+        return (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(MobileProposalApplication.self, from: $0) }
+    }
+    private func saveProposalApplication(_ operation: MobileProposalApplication) throws {
+        let url = organizationStorageURL(endpoint: operation.endpoint, repository: operation.repositoryID, name: "proposal-application")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(operation).write(to: url, options: .atomic)
+    }
+    private func reconcileProposalApplication(_ operation: MobileProposalApplication) async -> MobileProposalApplyOutcome {
+        guard operation.endpoint == clientEndpoint, operation.repositoryID == activeRepositoryID else { return .unavailable }
+        if operation.succeeded, let revision = operation.resultRevision { return .applied(revision: revision) }
+        if let failure = operation.failure { return .rejected(failure) }
+        guard let client, isCloudService else { return .receiptUnknown }
+        let generation = clientGeneration, repository = repositoryGeneration
+        do {
+            let status = try await client.operationStatus(id: operation.id)
+            guard generation == clientGeneration, repository == repositoryGeneration else { return .unavailable }
+            guard status.id == operation.id else { return .receiptUnknown }
+            if ["failed", "rolled_back", "rejected"].contains(status.state) {
+                var saved = operation; saved.failure = status.message ?? "原确认操作未成功，请重新整理草案后确认。"
+                try saveProposalApplication(saved)
+                return .rejected(saved.failure!)
+            }
+            guard status.state == "succeeded", let revision = status.revision else { return .receiptUnknown }
+            var saved = operation; saved.succeeded = true; saved.resultRevision = revision
+            try saveProposalApplication(saved)
+            await refreshProposals()
+            await refresh()
+            return .applied(revision: revision)
+        } catch {
+            guard generation == clientGeneration, repository == repositoryGeneration else { return .unavailable }
+            if let remote = error as? StudyRocketRemoteError, remote.body.code == "operation_not_found" {
+                // The preceding POST task has finished. A fresh Face ID confirmation
+                // may replay this exact intent with its original idempotency key.
+                var saved = operation; saved.submitted = false
+                do { try saveProposalApplication(saved); return .retryAvailable }
+                catch { return .receiptUnknown }
+            }
+            return .receiptUnknown
+        }
     }
 }

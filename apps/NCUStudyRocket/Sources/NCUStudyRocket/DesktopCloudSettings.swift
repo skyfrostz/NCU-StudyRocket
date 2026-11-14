@@ -151,7 +151,8 @@ private struct DesktopCloudDraftReview: View {
                     Text(file.path).studyTypography(.headline)
                     if let current = cloud[file.path] {
                         StudyProposalDiffView(original: file.content, proposed: current.content,
-                            originalTitle: "本机草稿", proposedTitle: "当前云版本")
+                            originalTitle: "本机草稿", proposedTitle: "当前云版本",
+                            renderMarkdown: { AnyView(DesktopProposalMarkdownPreview(source: $0)) })
                         StudyButton("采用此云版本更新本机（保留草稿副本）") { Task {
                             busy = true; defer { busy = false }
                             do {
